@@ -12,5 +12,14 @@ fi
 
 echo "Composer install concluído!"
 
+# Instalar crontab, se disponível, e iniciar cron
+if [ -f "/etc/cron.txt" ]; then
+    echo "Instalando crontab..."
+    crontab /etc/cron.txt || true
+fi
+
+echo "Iniciando cron..."
+service cron start || cron || true
+
 # Iniciar o Apache
 exec apache2-foreground

@@ -1,13 +1,13 @@
 # Nexo Framework - Guia Completo de Desenvolvimento
 
-[![PHP Version](https://img.shields.io/badge/PHP-8.3+-blue.svg)](https://www.php.net/)
+[![PHP Version](https://img.shields.io/badge/PHP-8.4+-blue.svg)](https://www.php.net/)
 [![MySQL Version](https://img.shields.io/badge/MySQL-8.0-orange.svg)](https://www.mysql.com/)
 [![Redis Version](https://img.shields.io/badge/Redis-7.2-red.svg)](https://redis.io/)
 [![Kafka Version](https://img.shields.io/badge/Kafka-Latest-black.svg)](https://kafka.apache.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Framework web modular em PHP 8.3+** com arquitetura MVC, cache Redis, sistema assíncrono de emails via Kafka e MySQL 8.0. Dois módulos independentes (**Site** público + **Manager** administrativo) em um único container Apache com virtual hosts pré-configurados.
+**Framework web modular em PHP 8.4+** com arquitetura MVC, cache Redis, sistema assíncrono de emails via Kafka e MySQL 8.0. Dois módulos independentes (**Site** público + **Manager** administrativo) em um único container Apache com virtual hosts pré-configurados.
 
 > **Este documento é para DESENVOLVIMENTO LOCAL.** Para produção com Portainer e stacks separadas, consulte [MANUAL_DEPLOY.md](MANUAL_DEPLOY.md)
 
@@ -67,7 +67,7 @@
 
 ## ✨ Características Principais
 
-✅ **PHP 8.3+** - Tipos tipados, match expressions, named arguments  
+✅ **PHP 8.4+** - Tipos tipados, match expressions, named arguments  
 ✅ **MySQL 8.0** - PDO com prepared statements  
 ✅ **Redis 7.2** - Cache automático integrado  
 ✅ **Kafka** - Fila confiável para emails assíncronos  
@@ -132,6 +132,8 @@ docker-compose up -d --build
 # Aguarde ~60 segundos para Kafka inicializar completamente
 ```
 
+Nota: o cron dentro do container é instalado e iniciado automaticamente a partir de docker/core/crontab.txt.
+
 Esperado na saída:
 ```
 Creating mysql_nexo ... done
@@ -187,7 +189,7 @@ nexo/
 │   ├── docker-compose.yml              # Orquestração containers
 │   ├── docker-compose-deploy.yml.example # Template produção
 │   ├── core/
-│   │   ├── Dockerfile                  # PHP 8.3 + Apache + extensões
+│   │   ├── Dockerfile                  # PHP 8.4 + Apache + extensões
 │   │   ├── entrypoint.sh               # Script inicialização
 │   │   ├── site.conf                   # VirtualHost Site
 │   │   ├── manager.conf                # VirtualHost Manager
@@ -1140,4 +1142,4 @@ Visualize:
 
 ---
 
-**Desenvolvido com ❤️ usando PHP 8.3+, MySQL 8.0, Redis 7.2 e Apache Kafka**
+**Desenvolvido com ❤️ usando PHP 8.4+, MySQL 8.0, Redis 7.2 e Apache Kafka**

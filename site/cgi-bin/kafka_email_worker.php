@@ -13,7 +13,7 @@
  * @version 1.0
  */
 
-// Configuração do timezone (importante para PHP 8.3)
+// Configuração do timezone (importante para PHP 8.4)
 date_default_timezone_set('America/Sao_Paulo');
 
 // Simulação de ambiente HTTP para CLI

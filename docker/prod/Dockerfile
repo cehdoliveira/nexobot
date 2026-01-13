@@ -1,4 +1,4 @@
-FROM php:8.3-apache
+FROM php:8.4-apache
 
 # Instalar dependências do sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     unzip \
     curl \
+    cron \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar Composer
@@ -24,7 +25,7 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
         zip \
         gd
 
-# Instalar Redis e Kafka via PECL
+# Instalar Redis e Kafka via PECL (versões mais recentes compatíveis com PHP 8.4)
 RUN pecl install redis rdkafka \
     && docker-php-ext-enable redis rdkafka
 
@@ -34,6 +35,7 @@ RUN a2enmod rewrite headers
 # Copiar configurações
 COPY site.conf /etc/apache2/sites-available/
 COPY php.ini /usr/local/etc/php/
+COPY crontab.txt /etc/cron.txt
 
 # Configurar ServerName global para suprimir warning
 RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf
@@ -54,4 +56,6 @@ WORKDIR /var/www
 
 EXPOSE 80 8080
 
-CMD ["apache2-foreground"]
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

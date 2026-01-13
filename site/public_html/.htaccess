@@ -32,7 +32,7 @@ RewriteRule ^(.*)$ /index.php/$1 [NC,L,QSA]
 # Variáveis de ambiente
 SetEnv SEO_SUPPORT 1
 
-# Compressão GZIP/DEFLATE para PHP 8.3+
+# Compressão GZIP/DEFLATE para PHP 8.4+
 <IfModule mod_deflate.c>
   # Comprimir HTML, CSS, JavaScript, JSON, XML e fontes
   AddOutputFilterByType DEFLATE application/javascript
@@ -110,7 +110,7 @@ AddType application/manifest+json .webmanifest
 # Desabilitar ETag para melhor performance
 FileETag None
 
-# Expiração de Cache otimizada para PHP 8.3+
+# Expiração de Cache otimizada para PHP 8.4+
 <IfModule mod_expires.c>
  ExpiresActive On
  ExpiresDefault "access plus 0 seconds"

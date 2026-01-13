@@ -8,7 +8,7 @@
  * Gerencia sessões, rotas e despacho de requisições
  */
 
-// Iniciar sessão com configurações seguras para PHP 8.3
+// Iniciar sessão com configurações seguras para PHP 8.4
 session_start([
 	'cookie_httponly' => true,
 	'cookie_samesite' => 'Lax',
@@ -31,7 +31,7 @@ if (isset($_GET["logout"]) && $_GET["logout"] == "yes") {
 	basic_redir($GLOBALS["home_url"]);
 }
 
-// Parâmetros da requisição (PHP 8.3 compatível)
+// Parâmetros da requisição (PHP 8.4 compatível)
 $params = [
 	"sr" => isset($_GET["sr"]) && (int)$_GET["sr"] > 1 ? (int)$_GET["sr"] : 0,
 	"format" => ".html",

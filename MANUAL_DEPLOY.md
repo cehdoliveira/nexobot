@@ -1,6 +1,6 @@
 # Nexo Framework - Guia de Deploy em Produção
 
-[![PHP Version](https://img.shields.io/badge/PHP-8.3+-blue.svg)](https://www.php.net/)
+[![PHP Version](https://img.shields.io/badge/PHP-8.4+-blue.svg)](https://www.php.net/)
 [![MySQL Version](https://img.shields.io/badge/MySQL-8.0-orange.svg)](https://www.mysql.com/)
 [![Redis Version](https://img.shields.io/badge/Redis-7.2-red.svg)](https://redis.io/)
 [![Kafka Version](https://img.shields.io/badge/Kafka-Latest-black.svg)](https://kafka.apache.org/)
@@ -44,7 +44,7 @@ Este guia pressupõe que você **já possui**:
 ### O que você vai fazer:
 
 1. **Clonar** o repositório Nexo Framework no servidor
-2. **Build** de uma imagem Docker customizada com PHP 8.3 + extensões
+2. **Build** de uma imagem Docker customizada com PHP 8.4 + extensões
 3. **Deploy** da stack no Portainer usando a imagem criada
 4. **Configurar** `kernel.php` com credenciais do banco/redis/kafka
 5. **Instalar** dependências Composer
@@ -61,7 +61,7 @@ Este guia pressupõe que você **já possui**:
                │ Roteia para
 ┌──────────────▼──────────────────────────────────┐
 │        Stack: nexo-app (Sua Aplicação)         │
-│  ├─ app (2 replicas) - PHP 8.3 + Apache        │
+│  ├─ app (2 replicas) - PHP 8.4 + Apache        │
 │  ├─ redis - Redis 7.2 Alpine (Cache interno)   │
 │  ├─ email_worker_site - Kafka Consumer         │
 │  └─ email_worker_manager - Kafka Consumer      │
@@ -352,6 +352,8 @@ volumes:
 - Inicialização dos containers
 - Health checks
 
+Nota: o cron do app é instalado e iniciado automaticamente a partir de docker/prod/crontab.txt.
+
 ### 3.4 Verificar Deploy
 
 No Portainer → **Stacks** → **nexo-app**:
@@ -584,7 +586,7 @@ curl https://seudominio.com/health.php
 # Esperado:
 # {
 #   "status": "ok",
-#   "php": "8.3.x",
+#   "php": "8.4.x",
 #   "mysql": "ok",
 #   "redis": "ok"
 # }

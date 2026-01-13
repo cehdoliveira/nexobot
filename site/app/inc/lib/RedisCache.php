@@ -2,7 +2,7 @@
 
 /**
  * RedisCache - Wrapper para operações de cache com Redis
- * PHP 8.3+ | Redis 7.2+
+ * PHP 8.4+ | Redis 7.2+
  * 
  * Fornece uma interface simplificada para operações de cache
  * com suporte a serialização automática, TTL e namespaces
