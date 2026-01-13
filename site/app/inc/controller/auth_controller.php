@@ -45,7 +45,7 @@ class auth_controller
     public function display_register($info)
     {
         // Definir controllers Alpine.js necessários para esta página
-        $alpineControllers = ['registerController'];
+        $alpineControllers = ['register'];
 
         include(constant("cRootServer") . "ui/common/head.php");
         include(constant("cRootServer") . "ui/common/header.php");
@@ -124,7 +124,7 @@ class auth_controller
     {
 
         // Definir controllers Alpine.js necessários para esta página
-        $alpineControllers = ['loginController'];
+        $alpineControllers = ['login'];
 
         include(constant("cRootServer") . "ui/common/head.php");
         include(constant("cRootServer") . "ui/common/header.php");

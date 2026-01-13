@@ -5,8 +5,6 @@
 
 // Inicialização ao carregar o DOM
 document.addEventListener("DOMContentLoaded", function () {
-  console.log("Nexo Site - Carregado");
-
   // Smooth scroll para âncoras
   document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
     anchor.addEventListener("click", function (e) {
