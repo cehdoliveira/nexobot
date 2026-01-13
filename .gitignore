@@ -1,0 +1,30 @@
+#Docker
+docker/docker-compose-deploy.yml
+
+#Kernel
+manager/app/inc/kernel.php
+site/app/inc/kernel.php
+
+# Composer
+manager/app/inc/lib/vendor/
+manager/app/inc/lib/composer.lock
+manager/app/inc/lib/composer.phar
+site/app/inc/lib/vendor/
+site/app/inc/lib/composer.lock
+site/app/inc/lib/composer.phar
+
+# Docker data
+_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
