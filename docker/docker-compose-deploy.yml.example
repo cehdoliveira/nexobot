@@ -1,6 +1,6 @@
 services:
   # ============================================
-  # 📦 PHP Application Server (Site + Manager)
+  # 📦 PHP Application Server (Site)
   # ============================================
   app:
     image: <SUA_IMAGEM_CUSTOMIZADA>  # Imagem customizada com extensões pré-instaladas
@@ -30,20 +30,10 @@ services:
         - "traefik.http.routers.<NOME_APP>-site.tls.certresolver=letsencryptresolver"
         - "traefik.http.routers.<NOME_APP>-site.service=<NOME_APP>-site"
         - "traefik.http.services.<NOME_APP>-site.loadbalancer.server.port=80"
-        
-        # Manager (manager.<SEU_DOMINIO>)
-        - "traefik.http.routers.<NOME_APP>-manager.rule=Host(`manager.<SEU_DOMINIO>`)"
-        - "traefik.http.routers.<NOME_APP>-manager.entrypoints=websecure"
-        - "traefik.http.routers.<NOME_APP>-manager.tls.certresolver=letsencryptresolver"
-        - "traefik.http.routers.<NOME_APP>-manager.service=<NOME_APP>-manager"
-        - "traefik.http.services.<NOME_APP>-manager.loadbalancer.server.port=8080"
-    
+
     volumes:
       # Arquivos do Site
       - /opt/<NOME_APP>/site:/var/www/site:rw
-      
-      # Arquivos do Manager
-      - /opt/<NOME_APP>/manager:/var/www/manager:rw
       
       # Logs compartilhados
       - /opt/<NOME_APP>/logs/apache2:/var/log/apache2:rw
@@ -123,39 +113,6 @@ services:
       retries: 3
       start_period: 60s
   
-  # ========================================
-  # 👷 Email Worker Manager (Kafka Consumer)
-  # ========================================
-  email_worker_manager:
-    image: <SUA_IMAGEM_CUSTOMIZADA>  # Mesma imagem customizada
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: any
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 256M
-    
-    volumes:
-      # Worker precisa acessar o código do manager
-      - /opt/<NOME_APP>/manager:/var/www/manager:ro
-    
-    networks:
-      - <SUA_REDE_INTERNET_DO_PORTAINER>  # Conecta à rede para acessar outros serviços se necessário
-    
-    # Sobrescrever CMD padrão (apache) para rodar worker
-    entrypoint: []
-    command: ["php", "/var/www/manager/cgi-bin/kafka_email_worker.php"]
-    
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f kafka_email_worker.php || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-
 # ========================================
 # 🌐 Networks
 # ========================================

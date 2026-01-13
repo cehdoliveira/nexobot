@@ -1,7 +1,5 @@
 FROM php:8.3-apache
-COPY manager.conf /etc/apache2/sites-available/manager.conf
 COPY site.conf /etc/apache2/sites-available/site.conf
-RUN a2ensite manager.conf
 RUN a2ensite site.conf
 RUN apt-get update 
 RUN apt-get install -y apt-utils
@@ -26,10 +24,10 @@ RUN a2enmod headers rewrite
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 # Criar diretório lib caso não exista
-RUN mkdir -p /var/www/nexo/app/inc/lib
+RUN mkdir -p /var/www/nexbot/app/inc/lib
 
 # Definir permissões adequadas
-RUN chown -R www-data:www-data /var/www/nexo
+RUN chown -R www-data:www-data /var/www/nexbot
 
 # Copiar e configurar o script de entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

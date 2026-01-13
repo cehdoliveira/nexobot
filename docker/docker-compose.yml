@@ -1,35 +1,31 @@
 services:
-  apache_nexo:
+  apache_nexobot:
     build: ./core/
-    container_name: apache_nexo
+    container_name: apache_nexobot
     depends_on:
-      - mysql_nexo
+      - mysql_nexobot
     volumes:
       - ../_data/logs/:/var/log/
-      - ../_data/upload/:/var/www/nexo/manager/public_html/assets/upload/
-      - ../_data/upload/:/var/www/nexo/site/public_html/assets/upload/
-      - ../site/public_html/:/var/www/nexo/site/public_html/
-      - ../site/app/:/var/www/nexo/site/app/
-      - ../site/cgi-bin/:/var/www/nexo/site/cgi-bin/
-      - ../manager/public_html/:/var/www/nexo/manager/public_html/
-      - ../manager/app/:/var/www/nexo/manager/app/
-      - ../manager/cgi-bin/:/var/www/nexo/manager/cgi-bin/
+      - ../_data/upload/:/var/www/nexobot/site/public_html/assets/upload/
+      - ../site/public_html/:/var/www/nexobot/site/public_html/
+      - ../site/app/:/var/www/nexobot/site/app/
+      - ../site/cgi-bin/:/var/www/nexobot/site/cgi-bin/
     ports:
       - "80:80"
     networks:
-      nexo:
+      nexobot:
         ipv4_address: 172.29.0.3
   # Data Layer
-  mysql_nexo:
+  mysql_nexobot:
     image: mysql:8.0
-    container_name: mysql_nexo
+    container_name: mysql_nexobot
     restart: always
     command: --sql_mode=""
     environment:
-      - MYSQL_ROOT_PASSWORD=123456
-      - MYSQL_DATABASE=mysql_nexo
-      - MYSQL_USER=user_nexo
-      - MYSQL_PASSWORD=123456
+      - MYSQL_ROOT_PASSWORD=701502@Asdfg
+      - MYSQL_DATABASE=mysql_nexobot
+      - MYSQL_USER=user_nexobot
+      - MYSQL_PASSWORD=@Sa131822
     volumes:
       - ../_data/mysql-data/:/var/lib/mysql
     ports:
@@ -37,13 +33,13 @@ services:
     expose:
       - "3306"
     networks:
-      nexo:
+      nexobot:
         ipv4_address: 172.29.0.2
-  
+
   # Cache Layer
-  redis_nexo:
+  redis_nexobot:
     image: redis:7.2-alpine
-    container_name: redis_nexo
+    container_name: redis_nexobot
     restart: always
     command: >
       redis-server 
@@ -51,7 +47,6 @@ services:
       --maxmemory-policy allkeys-lru
       --save 60 1000
       --appendonly yes
-      --requirepass nexo_redis_2024
     volumes:
       - ../_data/redis-data/:/data
     ports:
@@ -59,34 +54,34 @@ services:
     expose:
       - "6379"
     networks:
-      nexo:
+      nexobot:
         ipv4_address: 172.29.0.4
     healthcheck:
       test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 10s
       timeout: 3s
       retries: 3
-  
+
   # Message Broker Layer
-  kafka_nexo:
+  kafka_nexobot:
     image: apache/kafka:latest
-    container_name: kafka_nexo
+    container_name: kafka_nexobot
     restart: always
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka_nexo:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka_nexobot:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka_nexo:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka_nexobot:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 3
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
     volumes:
       - ../_data/kafka-data/:/var/lib/kafka/data
     ports:
@@ -96,32 +91,36 @@ services:
       - "9092"
       - "9093"
     networks:
-      nexo:
+      nexobot:
         ipv4_address: 172.29.0.5
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1",
+        ]
       interval: 10s
       timeout: 10s
       retries: 5
       start_period: 30s
-  
+
   kafka_ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka_ui
     restart: always
     depends_on:
-      - kafka_nexo
+      - kafka_nexobot
     environment:
-      KAFKA_CLUSTERS_0_NAME: nexo_cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka_nexo:9092
+      KAFKA_CLUSTERS_0_NAME: nexobot_cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka_nexobot:9092
       DYNAMIC_CONFIG_ENABLED: "true"
     ports:
       - "8080:8080"
     networks:
-      nexo:
+      nexobot:
         ipv4_address: 172.29.0.6
 networks:
-  nexo:
+  nexobot:
     ipam:
       driver: default
       config:

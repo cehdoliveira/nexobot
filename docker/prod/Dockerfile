@@ -33,14 +33,13 @@ RUN a2enmod rewrite headers
 
 # Copiar configurações
 COPY site.conf /etc/apache2/sites-available/
-COPY manager.conf /etc/apache2/sites-available/
 COPY php.ini /usr/local/etc/php/
 
 # Configurar ServerName global para suprimir warning
 RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf
 
 # Habilitar sites e desabilitar padrão
-RUN a2ensite site.conf manager.conf \
+RUN a2ensite site.conf \
     && a2dissite 000-default.conf
 
 # Healthcheck

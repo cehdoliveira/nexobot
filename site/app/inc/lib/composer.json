@@ -5,6 +5,7 @@
     "require": {
         "php": ">=8.3",
         "ext-rdkafka": "*",
+        "binance/binance-connector-php": "^3.0",
         "phpmailer/phpmailer": "^6.9"
     },
     "autoload": {
