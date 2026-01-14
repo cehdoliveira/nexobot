@@ -4,6 +4,8 @@ services:
     container_name: apache_nexobot
     depends_on:
       - mysql_nexobot
+      - redis_nexobot
+      - kafka_nexobot
     volumes:
       - ../_data/logs/:/var/log/
       - ../_data/upload/:/var/www/nexobot/site/public_html/assets/upload/

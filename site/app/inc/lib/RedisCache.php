@@ -29,7 +29,7 @@ class RedisCache
      * @param int $database Número do database (0-15)
      */
     private function __construct(
-        string $host = '172.29.0.4',
+        string $host = 'redis_nexobot',
         int $port = 6379,
         string $password = '',
         string $prefix = 'nexo:',
@@ -82,7 +82,7 @@ class RedisCache
     public static function getInstance(array $config = []): ?RedisCache
     {
         if (self::$instance === null) {
-            $host = $config['host'] ?? (defined('REDIS_HOST') ? constant('REDIS_HOST') : '172.29.0.4');
+            $host = $config['host'] ?? (defined('REDIS_HOST') ? constant('REDIS_HOST') : 'redis_nexobot');
             $port = $config['port'] ?? (defined('REDIS_PORT') ? constant('REDIS_PORT') : 6379);
             $password = $config['password'] ?? (defined('REDIS_PASSWORD') ? constant('REDIS_PASSWORD') : '');
             $prefix = $config['prefix'] ?? (defined('REDIS_PREFIX') ? constant('REDIS_PREFIX') : 'nexo:');

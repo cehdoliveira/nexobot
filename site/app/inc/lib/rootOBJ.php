@@ -14,6 +14,8 @@ if (!class_exists('rootOBJ')) {
 		protected $recordset = null;
 		protected $filter = [];
 		protected $field = [];
+		protected $order = null;
+		protected $group = null;
 
 		public function __call($method, $paramters)
 		{

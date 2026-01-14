@@ -51,13 +51,25 @@ $dispatcher = new dispatcher(true);
 
 // Definir rotas da aplicação
 $dispatcher->add_route("GET", "/(index(\.json|\.xml|\.html)).*?", "function:basic_redir", null, $home_url);
-$dispatcher->add_route("GET", "/?", "site_controller:display", null, $params);
+
+// Login (público)
 $dispatcher->add_route("GET", "/login(\.json|\.xml|\.html)?", "auth_controller:display", null, $params);
 $dispatcher->add_route("POST", "/login(\.json|\.xml|\.html)?", "auth_controller:login", null, $params);
-$dispatcher->add_route("GET", "/sair", "auth_controller:logout", null, $params);
+
 // Rotas de cadastro
-$dispatcher->add_route("GET", "/cadastro(\.json|\.xml|\.html)?", "auth_controller:display_register", null, $params);
-$dispatcher->add_route("POST", "/cadastro(\.json|\.xml|\.html)?", "auth_controller:register", null, $params);
+// $dispatcher->add_route("GET", "/cadastro(\.json|\.xml|\.html)?", "auth_controller:display_register", null, $params);
+// $dispatcher->add_route("POST", "/cadastro(\.json|\.xml|\.html)?", "auth_controller:register", null, $params);
+
+// Logout
+$dispatcher->add_route("GET", "/sair", "auth_controller:logout", null, $params);
+
+// Dashboard (home protegida - requer login)
+$dispatcher->add_route("GET", "/?", "site_controller:dashboard", null, $params);
+
+// Rotas protegidas
+if (auth_controller::check_login()) {
+	$dispatcher->add_route("GET", "/setup", "setup_controller:display", null, $params);
+}
 
 // Executar dispatcher e tratar falhas
 if (!$dispatcher->exec()) {

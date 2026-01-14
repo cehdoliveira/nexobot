@@ -5,7 +5,7 @@ services:
   app:
     image: <SUA_IMAGEM_CUSTOMIZADA>  # Imagem customizada com extensões pré-instaladas
     deploy:
-      replicas: 2
+      replicas: 1
       restart_policy:
         condition: any
         delay: 5s
