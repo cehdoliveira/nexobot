@@ -33,7 +33,7 @@ services:
 
     volumes:
       # Arquivos do Site
-      - /opt/<NOME_APP>/site:/var/www/site:rw
+      - /opt/<NOME_APP>/site:/var/www/<NOME_APP>/site:rw
       
       # Logs compartilhados
       - /opt/<NOME_APP>/logs/apache2:/var/log/apache2:rw
@@ -97,7 +97,7 @@ services:
     
     volumes:
       # Worker precisa acessar o código do site
-      - /opt/<NOME_APP>/site:/var/www/site:ro
+      - /opt/<NOME_APP>/site:/var/www/<NOME_APP>/site:ro
     
     networks:
       - <SUA_REDE_INTERNET_DO_PORTAINER>  # Conecta à rede para acessar outros serviços se necessário

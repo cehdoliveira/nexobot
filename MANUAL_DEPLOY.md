@@ -22,9 +22,10 @@
 5. [Deploy no Portainer](#-passo-3-deploy-no-portainer)
 6. [Configuração Kernel](#-passo-4-configurar-kernelphp)
 7. [Instalar Dependências](#-passo-5-instalar-dependências-composer)
-8. [Atualizações com Git](#-atualizações-com-git-pull)
-9. [Monitoramento](#-monitoramento)
-10. [Troubleshooting](#-troubleshooting)
+8. [Migrations](#-migrations)
+9. [Atualizações com Git](#-atualizações-com-git-pull)
+10. [Monitoramento](#-monitoramento)
+11. [Troubleshooting](#-troubleshooting)
 
 ---
 
@@ -590,6 +591,72 @@ curl https://seudominio.com/health.php
 #   "mysql": "ok",
 #   "redis": "ok"
 # }
+```
+
+---
+
+## 🔄 Migrations
+
+O sistema de migrations permite versionamento de banco de dados. Migrations são arquivos `.sql` executados automaticamente em ordem alfabética.
+
+### Como Funciona
+
+- **Automático**: Roda a cada 5 minutos via cron job
+- **Rastreado**: Tabela `migrations_log` controla quais foram executadas
+- **Seguro**: Nunca executa a mesma migration duas vezes
+- **Logs**: Registra erros em `/var/www/nexo/_data/logs/migrations.log`
+
+### Criar uma Migration
+
+No seu repositório local, crie um arquivo `.sql` na pasta `migrations/`:
+
+```bash
+# Exemplo: criar tabela de auditoria
+cat > migrations/002_create_audit_table.sql << 'EOF'
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  table_name VARCHAR(255),
+  action VARCHAR(50),
+  user_id INT,
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+EOF
+
+# Commit e push para Git
+git add migrations/002_create_audit_table.sql
+git commit -m "feat: add audit table migration"
+git push
+```
+
+### Deploy da Migration
+
+Após `git pull` no servidor, a migration é automaticamente executada (no máximo em 5 minutos). Para verificar:
+
+```bash
+# Ver logs
+tail -f /opt/nexo/_data/logs/migrations.log
+
+# Ou acessar via Web (se tiver Traefik)
+# https://seudominio.com/migrations.php
+```
+
+### Reexecutar uma Migration
+
+Se uma migration falhar:
+
+1. Edite o arquivo `.sql` e corrija
+2. Deleta o registro da tabela `migrations_log` no MySQL:
+   ```sql
+   DELETE FROM migrations_log WHERE migration_name = '002_create_audit_table';
+   ```
+3. A próxima execução do cron (~5 minutos) reexecutará
+
+### Executar Manualmente
+
+Se precisar executar imediatamente (sem aguardar cron):
+
+```bash
+docker exec -it <nome_container_app> php /var/www/nexo/run-migrations.php
 ```
 
 ---

@@ -25,7 +25,8 @@
 8. [Site e Manager](#-site-e-manager)
 9. [Redis Cache](#-redis-cache-em-profundidade)
 10. [Sistema de Emails (Kafka)](#-sistema-assíncrono-de-emails-kafka)
-11. [Debugging](#-debugging-e-logs)
+11. [Migrations](#-sistema-de-migrations)
+12. [Debugging](#-debugging-e-logs)
 
 ---
 
@@ -1059,7 +1060,121 @@ docker exec -it kafka_nexo /opt/kafka/bin/kafka-console-consumer.sh \
 
 ---
 
-## 🐛 Debugging e Logs
+## � Sistema de Migrations
+
+Sistema simples e automático para executar migrações de banco de dados. As migrations são arquivos SQL na pasta `migrations/` que são executadas automaticamente em ordem alfabética.
+
+### Estrutura
+
+```
+migrations/
+├── 001_create_migrations_log.sql    # Tabela de controle (auto-criada)
+├── 002_users_table.sql
+├── 003_add_column_users.sql
+└── 004_create_orders_table.sql
+```
+
+### Como Usar
+
+**1. Criar nova migration:**
+
+```bash
+# Crie um arquivo .sql na pasta migrations/
+# Nomeie com prefixo numérico: 002_seu_nome.sql
+
+cat > migrations/002_users_table.sql << 'EOF'
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+EOF
+```
+
+**2. Executar migrations:**
+
+As migrations são executadas **automaticamente a cada 5 minutos** via cron job. Você também pode executar manualmente:
+
+**Via Web (Development):**
+```
+http://nexo.local/migrations.php         # Ver status
+http://nexo.local/migrations.php?run=1   # Executar
+```
+
+**Via CLI:**
+```bash
+docker exec -it apache_nexo php /var/www/nexo/run-migrations.php
+```
+
+**3. Verificar status:**
+
+```bash
+# Verificar logs
+tail -f _data/logs/migrations.log
+
+# Ou acessar interface web
+# http://manager.nexo.local/migrations.php
+```
+
+### Características
+
+✅ **Automático**: Roda a cada 5 minutos via cron  
+✅ **Simples**: Apenas .sql files na pasta migrations/  
+✅ **Seguro**: Rastreia execução em `migrations_log`  
+✅ **Idempotente**: Nunca executa a mesma migration duas vezes  
+✅ **Logging**: Logs em `_data/logs/migrations.log`  
+
+### Exemplo Completo
+
+```bash
+# 1. Criar migration
+cat > migrations/002_create_products.sql << 'EOF'
+-- Criar tabela de produtos
+CREATE TABLE products (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  price DECIMAL(10, 2),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Criar índice
+CREATE INDEX idx_price ON products(price);
+EOF
+
+# 2. Executar via CLI
+docker exec -it apache_nexo php /var/www/nexo/run-migrations.php
+
+# 3. Verificar na web
+# http://nexo.local/migrations.php
+```
+
+### Troubleshooting
+
+**Migration não executa:**
+```bash
+# Verificar se arquivo existe
+ls -la migrations/
+
+# Verificar logs
+tail -f _data/logs/migrations.log
+
+# Testar execução manual
+docker exec -it apache_nexo php /var/www/nexo/run-migrations.php
+```
+
+**Migration falhou:**
+- Verifique sintaxe SQL no arquivo `.sql`
+- Veja erro detalhado em `migrations.php` na web
+- Edite o arquivo, corrija e tente novamente
+
+**Reexecutar migration:**
+- Delete registro em `migrations_log` no banco se necessário
+- Ou renomei/recrie o arquivo .sql
+
+---
+
+## �🐛 Debugging e Logs
 
 ### Logs do Apache
 
