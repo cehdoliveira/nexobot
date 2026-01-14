@@ -1,11 +1,11 @@
 services:
-  apache_nexobot:
+  apache:
     build: ./core/
-    container_name: apache_nexobot
+    container_name: apache
     depends_on:
-      - mysql_nexobot
-      - redis_nexobot
-      - kafka_nexobot
+      - mysql
+      - redis
+      - kafka
     volumes:
       - ../_data/logs/:/var/log/
       - ../_data/upload/:/var/www/nexobot/site/public_html/assets/upload/
@@ -18,9 +18,9 @@ services:
       nexobot:
         ipv4_address: 172.29.0.3
   # Data Layer
-  mysql_nexobot:
+  mysql:
     image: mysql:8.0
-    container_name: mysql_nexobot
+    container_name: mysql
     restart: always
     command: --sql_mode=""
     environment:
@@ -39,9 +39,9 @@ services:
         ipv4_address: 172.29.0.2
 
   # Cache Layer
-  redis_nexobot:
+  redis:
     image: redis:7.2-alpine
-    container_name: redis_nexobot
+    container_name: redis
     restart: always
     command: >
       redis-server 
@@ -65,18 +65,18 @@ services:
       retries: 3
 
   # Message Broker Layer
-  kafka_nexobot:
+  kafka:
     image: apache/kafka:latest
-    container_name: kafka_nexobot
+    container_name: kafka
     restart: always
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka_nexobot:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka_nexobot:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -111,10 +111,10 @@ services:
     container_name: kafka_ui
     restart: always
     depends_on:
-      - kafka_nexobot
+      - kafka
     environment:
       KAFKA_CLUSTERS_0_NAME: nexobot_cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka_nexobot:9092
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       DYNAMIC_CONFIG_ENABLED: "true"
     ports:
       - "8080:8080"

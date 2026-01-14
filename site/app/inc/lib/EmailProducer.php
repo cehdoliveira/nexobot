@@ -39,7 +39,7 @@ class EmailProducer
     {
         try {
             $this->config = [
-                'host' => defined('KAFKA_HOST') ? KAFKA_HOST : 'kafka_nexobot',
+                'host' => defined('KAFKA_HOST') ? KAFKA_HOST : 'kafka',
                 'port' => defined('KAFKA_PORT') ? KAFKA_PORT : '9092',
                 'topic' => defined('KAFKA_TOPIC_EMAIL') ? KAFKA_TOPIC_EMAIL : 'emails',
             ];
