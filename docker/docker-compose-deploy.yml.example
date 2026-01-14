@@ -35,6 +35,9 @@ services:
       # Arquivos do Site
       - /opt/<NOME_APP>/site:/var/www/<NOME_APP>/site:rw
       
+      # Migrations SQL
+      - /opt/<NOME_APP>/migrations:/var/www/<NOME_APP>/migrations:rw
+      
       # Logs compartilhados
       - /opt/<NOME_APP>/logs/apache2:/var/log/apache2:rw
 

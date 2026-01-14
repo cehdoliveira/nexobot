@@ -21,7 +21,7 @@ class local_pdo
 				PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci"
 			]);
 		} catch (PDOException $e) {
-			die('Connect Error: ' . $e->getMessage());
+			throw $e;  // Lançar exception em vez de morrer
 		}
 	}
 

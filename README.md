@@ -1104,7 +1104,7 @@ http://nexo.local/migrations.php?run=1   # Executar
 
 **Via CLI:**
 ```bash
-docker exec -it apache_nexo php /var/www/nexo/run-migrations.php
+docker exec -it apache_nexo php /var/www/nexobot/site/cgi-bin/run-migrations.php
 ```
 
 **3. Verificar status:**
@@ -1143,7 +1143,7 @@ CREATE INDEX idx_price ON products(price);
 EOF
 
 # 2. Executar via CLI
-docker exec -it apache_nexo php /var/www/nexo/run-migrations.php
+docker exec -it apache_nexo php /var/www/nexobot/site/cgi-bin/run-migrations.php
 
 # 3. Verificar na web
 # http://nexo.local/migrations.php
@@ -1160,7 +1160,7 @@ ls -la migrations/
 tail -f _data/logs/migrations.log
 
 # Testar execução manual
-docker exec -it apache_nexo php /var/www/nexo/run-migrations.php
+docker exec -it apache_nexo php /var/www/nexobot/site/cgi-bin/run-migrations.php
 ```
 
 **Migration falhou:**

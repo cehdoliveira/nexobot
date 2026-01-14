@@ -656,7 +656,7 @@ Se uma migration falhar:
 Se precisar executar imediatamente (sem aguardar cron):
 
 ```bash
-docker exec -it <nome_container_app> php /var/www/nexo/run-migrations.php
+docker exec -it <nome_container_app> php /var/www/nexobot/site/cgi-bin/run-migrations.php
 ```
 
 ---

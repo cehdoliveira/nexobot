@@ -12,6 +12,7 @@ services:
       - ../site/public_html/:/var/www/nexobot/site/public_html/
       - ../site/app/:/var/www/nexobot/site/app/
       - ../site/cgi-bin/:/var/www/nexobot/site/cgi-bin/
+      - ../migrations/:/var/www/nexobot/migrations/
     ports:
       - "80:80"
     networks:
