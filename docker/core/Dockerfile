@@ -27,10 +27,10 @@ RUN a2enmod headers rewrite
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 # Criar diretório lib caso não exista
-RUN mkdir -p /var/www/nexbot/app/inc/lib
+RUN mkdir -p /var/www/nexobot/app/inc/lib
 
 # Definir permissões adequadas
-RUN chown -R www-data:www-data /var/www/nexbot
+RUN chown -R www-data:www-data /var/www/nexobot
 
 # Copiar crontab e configurar o script de entrypoint
 COPY crontab.txt /etc/cron.txt
