@@ -80,7 +80,7 @@ class MigrationRunner
 
             // Verificar se já foi executada
             if ($this->isExecuted($migration_name)) {
-                $this->log("⏭️  SKIP: {$migration_name}");
+                // $this->log("⏭️  SKIP: {$migration_name}"); Descomentar para Debug
                 $results['skipped'][] = $migration_name;
                 continue;
             }
@@ -276,7 +276,14 @@ class MigrationRunner
                 FROM migrations_log 
                 ORDER BY executed_at DESC
             ");
-            $executed = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            foreach ($rows as $row) {
+                $executed[$row['migration_name']] = [
+                    'status' => $row['status'],
+                    'executed_at' => $row['executed_at']
+                ];
+            }
         } catch (PDOException $e) {
             // Tabela não existe ainda
         }
@@ -287,7 +294,8 @@ class MigrationRunner
             $status[$name] = [
                 'file' => $filename,
                 'executed' => isset($executed[$name]),
-                'status' => $executed[$name] ?? 'pending'
+                'status' => isset($executed[$name]) ? $executed[$name]['status'] : 'pending',
+                'executed_at' => isset($executed[$name]) ? $executed[$name]['executed_at'] : null
             ];
         }
 
