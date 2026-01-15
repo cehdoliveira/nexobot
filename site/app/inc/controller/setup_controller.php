@@ -426,7 +426,13 @@ class setup_controller
                 'entry_price' => $precoEntrada,
                 'quantity' => $orderConfigs["quantity_total"],
                 'investment' => $investimento,
-                'take_profit_price' => $takeProfit1, // TP principal registrado
+                'take_profit_price' => $takeProfit1, // TP principal (deprecated, mantido para compatibilidade)
+                'take_profit_1_price' => $takeProfit1, // Alvo conservador
+                'take_profit_2_price' => $takeProfit2, // Alvo agressivo
+                'tp1_status' => 'pending',
+                'tp2_status' => 'pending',
+                'tp1_executed_qty' => 0,
+                'tp2_executed_qty' => 0,
                 'opened_at' => date('Y-m-d H:i:s')
             ]);
             $tradeIdx = $tradesModel->save();

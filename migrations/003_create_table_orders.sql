@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS `orders` (
   `side` enum('BUY','SELL') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Lado da ordem',
   `type` enum('MARKET','LIMIT') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Tipo da ordem',
   `order_type` enum('entry','take_profit') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Finalidade da ordem',
+  `tp_target` enum('tp1','tp2','entry','stop_loss') COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Qual alvo de TP esta ordem representa',
   `price` decimal(20,8) DEFAULT NULL COMMENT 'Preço (para LIMIT)',
   `quantity` decimal(20,8) NOT NULL COMMENT 'Quantidade',
   `executed_qty` decimal(20,8) DEFAULT '0.00000000' COMMENT 'Quantidade executada',
@@ -26,5 +27,6 @@ CREATE TABLE IF NOT EXISTS `orders` (
   KEY `idx_binance_order_id` (`binance_order_id`),
   KEY `idx_symbol` (`symbol`),
   KEY `idx_status` (`status`),
-  KEY `idx_order_type` (`order_type`)
+  KEY `idx_order_type` (`order_type`),
+  KEY `idx_tp_target` (`tp_target`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Ordens individuais executadas na Binance';

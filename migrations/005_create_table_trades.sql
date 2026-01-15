@@ -18,7 +18,13 @@ CREATE TABLE IF NOT EXISTS `trades` (
   `bb_upper` decimal(20,8) DEFAULT NULL COMMENT 'Banda superior',
   `bb_middle` decimal(20,8) DEFAULT NULL COMMENT 'Banda média',
   `bb_lower` decimal(20,8) DEFAULT NULL COMMENT 'Banda inferior',
-  `take_profit_price` decimal(20,8) DEFAULT NULL COMMENT 'Preço de take profit',
+  `take_profit_price` decimal(20,8) DEFAULT NULL COMMENT 'Preço de take profit (legado)',
+  `take_profit_1_price` decimal(20,8) DEFAULT NULL COMMENT 'Preço de take profit 1 (alvo conservador)',
+  `take_profit_2_price` decimal(20,8) DEFAULT NULL COMMENT 'Preço de take profit 2 (alvo agressivo)',
+  `tp1_status` enum('pending','partially_filled','filled','cancelled') COLLATE utf8mb4_unicode_ci DEFAULT 'pending' COMMENT 'Status TP1',
+  `tp2_status` enum('pending','partially_filled','filled','cancelled') COLLATE utf8mb4_unicode_ci DEFAULT 'pending' COMMENT 'Status TP2',
+  `tp1_executed_qty` decimal(20,8) DEFAULT '0.00000000' COMMENT 'Quantidade executada em TP1',
+  `tp2_executed_qty` decimal(20,8) DEFAULT '0.00000000' COMMENT 'Quantidade executada em TP2',
   `exit_price` decimal(20,8) DEFAULT NULL COMMENT 'Preço de saída',
   `exit_type` enum('take_profit','manual') COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Tipo de saída',
   `profit_loss` decimal(20,8) DEFAULT NULL COMMENT 'Lucro/Prejuízo em USDC',
@@ -31,5 +37,7 @@ CREATE TABLE IF NOT EXISTS `trades` (
   KEY `idx_status` (`status`),
   KEY `idx_opened_at` (`opened_at`),
   KEY `idx_closed_at` (`closed_at`),
-  KEY `idx_active` (`active`)
+  KEY `idx_active` (`active`),
+  KEY `idx_tp1_status` (`tp1_status`),
+  KEY `idx_tp2_status` (`tp2_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Trades executados pelo bot';

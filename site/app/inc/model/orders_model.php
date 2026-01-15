@@ -1,7 +1,7 @@
 <?php
 class orders_model extends DOLModel
 {
-	protected $field = ["idx", "trades_id", "binance_order_id", "binance_client_order_id", "symbol", "side", "type", "order_type", "price", "stop_price", "quantity", "executed_qty", "cumulative_quote_qty", "status", "order_created_at", "order_updated_at", "api_response"];
+	protected $field = ["idx", "binance_order_id", "binance_client_order_id", "symbol", "side", "type", "order_type", "price", "quantity", "executed_qty", "cumulative_quote_qty", "status", "order_created_at", "order_updated_at", "api_response"];
 	protected $filter = ["active = 'yes'"];
 
 	function __construct($bd = false)

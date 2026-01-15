@@ -133,17 +133,7 @@ class site_controller
                 $ordersModel = new orders_model();
 
                 foreach ($openTrades as $trade) {
-                    $tradeIdx = $trade["idx"];
                     $symbol = $trade["symbol"];
-
-                    // // Buscar ordens deste trade (take_profit e stop_loss) usando JOIN
-                    // $sql = "SELECT o.* FROM orders o 
-                    //         INNER JOIN orders_trades ot ON ot.orders_id = o.idx 
-                    //         WHERE o.active = 'yes' 
-                    //         AND ot.active = 'yes' ,
-                    //         AND ot.trades_id = '{$tradeIdx}' 
-                    //         AND o.order_type IN ('take_profit', 'stop_loss')";
-                    // $ordersModel->set_direct_query($sql);
 
                     $ordersModel->attach(["trades"]);
                     $ordersModel->load_data();
@@ -235,6 +225,7 @@ class site_controller
 
     /**
      * Verifica trades abertos e fecha automaticamente aqueles cujo TAKE_PROFIT foi executado
+     * Suporta múltiplos TPs (TP1 e TP2)
      * 
      * @param array $openTrades Lista de trades com status 'open'
      * @param array $binanceOrders (não utilizado - mantido por compatibilidade)
@@ -251,56 +242,191 @@ class site_controller
             $tradeIdx = $trade['idx'];
             $symbol = $trade['symbol'];
 
-            // Buscar ordem de TAKE_PROFIT deste trade no banco usando JOIN
+            // Verificar TP1
+            if (($trade['tp1_status'] ?? 'pending') !== 'filled' && ($trade['tp1_status'] ?? 'pending') !== 'cancelled') {
+                $this->checkAndExecuteTargetProfit($tradeIdx, $symbol, 'tp1', $trade, $api, $currentWalletBalance);
+            }
+
+            // Verificar TP2
+            if (($trade['tp2_status'] ?? 'pending') !== 'filled' && ($trade['tp2_status'] ?? 'pending') !== 'cancelled') {
+                $this->checkAndExecuteTargetProfit($tradeIdx, $symbol, 'tp2', $trade, $api, $currentWalletBalance);
+            }
+
+            // Se ambos os TPs foram preenchidos, fechar o trade
+            if (($trade['tp1_status'] ?? 'pending') === 'filled' && ($trade['tp2_status'] ?? 'pending') === 'filled') {
+                $this->finalizeTradeAfterBothTPs($tradeIdx, $symbol, $trade, $currentWalletBalance);
+            }
+        }
+    }
+
+    /**
+     * Verifica e executa um target de TP específico
+     * 
+     * @param int $tradeIdx ID do trade
+     * @param string $symbol Par de trading
+     * @param string $tpTarget 'tp1' ou 'tp2'
+     * @param array $trade Dados do trade
+     * @param SpotRestApi $api API Binance
+     * @param float $walletBalance Saldo atual da carteira
+     */
+    private function checkAndExecuteTargetProfit(int $tradeIdx, string $symbol, string $tpTarget, array $trade, $api, float $walletBalance): void
+    {
+        try {
+            $tpPriceColumn = $tpTarget === 'tp1' ? 'take_profit_1_price' : 'take_profit_2_price';
+            $tpStatusColumn = $tpTarget === 'tp1' ? 'tp1_status' : 'tp2_status';
+            $tpTargetPrice = (float)($trade[$tpPriceColumn] ?? 0);
+
+            if ($tpTargetPrice == 0) {
+                return;
+            }
+
+            // Buscar ordem de TP deste trade
             $ordersModel = new orders_model();
             $sql = "SELECT o.* FROM orders o 
                     INNER JOIN orders_trades ot ON ot.orders_id = o.idx 
                     WHERE o.active = 'yes' 
                     AND ot.active = 'yes' 
                     AND ot.trades_id = '{$tradeIdx}' 
-                    AND o.order_type = 'take_profit'";
+                    AND o.order_type = 'take_profit'
+                    AND o.tp_target = '{$tpTarget}'";
             $ordersModel->set_direct_query($sql);
             $ordersModel->load_data();
 
             if (empty($ordersModel->data)) {
-                continue;
+                return;
             }
 
             $takeProfitOrder = $ordersModel->data[0];
             $binanceOrderId = $takeProfitOrder['binance_order_id'];
 
-            try {
-                // Consultar status da ordem na Binance API
-                $response = $api->getOrder($symbol, $binanceOrderId);
-                $orderData = $response->getData();
+            // Consultar status na Binance
+            $response = $api->getOrder($symbol, $binanceOrderId);
+            $orderData = $response->getData();
 
-                // Extrair status (pode ser array ou objeto)
-                $status = null;
-                if (is_array($orderData)) {
-                    $status = $orderData['status'] ?? null;
-                } elseif (is_object($orderData)) {
-                    if (method_exists($orderData, 'getStatus')) {
-                        $status = $orderData->getStatus();
-                    } elseif (property_exists($orderData, 'status')) {
-                        $status = $orderData->status;
-                    }
-                }
+            $status = is_array($orderData) ? ($orderData['status'] ?? null) : (method_exists($orderData, 'getStatus') ? $orderData->getStatus() : null);
 
-                if (!$status) {
-                    continue;
-                }
-
-                // Se FILLED, fechar o trade
-                if ($status === 'FILLED') {
-
-                    // Converter objeto em array se necessário
-                    $orderDataArray = is_array($orderData) ? $orderData : json_decode(json_encode($orderData), true);
-
-                    $this->closeTradeWithFilledTakeProfit($tradeIdx, $symbol, $orderDataArray, $currentWalletBalance, $trade, $takeProfitOrder);
-                }
-            } catch (Exception $e) {
-                error_log("Erro ao consultar ordem #{$binanceOrderId} da Binance: " . $e->getMessage());
+            if (!$status) {
+                return;
             }
+
+            // Se FILLED, processar
+            if ($status === 'FILLED') {
+                $orderDataArray = is_array($orderData) ? $orderData : json_decode(json_encode($orderData), true);
+                $this->processTakeProfitFilled($tradeIdx, $symbol, $tpTarget, $orderDataArray, $takeProfitOrder, $trade, $walletBalance);
+            }
+        } catch (Exception $e) {
+            error_log("Erro ao verificar {$tpTarget} para trade #{$tradeIdx}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Processa um TP que foi executado (FILLED)
+     */
+    private function processTakeProfitFilled(int $tradeIdx, string $symbol, string $tpTarget, array $filledOrder, array $takeProfitOrder, array $tradeData, float $walletBalance): void
+    {
+        try {
+            $tpStatusColumn = $tpTarget === 'tp1' ? 'tp1_status' : 'tp2_status';
+            $tpExecutedColumn = $tpTarget === 'tp1' ? 'tp1_executed_qty' : 'tp2_executed_qty';
+
+            $sellPrice = (float)($filledOrder['price'] ?? 0);
+            $executedQty = (float)($filledOrder['executedQty'] ?? 0);
+
+            if ($sellPrice == 0) {
+                $sellPrice = (float)($takeProfitOrder['price'] ?? 0);
+            }
+
+            // Atualizar status do TP
+            $tradesModel = new trades_model();
+            $tradesModel->set_filter(["idx = '{$tradeIdx}'"]);
+            $updateData = [
+                $tpStatusColumn => 'filled',
+                $tpExecutedColumn => $executedQty
+            ];
+            $tradesModel->populate($updateData);
+            $tradesModel->save();
+
+            // Atualizar ordem
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter([
+                "binance_order_id = '{$takeProfitOrder['binance_order_id']}'"
+            ]);
+            $ordersModel->populate([
+                'status' => 'FILLED',
+                'executed_qty' => $executedQty,
+                'order_updated_at' => round(microtime(true) * 1000)
+            ]);
+            $ordersModel->save();
+
+            // Log
+            $formattedSellPrice = number_format($sellPrice, 2);
+            error_log("✅ {$tpTarget} do trade #{$tradeIdx} ({$symbol}) FILLED - Qtd: {$executedQty} @ \$" . $formattedSellPrice);
+        } catch (Exception $e) {
+            error_log("❌ Erro ao processar {$tpTarget} FILLED para trade #{$tradeIdx}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Finaliza o trade após ambos os TPs serem preenchidos
+     */
+    private function finalizeTradeAfterBothTPs(int $tradeIdx, string $symbol, array $trade, float $walletBalance): void
+    {
+        try {
+            $buyPrice = (float)($trade['entry_price'] ?? 0);
+            $investment = (float)($trade['investment'] ?? 0);
+            $quantity = (float)($trade['quantity'] ?? 0);
+
+            $tp1Qty = (float)($trade['tp1_executed_qty'] ?? 0);
+            $tp2Qty = (float)($trade['tp2_executed_qty'] ?? 0);
+            $tp1Price = (float)($trade['take_profit_1_price'] ?? 0);
+            $tp2Price = (float)($trade['take_profit_2_price'] ?? 0);
+
+            // Calcular P/L total
+            $profitLoss = ($tp1Qty * $tp1Price) + ($tp2Qty * $tp2Price) - $investment;
+            $profitLossPercent = $investment > 0 ? (($profitLoss / $investment) * 100) : 0;
+
+            // Determinar preço de saída médio
+            $totalExited = $tp1Qty + $tp2Qty;
+            $avgExitPrice = $totalExited > 0 ? (($tp1Qty * $tp1Price) + ($tp2Qty * $tp2Price)) / $totalExited : 0;
+
+            // Fechar trade
+            $tradesModel = new trades_model();
+            $tradesModel->set_filter(["idx = '{$tradeIdx}'"]);
+            $tradesModel->populate([
+                'status' => 'closed',
+                'exit_price' => $avgExitPrice,
+                'profit_loss' => $profitLoss,
+                'profit_loss_percent' => $profitLossPercent,
+                'closed_at' => date('Y-m-d H:i:s')
+            ]);
+            $tradesModel->save();
+
+            // Snapshot
+            $snapshotId = WalletBalanceHelper::snapshotAfterTrade($tradeIdx, $walletBalance);
+
+            // Log
+            $tradeLogsModel = new tradelogs_model();
+            $tradeLogsModel->populate([
+                'trades_id' => $tradeIdx,
+                'log_type' => 'success',
+                'event' => 'trade_closed_both_tps',
+                'message' => "Trade finalizado - Ambos os TPs executados",
+                'data' => json_encode([
+                    'tp1_qty' => $tp1Qty,
+                    'tp1_price' => $tp1Price,
+                    'tp2_qty' => $tp2Qty,
+                    'tp2_price' => $tp2Price,
+                    'avg_exit_price' => $avgExitPrice,
+                    'profit_loss' => $profitLoss,
+                    'profit_loss_percent' => $profitLossPercent,
+                    'wallet_balance' => $walletBalance,
+                    'snapshot_id' => $snapshotId
+                ])
+            ]);
+            $tradeLogsModel->save();
+
+            error_log("✅ Trade #{$tradeIdx} ({$symbol}) FINALIZADO. P/L: $" . number_format($profitLoss, 2) . " ({$profitLossPercent}%)");
+        } catch (Exception $e) {
+            error_log("❌ Erro ao finalizar trade #{$tradeIdx}: " . $e->getMessage());
         }
     }
 
@@ -317,94 +443,4 @@ class site_controller
      * @param array $tradeData Dados completos do trade
      * @param array $takeProfitOrder Dados da ordem de take profit do banco
      */
-    private function closeTradeWithFilledTakeProfit(
-        int $tradeIdx,
-        string $symbol,
-        array $filledOrder,
-        float $walletBalance,
-        array $tradeData,
-        array $takeProfitOrder
-    ): void {
-        try {
-            // Extrair dados da ordem FILLED
-            $sellPrice = (float)($filledOrder['price'] ?? 0);
-            $executedQty = (float)($filledOrder['executedQty'] ?? 0);
-
-            // Se price for 0, usar stop_price
-            if ($sellPrice == 0) {
-                $sellPrice = (float)($takeProfitOrder['stop_price'] ?? 0);
-            }
-
-            // Calcular profit/loss
-            $buyPrice = (float)($tradeData['entry_price'] ?? 0);
-            $investment = (float)($tradeData['investment'] ?? 0);
-
-            $profitLoss = ($sellPrice - $buyPrice) * $executedQty;
-            $profitLossPercent = $investment > 0 ? (($profitLoss / $investment) * 100) : 0;
-
-            // Atualizar trade no banco como fechado
-            $tradesModel = new trades_model();
-            $tradesModel->set_filter(["idx = '{$tradeIdx}'"]);
-            $tradesModel->populate([
-                'status' => 'closed',
-                'exit_price' => $sellPrice,
-                'profit_loss' => $profitLoss,
-                'profit_loss_percent' => $profitLossPercent,
-                'closed_at' => date('Y-m-d H:i:s')
-            ]);
-            $tradesModel->save();
-
-            // Atualizar status da ordem no banco
-            $ordersModel = new orders_model();
-            $ordersModel->set_filter([
-                "binance_order_id = '{$takeProfitOrder['binance_order_id']}'"
-            ]);
-            $ordersModel->populate([
-                'status' => 'FILLED',
-                'executed_qty' => $executedQty,
-                'order_updated_at' => round(microtime(true) * 1000)
-            ]);
-            $ordersModel->save();
-
-            // Criar snapshot AFTER_TRADE
-            $snapshotId = WalletBalanceHelper::snapshotAfterTrade($tradeIdx, $walletBalance);
-
-            // Registrar log
-            $tradeLogsModel = new trade_logs_model();
-            $tradeLogsModel->populate([
-                'trades_id' => $tradeIdx,
-                'log_type' => 'success',
-                'event' => 'trade_closed',
-                'message' => "Trade fechado - Ordem FILLED na Binance",
-                'data' => json_encode([
-                    'binance_order_id' => $takeProfitOrder['binance_order_id'],
-                    'exit_price' => $sellPrice,
-                    'executed_qty' => $executedQty,
-                    'profit_loss' => $profitLoss,
-                    'profit_loss_percent' => $profitLossPercent,
-                    'wallet_balance' => $walletBalance,
-                    'snapshot_id' => $snapshotId
-                ])
-            ]);
-            $tradeLogsModel->save();
-
-            error_log("✅ Trade #{$tradeIdx} ({$symbol}) fechado. P/L: $" . number_format($profitLoss, 2) . " USDC ({$profitLossPercent}%)");
-        } catch (Exception $e) {
-            error_log("❌ Erro ao fechar trade #{$tradeIdx}: " . $e->getMessage());
-
-            // Registrar erro no log
-            try {
-                $tradeLogsModel = new trade_logs_model();
-                $tradeLogsModel->populate([
-                    'trades_id' => $tradeIdx,
-                    'log_type' => 'error',
-                    'event' => 'close_error',
-                    'message' => "Erro ao fechar trade: " . $e->getMessage()
-                ]);
-                $tradeLogsModel->save();
-            } catch (Exception $e2) {
-                // Ignore
-            }
-        }
-    }
 }
