@@ -8,7 +8,7 @@ use Binance\Client\Spot\Model\OrderType;
 
 class setup_controller
 {
-    private const TIMEFRAME = "15m"; // Alterado para 15 minutos
+    private const TIMEFRAME = "15m"; // 15 minutos
     private const QTD_CANDLES = 1000;
     private const BOLLINGER_PERIOD = 20;
     private const BOLLINGER_DEVIATION = 2;
@@ -171,7 +171,6 @@ class setup_controller
         try {
             $resp = $this->client->getAccount();
             $accountData = $resp->getData();
-            // Converter objeto GetAccountResponse para array
             $this->accountInfoCache = json_decode(json_encode($accountData), true);
             $this->accountInfoCacheTime = $now;
             return $this->accountInfoCache;
@@ -211,7 +210,7 @@ class setup_controller
     {
         try {
             $symbolsParam = implode(',', array_map(fn($s) => '"' . $s . '"', $symbols));
-            $url = "https://api.binance.com/api/v3/exchangeInfo?symbols=[{$symbolsParam}]";
+            $url = "https://testnet.binance.vision/api/v3/exchangeInfo?symbols=[{$symbolsParam}]";
             $response = $this->fetchApiData($url);
             $data = json_decode($response, true);
 
@@ -239,7 +238,7 @@ class setup_controller
     private function getBinanceData(string $symbol, string $interval, int $limit): array
     {
         try {
-            $url = "https://api.binance.com/api/v3/klines?symbol={$symbol}&interval={$interval}&limit={$limit}";
+            $url = "https://testnet.binance.vision/api/v3/klines?symbol={$symbol}&interval={$interval}&limit={$limit}";
             $response = $this->fetchApiData($url);
 
             if ($response === false) {
@@ -285,7 +284,7 @@ class setup_controller
         }
 
         try {
-            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
+            $url = "https://testnet.binance.vision/api/v3/exchangeInfo?symbol={$symbol}";
             $response = $this->fetchApiData($url);
 
             if ($response === false) {
@@ -394,7 +393,6 @@ class setup_controller
                 return;
             }
 
-            // Capturar saldo total da carteira ANTES de abrir o trade
             $walletTotalUsdc = (float)$usdcBalance['free'] + (float)$usdcBalance['locked'];
 
             $capitalDisponivel = (float)$usdcBalance['free'];
@@ -405,31 +403,34 @@ class setup_controller
             }
 
             $precoEntrada = $candle1['preco'];
-            $takeProfit = $bbReferencia1['media'] - (0.5 * $bbReferencia1['desvioPadrao']);
 
-            $lucroPercentual = (($takeProfit - $precoEntrada) / $precoEntrada) * 100;
+            // TP1: mesmo racional original (mean - 0.5*desvio)
+            $takeProfit1 = $bbReferencia1['media'] - (0.5 * $bbReferencia1['desvioPadrao']);
 
-            if ($lucroPercentual < 0.30) {
+            // TP2: alvo mais distante (mean + 0.5*desvio)
+            $takeProfit2 = $bbReferencia1['media'] + (0.5 * $bbReferencia1['desvioPadrao']);
+
+            // Filtro mínimo continua baseado em TP1 (mais conservador)
+            $lucroPercentual1 = (($takeProfit1 - $precoEntrada) / $precoEntrada) * 100;
+            if ($lucroPercentual1 < 0.30) {
                 return;
             }
 
-            $orderConfigs = $this->getOrderDetailsForSymbol($symbol, $precoEntrada, $takeProfit, $investimento);
+            $orderConfigs = $this->getOrderDetailsForSymbol($symbol, $precoEntrada, $takeProfit1, $takeProfit2, $investimento);
 
-            // Criar trade no banco ANTES de executar as ordens
             $tradesModel = new trades_model();
             $tradesModel->populate([
                 'symbol' => $symbol,
                 'status' => 'open',
                 'timeframe' => '15m',
                 'entry_price' => $precoEntrada,
-                'quantity' => $orderConfigs["quantity"],
+                'quantity' => $orderConfigs["quantity_total"],
                 'investment' => $investimento,
-                'take_profit_price' => $takeProfit,
+                'take_profit_price' => $takeProfit1, // TP principal registrado
                 'opened_at' => date('Y-m-d H:i:s')
             ]);
             $tradeIdx = $tradesModel->save();
 
-            // Salvar snapshot do saldo ANTES de abrir o trade
             try {
                 $snapshotId = WalletBalanceHelper::snapshotBeforeTrade($tradeIdx, $walletTotalUsdc);
                 if ($snapshotId) {
@@ -439,29 +440,27 @@ class setup_controller
                 $this->log("Erro ao criar snapshot before_trade: " . $e->getMessage(), 'ERROR', 'TRADE');
             }
 
-            // Log do setup detectado
             $tradeLogsModel = new tradelogs_model();
             $tradeLogsModel->populate([
                 'trades_id' => $tradeIdx,
                 'log_type' => 'info',
                 'event' => 'setup_detected',
-                'message' => "Setup de Bollinger detectado para {$symbol}",
+                'message' => "Setup de Bollinger (multi-TP) detectado para {$symbol}",
                 'data' => json_encode([
                     'entry_price' => $precoEntrada,
-                    'take_profit' => $takeProfit,
-                    'profit_percent' => $lucroPercentual,
+                    'take_profit_1' => $takeProfit1,
+                    'take_profit_2' => $takeProfit2,
+                    'profit_percent_tp1' => $lucroPercentual1,
                     'investment' => $investimento,
                     'wallet_balance_usdc' => $walletTotalUsdc
                 ])
             ]);
             $tradeLogsModel->save();
 
-            // Executar ordens na Binance
             $this->executarOrdens($symbol, $orderConfigs, $precoEntrada, $tradeIdx);
         } catch (Exception $e) {
             $this->log("Erro ao processar entrada para $symbol: " . $e->getMessage(), 'ERROR', 'TRADE');
 
-            // Se criou o trade, registrar erro no log
             if (isset($tradeIdx) && $tradeIdx > 0) {
                 $tradeLogsModel = new tradelogs_model();
                 $tradeLogsModel->populate([
@@ -503,23 +502,21 @@ class setup_controller
             $tradesLogModel = new tradelogs_model();
             $ordersModel = new orders_model();
 
-            // Ordem de Compra (MARKET)
+            // Ordem de Compra (MARKET) – mesma lógica, mas usando quantidade total
             $newOrderReq = new NewOrderRequest();
             $newOrderReq->setSymbol($symbol);
             $newOrderReq->setSide(Side::BUY);
             $newOrderReq->setType(OrderType::MARKET);
-            $newOrderReq->setQuantity((float)$orderConfigs["quantity"]); // Convertido para float
+            $newOrderReq->setQuantity((float)$orderConfigs["quantity_total"]);
 
             $orderMarketResp = $this->client->newOrder($newOrderReq);
             $orderMarket = $orderMarketResp->getData();
 
-            // Extrair dados da ordem (compatível com objeto ou array)
             $orderId = method_exists($orderMarket, 'getOrderId') ? $orderMarket->getOrderId() : ($orderMarket["orderId"] ?? null);
             $executedQty = method_exists($orderMarket, 'getExecutedQty') ? $orderMarket->getExecutedQty() : ($orderMarket["executedQty"] ?? 0);
             $status = method_exists($orderMarket, 'getStatus') ? $orderMarket->getStatus() : ($orderMarket["status"] ?? 'UNKNOWN');
             $clientOrderId = method_exists($orderMarket, 'getClientOrderId') ? $orderMarket->getClientOrderId() : ($orderMarket["clientOrderId"] ?? null);
 
-            // Salvar ordem de compra no banco
             $ordersModel->populate([
                 'binance_order_id' => $orderId,
                 'binance_client_order_id' => $clientOrderId,
@@ -528,7 +525,7 @@ class setup_controller
                 'type' => 'MARKET',
                 'order_type' => 'entry',
                 'price' => $precoEntrada,
-                'quantity' => $orderConfigs["quantity"],
+                'quantity' => $orderConfigs["quantity_total"],
                 'executed_qty' => $executedQty,
                 'status' => $status,
                 'order_created_at' => round(microtime(true) * 1000),
@@ -536,7 +533,6 @@ class setup_controller
             ]);
             $buyOrderIdx = $ordersModel->save();
 
-            // Relacionar ordem com trade usando save_attach
             $ordersModel->save_attach(['idx' => $buyOrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
 
             $this->logTradeOperation($symbol, 'MARKET_BUY_SUCCESS', [
@@ -561,62 +557,129 @@ class setup_controller
 
             $statusFilled = $status === 'FILLED';
             if ($orderId && $statusFilled) {
-                $qtdProfit = $this->getAvailableBalance($symbol);
+                // Supondo que a quantidade executada ≈ quantity_total, distribuímos entre TP1 e TP2
+                $qtdTotal = (float)$orderConfigs["quantity_total"];
+                if ($qtdTotal <= 0) {
+                    return;
+                }
 
-                // Ordem de Take Profit
-                $tpOrderReq = new NewOrderRequest();
-                $tpOrderReq->setSymbol($symbol);
-                $tpOrderReq->setSide(Side::SELL);
-                $tpOrderReq->setType(OrderType::TAKE_PROFIT);
-                $tpOrderReq->setQuantity((float)$qtdProfit); // Convertido para float
-                $tpOrderReq->setStopPrice((float)$orderConfigs["profit"]); // Convertido para float
+                $qtdTp1 = (float)$orderConfigs["quantity_tp1"];
+                $qtdTp2 = (float)$orderConfigs["quantity_tp2"];
 
-                $takeProfitResp = $this->client->newOrder($tpOrderReq);
-                $takeProfitOrder = $takeProfitResp->getData();
+                // Segurança: se algo sair errado, força soma = quantidade executada
+                if (abs(($qtdTp1 + $qtdTp2) - $qtdTotal) > 0.0000001) {
+                    $qtdTp1 = $qtdTotal * 0.4;
+                    $qtdTp2 = $qtdTotal - $qtdTp1;
+                }
 
-                $tpOrderId = method_exists($takeProfitOrder, 'getOrderId') ? $takeProfitOrder->getOrderId() : ($takeProfitOrder["orderId"] ?? null);
-                $tpClientOrderId = method_exists($takeProfitOrder, 'getClientOrderId') ? $takeProfitOrder->getClientOrderId() : ($takeProfitOrder["clientOrderId"] ?? null);
-                $tpStatus = method_exists($takeProfitOrder, 'getStatus') ? $takeProfitOrder->getStatus() : ($takeProfitOrder["status"] ?? 'UNKNOWN');
+                // TP1 – TAKE_PROFIT (market quando stopPrice for atingido)
+                $tp1Req = new NewOrderRequest();
+                $tp1Req->setSymbol($symbol);
+                $tp1Req->setSide(Side::SELL);
+                $tp1Req->setType(OrderType::TAKE_PROFIT);
+                $tp1Req->setQuantity($qtdTp1);
+                $tp1Req->setStopPrice((float)$orderConfigs["tp1_price"]);
 
-                // Salvar ordem de take profit no banco
-                $ordersModel2 = new orders_model();
-                $ordersModel2->populate([
-                    'binance_order_id' => $tpOrderId,
-                    'binance_client_order_id' => $tpClientOrderId,
+                $tp1Resp = $this->client->newOrder($tp1Req);
+                $tp1Order = $tp1Resp->getData();
+
+                $tp1OrderId = method_exists($tp1Order, 'getOrderId') ? $tp1Order->getOrderId() : ($tp1Order["orderId"] ?? null);
+                $tp1ClientOrderId = method_exists($tp1Order, 'getClientOrderId') ? $tp1Order->getClientOrderId() : ($tp1Order["clientOrderId"] ?? null);
+                $tp1Status = method_exists($tp1Order, 'getStatus') ? $tp1Order->getStatus() : ($tp1Order["status"] ?? 'UNKNOWN');
+
+                $ordersModelTp1 = new orders_model();
+                $ordersModelTp1->populate([
+                    'binance_order_id' => $tp1OrderId,
+                    'binance_client_order_id' => $tp1ClientOrderId,
                     'symbol' => $symbol,
                     'side' => 'SELL',
                     'type' => 'TAKE_PROFIT',
-                    'order_type' => 'take_profit',
-                    'stop_price' => $orderConfigs["profit"],
-                    'quantity' => $qtdProfit,
-                    'status' => $tpStatus,
+                    'order_type' => 'take_profit_1',
+                    'stop_price' => $orderConfigs["tp1_price"],
+                    'quantity' => $qtdTp1,
+                    'status' => $tp1Status,
                     'order_created_at' => round(microtime(true) * 1000),
-                    'api_response' => json_encode(is_object($takeProfitOrder) ? json_decode(json_encode($takeProfitOrder), true) : $takeProfitOrder)
+                    'api_response' => json_encode(is_object($tp1Order) ? json_decode(json_encode($tp1Order), true) : $tp1Order)
                 ]);
-                $tpOrderIdx = $ordersModel2->save();
+                $tp1OrderIdx = $ordersModelTp1->save();
+                $ordersModelTp1->save_attach(['idx' => $tp1OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
 
-                // Relacionar ordem com trade usando save_attach
-                $ordersModel2->save_attach(['idx' => $tpOrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
-
-                $this->logTradeOperation($symbol, 'TAKE_PROFIT_SUCCESS', [
-                    'orderId' => $tpOrderId,
-                    'quantity' => $qtdProfit,
-                    'stopPrice' => $orderConfigs["profit"]
+                $this->logTradeOperation($symbol, 'TAKE_PROFIT_1_CREATED', [
+                    'orderId' => $tp1OrderId,
+                    'quantity' => $qtdTp1,
+                    'stopPrice' => $orderConfigs["tp1_price"]
                 ]);
 
-                $tradesLogModel2 = new tradelogs_model();
-                $tradesLogModel2->populate([
+                $tradesLogModelTp1 = new tradelogs_model();
+                $tradesLogModelTp1->populate([
                     'trades_id' => $tradeIdx,
                     'log_type' => 'success',
-                    'event' => 'order_executed',
-                    'message' => "Ordem de take profit criada: $tpOrderId",
+                    'event' => 'tp1_created',
+                    'message' => "Ordem de TP1 criada: $tp1OrderId",
                     'data' => json_encode([
-                        'order_id' => $tpOrderId,
-                        'stop_price' => $orderConfigs["profit"],
-                        'quantity' => $qtdProfit
+                        'order_id' => $tp1OrderId,
+                        'stop_price' => $orderConfigs["tp1_price"],
+                        'quantity' => $qtdTp1
                     ])
                 ]);
-                $tradesLogModel2->save();
+                $tradesLogModelTp1->save();
+
+                // TP2 – TAKE_PROFIT_LIMIT (limit quando stopPrice for atingido) [web:12][web:24][web:65]
+                $tp2Req = new NewOrderRequest();
+                $tp2Req->setSymbol($symbol);
+                $tp2Req->setSide(Side::SELL);
+                $tp2Req->setType(OrderType::TAKE_PROFIT_LIMIT);
+                $tp2Req->setTimeInForce('GTC');
+                $tp2Req->setQuantity($qtdTp2);
+                $tp2Req->setStopPrice((float)$orderConfigs["tp2_stop_price"]);
+                $tp2Req->setPrice((float)$orderConfigs["tp2_limit_price"]);
+
+                $tp2Resp = $this->client->newOrder($tp2Req);
+                $tp2Order = $tp2Resp->getData();
+
+                $tp2OrderId = method_exists($tp2Order, 'getOrderId') ? $tp2Order->getOrderId() : ($tp2Order["orderId"] ?? null);
+                $tp2ClientOrderId = method_exists($tp2Order, 'getClientOrderId') ? $tp2Order->getClientOrderId() : ($tp2Order["clientOrderId"] ?? null);
+                $tp2Status = method_exists($tp2Order, 'getStatus') ? $tp2Order->getStatus() : ($tp2Order["status"] ?? 'UNKNOWN');
+
+                $ordersModelTp2 = new orders_model();
+                $ordersModelTp2->populate([
+                    'binance_order_id' => $tp2OrderId,
+                    'binance_client_order_id' => $tp2ClientOrderId,
+                    'symbol' => $symbol,
+                    'side' => 'SELL',
+                    'type' => 'TAKE_PROFIT_LIMIT',
+                    'order_type' => 'take_profit_2',
+                    'stop_price' => $orderConfigs["tp2_stop_price"],
+                    'price' => $orderConfigs["tp2_limit_price"],
+                    'quantity' => $qtdTp2,
+                    'status' => $tp2Status,
+                    'order_created_at' => round(microtime(true) * 1000),
+                    'api_response' => json_encode(is_object($tp2Order) ? json_decode(json_encode($tp2Order), true) : $tp2Order)
+                ]);
+                $tp2OrderIdx = $ordersModelTp2->save();
+                $ordersModelTp2->save_attach(['idx' => $tp2OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
+
+                $this->logTradeOperation($symbol, 'TAKE_PROFIT_2_CREATED', [
+                    'orderId' => $tp2OrderId,
+                    'quantity' => $qtdTp2,
+                    'stopPrice' => $orderConfigs["tp2_stop_price"],
+                    'limitPrice' => $orderConfigs["tp2_limit_price"]
+                ]);
+
+                $tradesLogModelTp2 = new tradelogs_model();
+                $tradesLogModelTp2->populate([
+                    'trades_id' => $tradeIdx,
+                    'log_type' => 'success',
+                    'event' => 'tp2_created',
+                    'message' => "Ordem de TP2 criada: $tp2OrderId",
+                    'data' => json_encode([
+                        'order_id' => $tp2OrderId,
+                        'stop_price' => $orderConfigs["tp2_stop_price"],
+                        'limit_price' => $orderConfigs["tp2_limit_price"],
+                        'quantity' => $qtdTp2
+                    ])
+                ]);
+                $tradesLogModelTp2->save();
             }
         } catch (Exception $e) {
             $this->logBinanceError('executarOrdens', $e->getMessage(), [
@@ -624,7 +687,6 @@ class setup_controller
                 'orderConfigs' => $orderConfigs
             ]);
 
-            // Registrar erro no log do trade
             if (isset($tradeIdx)) {
                 $tradesLogModel = new tradelogs_model();
                 $tradesLogModel->populate([
@@ -640,19 +702,60 @@ class setup_controller
         }
     }
 
-    public function getOrderDetailsForSymbol(string $symbol, float $currentPrice, float $takeProfit, float $investimento): array
-    {
+    public function getOrderDetailsForSymbol(
+        string $symbol,
+        float $currentPrice,
+        float $takeProfit1,
+        float $takeProfit2,
+        float $investimento
+    ): array {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
             list($stepSize, $tickSize) = $this->extractFilters($symbolData);
 
-            $takeProfit = (float) $takeProfit;
-            $quantity = $this->calculateAdjustedQuantity($investimento, $currentPrice, $stepSize);
-            $takeProfit = $this->adjustPriceToTickSize($takeProfit, $tickSize);
+            $stepSizeFloat = (float)$stepSize;
+
+            // Quantidade total
+            $quantityTotal = $this->calculateAdjustedQuantity($investimento, $currentPrice, $stepSize);
+
+            $quantityTotalFloat = (float)$quantityTotal;
+            if ($quantityTotalFloat <= 0) {
+                return [
+                    'quantity_total' => '0',
+                    'quantity_tp1' => '0',
+                    'quantity_tp2' => '0',
+                    'tp1_price' => '0',
+                    'tp2_stop_price' => '0',
+                    'tp2_limit_price' => '0',
+                ];
+            }
+
+            // Split: 40% TP1, 60% TP2
+            $qtdTp1Float = floor(($quantityTotalFloat * 0.4) / $stepSizeFloat) * $stepSizeFloat;
+            $qtdTp2Float = $quantityTotalFloat - $qtdTp1Float;
+
+            $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+            $qtdTp1 = number_format($qtdTp1Float, $decimalPlacesQty, '.', '');
+            $qtdTp2 = number_format($qtdTp2Float, $decimalPlacesQty, '.', '');
+
+            // Ajuste de preços para tickSize [web:12][web:17]
+            $tp1Price = $this->adjustPriceToTickSize($takeProfit1, $tickSize);
+
+            $tp2StopRaw = $takeProfit2;
+            $tp2StopPrice = $this->adjustPriceToTickSize($tp2StopRaw, $tickSize);
+
+            // Para limitar slippage, define-se o limitPrice levemente abaixo do stopPrice (para SELL)
+            $tickSizeFloat = (float)$tickSize;
+            $tp2LimitRaw = ((float)$tp2StopPrice) - $tickSizeFloat;
+            $tp2LimitPrice = $this->adjustPriceToTickSize($tp2LimitRaw, $tickSize);
 
             return [
-                'quantity' => $quantity,
-                'profit' => $takeProfit,
+                'quantity_total' => $quantityTotal,
+                'quantity_tp1' => $qtdTp1,
+                'quantity_tp2' => $qtdTp2,
+                'tp1_price' => $tp1Price,
+                'tp2_stop_price' => $tp2StopPrice,
+                'tp2_limit_price' => $tp2LimitPrice,
             ];
         } catch (Exception $e) {
             throw new Exception("Erro ao calcular detalhes da ordem: " . $e->getMessage());

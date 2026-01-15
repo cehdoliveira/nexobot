@@ -92,11 +92,11 @@ class MigrationRunner
             try {
                 $this->executeMigration($sql);
                 $this->recordMigration($migration_name, 'success', null);
-                $this->log("✅ OK: {$migration_name}");
+                // $this->log("✅ OK: {$migration_name}"); Descomentar para Debug
                 $results['executed'][] = $migration_name;
             } catch (Exception $e) {
                 $this->recordMigration($migration_name, 'failed', $e->getMessage());
-                $this->log("❌ ERRO: {$migration_name} - {$e->getMessage()}");
+                // $this->log("❌ ERRO: {$migration_name} - {$e->getMessage()}"); Descomentar para Debug
                 $results['failed'][] = $migration_name;
             }
         }
