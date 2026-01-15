@@ -28,4 +28,4 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 */5 * * * * php /var/www/nexobot/site/cgi-bin/run_migrations.php >> /var/www/nexobot/_data/logs/migrations.log 2>&1
 
 # Cron existente (a cada 15 minutos)
-*/15 * * * * echo "Cron rodou em $(date)" >> /var/www/html/cron-test.log && php /var/www/nexobot/site/cgi-bin/verify_entry.php
+*/5 * * * * echo "Cron rodou em $(date)" >> /var/www/html/cron-test.log && php /var/www/nexobot/site/cgi-bin/verify_entry.php
