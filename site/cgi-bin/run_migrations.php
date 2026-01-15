@@ -6,7 +6,7 @@
  * Executa todas as migrations pendentes do banco de dados
  * 
  * Uso:
- *   php run-migrations.php
+ *   php run_migrations.php
  */
 
 define('APP_PATH', realpath(__DIR__ . '/../app'));
