@@ -2,6 +2,9 @@
 
 use Binance\Client\Spot\Api\SpotRestApi;
 use Binance\Client\Spot\SpotRestApiUtil;
+use Binance\Client\Spot\Model\NewOrderRequest;
+use Binance\Client\Spot\Model\Side;
+use Binance\Client\Spot\Model\OrderType;
 
 class site_controller
 {
@@ -13,6 +16,26 @@ class site_controller
         // Verificar login
         if (!auth_controller::check_login()) {
             basic_redir($GLOBALS["login_url"]);
+        }
+
+        // Verificar se é uma ação AJAX (antes de renderizar HTML)
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            header('Content-Type: application/json; charset=utf-8');
+            
+            // Obter dados da requisição (JSON ou FormData)
+            $input = $_POST;
+            if (empty($input)) {
+                $rawInput = file_get_contents('php://input');
+                if (!empty($rawInput)) {
+                    $input = json_decode($rawInput, true) ?: [];
+                }
+            }
+            
+            // Se há action, processar como AJAX
+            if (!empty($input['action'])) {
+                $this->handleAjaxActions($info, $input);
+                exit;
+            }
         }
 
         // === BUSCAR TRADES E ESTATÍSTICAS ===
@@ -168,7 +191,10 @@ class site_controller
                                 ];
                             }
                         } catch (Exception $e) {
-                            error_log("Erro ao buscar ordem #{$binanceOrderId}: " . $e->getMessage());
+                            // Silenciar erro de ordem não encontrada (esperado para ordens antigas da testnet)
+                            if (!isBinanceOrderNotFoundError($e)) {
+                                error_log("Erro ao buscar ordem #{$binanceOrderId}: " . $e->getMessage());
+                            }
                         }
                     }
                 }
@@ -300,8 +326,16 @@ class site_controller
             $binanceOrderId = $takeProfitOrder['binance_order_id'];
 
             // Consultar status na Binance
-            $response = $api->getOrder($symbol, $binanceOrderId);
-            $orderData = $response->getData();
+            try {
+                $response = $api->getOrder($symbol, $binanceOrderId);
+                $orderData = $response->getData();
+            } catch (Exception $apiEx) {
+                // Ordem não existe mais na Binance (comum em testnet)
+                if (isBinanceOrderNotFoundError($apiEx)) {
+                    return;
+                }
+                throw $apiEx; // Re-lançar outros erros
+            }
 
             $status = is_array($orderData) ? ($orderData['status'] ?? null) : (method_exists($orderData, 'getStatus') ? $orderData->getStatus() : null);
 
@@ -443,4 +477,359 @@ class site_controller
      * @param array $tradeData Dados completos do trade
      * @param array $takeProfitOrder Dados da ordem de take profit do banco
      */
+
+    /**
+     * Manipula ações AJAX do dashboard
+     */
+    private function handleAjaxActions($info, $input = [])
+    {
+        // Verificar login
+        if (!auth_controller::check_login()) {
+            echo json_encode(['success' => false, 'message' => 'Não autenticado'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        // Obter dados da requisição se não fornecidos
+        if (empty($input)) {
+            $input = $_POST;
+            if (empty($input)) {
+                $rawInput = file_get_contents('php://input');
+                if (!empty($rawInput)) {
+                    $input = json_decode($rawInput, true) ?: [];
+                }
+            }
+        }
+
+        $action = $input['action'] ?? null;
+
+        switch ($action) {
+            case 'closeAllPositions':
+                $this->closeAllPositions();
+                break;
+            default:
+                echo json_encode(['success' => false, 'message' => 'Ação não encontrada'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+
+        exit;
+    }
+
+    /**
+     * Encerra todas as posições abertas na Binance
+     * - Busca as ordens do banco de dados associadas aos trades abertos
+     * - Verifica o status REAL de cada ordem na Binance
+     * - Se FILLED: atualiza banco de dados
+     * - Se ABERTA: cancela
+     * - Vende os ativos dos trades abertos
+     */
+    private function closeAllPositions()
+    {
+        try {
+            // Inicializar API Binance
+            $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+            $configurationBuilder->apiKey(binanceAPIKey)->secretKey(binanceSecretKey);
+            $api = new SpotRestApi($configurationBuilder->build());
+
+            $cancelledOrders = [];
+            $filledOrders = [];
+            $soldPositions = [];
+            $errors = [];
+            $symbolsToSell = []; // Guardar símbolos dos trades abertos
+
+            // 1. Buscar TODOS os trades abertos no banco de dados
+            $tradesModel = new trades_model();
+            $tradesModel->set_filter(["active = 'yes'", "status = 'open'"]);
+            $tradesModel->load_data();
+            $openTrades = $tradesModel->data;
+
+            if (empty($openTrades)) {
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Nenhum trade aberto para encerrar',
+                    'cancelled_orders' => [],
+                    'filled_orders' => [],
+                    'sold_positions' => [],
+                    'errors' => []
+                ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+
+            // 2. Para cada trade aberto, buscar e processar as ordens associadas
+            foreach ($openTrades as $trade) {
+                $tradeIdx = $trade['idx'];
+                $symbol = $trade['symbol'];
+                $quantity = (float)($trade['quantity'] ?? 0);
+
+                $symbolsToSell[$symbol] = $quantity; // Guardar para venda posterior
+
+                // Buscar ordens deste trade no banco de dados
+                $ordersModel = new orders_model();
+                $sql = "SELECT o.* FROM orders o 
+                        INNER JOIN orders_trades ot ON ot.orders_id = o.idx 
+                        WHERE o.active = 'yes' 
+                        AND ot.active = 'yes' 
+                        AND ot.trades_id = '{$tradeIdx}'";
+                $ordersModel->set_direct_query($sql);
+                $ordersModel->load_data();
+
+                // Processar cada ordem
+                foreach ($ordersModel->data as $order) {
+                    try {
+                        $binanceOrderId = $order['binance_order_id'];
+                        
+                        // Consultar status REAL na Binance
+                        $actualStatus = null;
+                        $actualOrderData = null;
+                        
+                        try {
+                            $response = $api->getOrder($symbol, $binanceOrderId);
+                            $actualOrderData = $response->getData();
+                            $actualStatus = is_array($actualOrderData) ? ($actualOrderData['status'] ?? null) : $actualOrderData->getStatus();
+                        } catch (Exception $apiEx) {
+                            if (isBinanceOrderNotFoundError($apiEx)) {
+                                $actualStatus = 'NOT_FOUND';
+                            } else {
+                                throw $apiEx;
+                            }
+                        }
+
+                        // Processar baseado no status
+                        if ($actualStatus === 'FILLED') {
+                            // Ordem já foi preenchida - atualizar no banco de dados
+                            $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                            $ordersModel->populate([
+                                'status' => 'FILLED',
+                                'executed_qty' => $actualOrderData['executedQty'] ?? $actualOrderData->getExecutedQty() ?? $order['quantity']
+                            ]);
+                            $ordersModel->save();
+
+                            $filledOrders[] = [
+                                'symbol' => $symbol,
+                                'orderId' => $binanceOrderId,
+                                'type' => $order['order_type'] ?? 'N/A',
+                                'status' => 'FILLED (já estava preenchida)'
+                            ];
+
+                        } elseif ($actualStatus === 'NOT_FOUND' || $actualStatus === 'CANCELLED') {
+                            // Ordem já foi cancelada na Binance
+                            
+                            // Apenas marcar como cancelada no banco
+                            $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                            $ordersModel->populate(['active' => 'no', 'status' => 'CANCELLED']);
+                            $ordersModel->save();
+
+                            $cancelledOrders[] = [
+                                'symbol' => $symbol,
+                                'orderId' => $binanceOrderId,
+                                'type' => $order['order_type'] ?? 'N/A',
+                                'status' => 'Já estava cancelada'
+                            ];
+
+                        } else {
+                            // Ordem está aberta (NEW, PARTIALLY_FILLED, etc) - CANCELAR
+                            try {
+                                $api->deleteOrder($symbol, $binanceOrderId);
+                            } catch (Exception $cancelEx) {
+                                // Código -2011 = "Unknown order sent" = ordem já foi FILLED ou deletada
+                                if (strpos($cancelEx->getMessage(), '-2011') === false && !isBinanceOrderNotFoundError($cancelEx)) {
+                                    throw $cancelEx;
+                                }
+                            }
+
+                            // Cancelar no banco de dados
+                            $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                            $ordersModel->populate(['active' => 'no', 'status' => 'CANCELLED']);
+                            $ordersModel->save();
+
+                            $cancelledOrders[] = [
+                                'symbol' => $symbol,
+                                'orderId' => $binanceOrderId,
+                                'type' => $order['order_type'] ?? 'N/A'
+                            ];
+                        }
+
+                    } catch (Exception $e) {
+                        $errors[] = "Erro ao processar ordem #{$order['binance_order_id']}: " . $e->getMessage();
+                    }
+                }
+            }
+
+            // 3. Vender os ativos dos trades abertos
+            foreach ($symbolsToSell as $symbol => $quantity) {
+                if (!$symbol || $quantity <= 0) {
+                    continue;
+                }
+
+                try {
+                    // Extrair o asset do símbolo (ex: "SOLUSDC" -> "SOL")
+                    $asset = str_replace('USDC', '', $symbol);
+
+                    // Buscar saldo atual da conta
+                    $accountInfo = $api->getAccount();
+                    $accountData = $accountInfo->getData();
+
+                    $assetFound = false;
+                    if ($accountData && isset($accountData["balances"])) {
+                        foreach ($accountData["balances"] as $balance) {
+                            if ($balance["asset"] === $asset) {
+                                $assetFound = true;
+                                $free = (float)($balance["free"] ?? 0);
+
+                                if ($free > 0) {
+                                    // Vender tudo do ativo
+                                    
+                                    $newOrderReq = new NewOrderRequest();
+                                    $newOrderReq->setSymbol($symbol);
+                                    $newOrderReq->setSide(Side::SELL);
+                                    $newOrderReq->setType(OrderType::MARKET);
+                                    $newOrderReq->setQuantity($free);
+
+                                    $response = $api->newOrder($newOrderReq);
+
+                                    $orderData = $response->getData();
+                                    $orderId = method_exists($orderData, 'getOrderId') ? $orderData->getOrderId() : ($orderData['orderId'] ?? null);
+                                    
+                                    $soldPositions[] = [
+                                        'symbol' => $symbol,
+                                        'quantity' => $free,
+                                        'orderId' => $orderId
+                                    ];
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception $e) {
+                    $asset = str_replace('USDC', '', $symbol);
+                    $errors[] = "Erro ao vender {$asset}: " . $e->getMessage();
+                }
+            }
+
+            // Montar mensagem de sucesso
+            $totalProcessed = count($cancelledOrders) + count($filledOrders);
+            $message = [];
+            $message[] = "Ordens processadas: {$totalProcessed}";
+            if (!empty($cancelledOrders)) {
+                $message[] = "Canceladas: " . count($cancelledOrders);
+            }
+            if (!empty($filledOrders)) {
+                $message[] = "Já preenchidas: " . count($filledOrders);
+            }
+            $message[] = "Posições vendidas: " . count($soldPositions);
+
+            if (!empty($errors)) {
+                $message[] = "Erros: " . count($errors);
+            }
+
+            // ========================================
+            // 4. FECHAR OS TRADES NO BANCO DE DADOS
+            // ========================================
+            $closedTradesCount = 0;
+            
+            foreach ($openTrades as $trade) {
+                try {
+                    // Criar nova instância do model para cada trade
+                    $tradeModel = new trades_model();
+                    $tradeModel->set_filter(["idx = '{$trade['idx']}'"]);
+                    $tradeModel->load_data();
+                    
+                    if (!empty($tradeModel->data)) {
+                        $tradeData = $tradeModel->data[0];
+                        
+                        // Calcular o preço de saída médio baseado nas vendas realizadas
+                        $exitPrice = 0;
+                        $symbol = $tradeData['symbol'];
+                        
+                        // Se vendemos este símbolo, usar o preço de venda
+                        if (isset($soldPositions[$symbol])) {
+                            $exitPrice = $soldPositions[$symbol]['price'];
+                        } else {
+                            // Se não vendemos, é porque já estava vendido (TP executado)
+                            // Buscar o preço da última ordem FILLED deste trade
+                            $exitPrice = null;
+                            
+                            // Procurar ordens FILLED deste trade
+                            foreach ($filledOrders as $filledOrder) {
+                                if ($filledOrder['symbol'] === $symbol) {
+                                    // Buscar detalhes da ordem FILLED na Binance
+                                    try {
+                                        $orderResp = $api->getOrder($symbol, $filledOrder['orderId']);
+                                        $orderData = $orderResp->getData();
+                                        
+                                        if (!is_array($orderData)) {
+                                            $orderData = json_decode(json_encode($orderData), true);
+                                        }
+                                        
+                                        // Preço médio de execução
+                                        $exitPrice = floatval($orderData['price'] ?? $orderData['avgPrice'] ?? 0);
+                                        
+                                        if ($exitPrice > 0) {
+                                            break; // Encontrou o preço
+                                        }
+                                    } catch (Exception $priceEx) {
+                                        // Silenciar erro de busca de preço
+                                    }
+                                }
+                            }
+                            
+                            // Se ainda não encontrou o preço, usar entry_price (assume break-even)
+                            if (!$exitPrice || $exitPrice <= 0) {
+                                $exitPrice = floatval($tradeData['entry_price']);
+                            }
+                        }
+                        
+                        // Calcular P/L
+                        $entryPrice = floatval($tradeData['entry_price']);
+                        $quantity = floatval($tradeData['quantity']);
+                        $profitLoss = ($exitPrice - $entryPrice) * $quantity;
+                        $profitLossPercent = (($exitPrice - $entryPrice) / $entryPrice) * 100;
+                        
+                        // Atualizar o trade como fechado
+                        $tradeModel->populate([
+                            'status' => 'closed',
+                            'exit_type' => 'emergency_close',
+                            'exit_price' => $exitPrice,
+                            'profit_loss' => $profitLoss,
+                            'profit_loss_percent' => $profitLossPercent,
+                            'closed_at' => date('Y-m-d H:i:s')
+                        ]);
+                        
+                        $tradeModel->save(); // DOLModel vai limpar cache automaticamente
+                        $closedTradesCount++;
+                    }
+                } catch (Exception $closeEx) {
+                    $errors[] = "Erro ao fechar trade #{$trade['idx']}: " . $closeEx->getMessage();
+                }
+            }
+
+            // ========================================
+            // 5. LIMPAR CACHE DO REDIS ANTES DE RETORNAR
+            // ========================================
+            try {
+                $redis = RedisCache::getInstance();
+                $redis->deletePattern('*trades*');
+                $redis->deletePattern('*orders*');
+                $redis->deletePattern('*walletbalances*');
+                $redis->deletePattern('*dashboard*');
+            } catch (Exception $cacheEx) {
+                error_log("⚠️ Erro ao limpar cache do Redis: " . $cacheEx->getMessage());
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => implode(' | ', $message),
+                'cancelled_orders' => $cancelledOrders,
+                'filled_orders' => $filledOrders,
+                'sold_positions' => $soldPositions,
+                'closed_trades' => $closedTradesCount,
+                'errors' => $errors
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            error_log("❌ Erro ao encerrar posições: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+    }
+
 }

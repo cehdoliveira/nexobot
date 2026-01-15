@@ -65,6 +65,7 @@ $dispatcher->add_route("GET", "/sair", "auth_controller:logout", null, $params);
 
 // Dashboard (home protegida - requer login)
 $dispatcher->add_route("GET", "/?", "site_controller:dashboard", null, $params);
+$dispatcher->add_route("POST", "/?", "site_controller:dashboard", null, $params);
 
 // Rotas protegidas
 if (auth_controller::check_login()) {

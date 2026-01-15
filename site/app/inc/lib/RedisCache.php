@@ -205,23 +205,35 @@ class RedisCache
         }
 
         try {
+            // Quando OPT_PREFIX está ativo, precisamos usar o padrão sem prefixo
+            // pois o Redis adiciona automaticamente
             $keys = $this->redis->keys($pattern);
+            
             if (empty($keys)) {
-                return 0;
-            }
-            return $this->redis->del($keys);
-        } catch (Exception $e) {
-            error_log('RedisCache::deletePattern Error: ' . $e->getMessage());
             return 0;
         }
+        
+        // Remover o prefixo das chaves retornadas para usar com del()
+        // pois del() também adiciona o prefixo automaticamente
+        $keysWithoutPrefix = array_map(function($key) {
+            return str_replace($this->prefix, '', $key);
+        }, $keys);
+        
+        $deleted = $this->redis->del($keysWithoutPrefix);
+        
+        return $deleted;
+    } catch (Exception $e) {
+        error_log('RedisCache::deletePattern Error: ' . $e->getMessage());
+        return 0;
     }
+}
 
-    /**
-     * Limpa todo o cache do database atual
-     * 
-     * @return bool
-     */
-    public function flush(): bool
+/**
+ * Limpa todo o cache do database atual
+ * 
+ * @return bool
+ */
+public function flush(): bool
     {
         if (!$this->isConnected()) {
             return false;
@@ -410,6 +422,42 @@ class RedisCache
             error_log('RedisCache::info Error: ' . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Lista todas as chaves que correspondem a um padrão
+     * 
+     * @param string $pattern Padrão (ex: 'user:*', 'session:*')
+     * @return array Lista de chaves (sem prefixo)
+     */
+    public function keys(string $pattern = '*'): array
+    {
+        if (!$this->isConnected()) {
+            return [];
+        }
+
+        try {
+            $keys = $this->redis->keys($pattern);
+            
+            // Remover prefixo das chaves retornadas
+            return array_map(function($key) {
+                return str_replace($this->prefix, '', $key);
+            }, $keys);
+        } catch (Exception $e) {
+            error_log('RedisCache::keys Error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Retorna o número de chaves que correspondem a um padrão
+     * 
+     * @param string $pattern Padrão (ex: 'user:*', 'session:*')
+     * @return int Número de chaves
+     */
+    public function countKeys(string $pattern = '*'): int
+    {
+        return count($this->keys($pattern));
     }
 
     /**

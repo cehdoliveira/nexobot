@@ -14,6 +14,11 @@
                     <button class="btn btn-outline-primary btn-sm" @click="refreshData()">
                         <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Atualizar</span>
                     </button>
+                    <button class="btn btn-danger btn-sm" @click="closeAllPositions()" :disabled="isClosingPositions">
+                        <i class="bi bi-exclamation-triangle"></i> 
+                        <span class="d-none d-sm-inline" x-text="isClosingPositions ? 'Encerrando...' : 'Encerrar Tudo'"></span>
+                        <span class="d-sm-none" x-text="isClosingPositions ? '...' : 'Encerrar'"></span>
+                    </button>
                 </div>
             </div>
         </div>

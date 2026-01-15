@@ -15,3 +15,5 @@ CREATE TABLE IF NOT EXISTS `profiles` (
     `parent` INT DEFAULT '0',
     PRIMARY KEY (`idx`)
 );
+
+INSERT INTO `profiles` (`created_at`, `created_by`, `active`, `name`, `editabled`, `slug`, `adm`, `parent`) VALUES (NOW(), '0', 'yes', 'Administrador', 'yes', 'admin', 'yes', '0');

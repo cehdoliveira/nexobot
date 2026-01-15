@@ -366,3 +366,32 @@ function sanitize_string($value, $digitsOnly = false)
 
   return $value;
 }
+
+/**
+ * Verifica se uma exceção da Binance é do tipo "ordem não existe"
+ * Útil para silenciar logs de ordens antigas/expiradas na testnet
+ * 
+ * @param Exception $e A exceção capturada
+ * @return bool True se a exceção for de "ordem não existe"
+ */
+function isBinanceOrderNotFoundError($e)
+{
+  $message = $e->getMessage();
+
+  // Verificar código de erro -2013 (Order does not exist)
+  if (strpos($message, '-2013') !== false) {
+    return true;
+  }
+
+  // Verificar mensagem em inglês
+  if (stripos($message, 'order does not exist') !== false) {
+    return true;
+  }
+
+  // Verificar outras variações
+  if (stripos($message, 'order not found') !== false) {
+    return true;
+  }
+
+  return false;
+}
