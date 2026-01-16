@@ -3,7 +3,7 @@ services:
   # 📦 PHP Application Server (Site)
   # ============================================
   app:
-    image: <SUA_IMAGEM_CUSTOMIZADA>  # Imagem customizada com extensões pré-instaladas
+    image: <SUA_IMAGEM_CUSTOMIZADA>  # Ex.: <NOME_APP>:latest
     deploy:
       replicas: 1
       restart_policy:
@@ -23,7 +23,7 @@ services:
         # Traefik: Roteamento para Site
         - "traefik.enable=true"
         - "traefik.docker.network=<SUA_REDE_INTERNET_DO_PORTAINER>"
-        
+
         # Site (<SEU_DOMINIO>)
         - "traefik.http.routers.<NOME_APP>-site.rule=Host(`<SEU_DOMINIO>`)"
         - "traefik.http.routers.<NOME_APP>-site.entrypoints=websecure"
@@ -38,7 +38,7 @@ services:
       # Migrations SQL
       - /opt/<NOME_APP>/migrations:/var/www/<NOME_APP>/migrations:rw
       
-      # Logs compartilhados
+      # Logs compartilhados (garanta que o diretório existe)
       - /opt/<NOME_APP>/logs/apache2:/var/log/apache2:rw
 
       # Monta a raiz do projeto em /git para permitir git pull completo

@@ -120,6 +120,9 @@ tree -L 2 -d
 # │   └── prod       ← Arquivos de produção
 # ├── migrations
 # └── _data          ← Volumes persistentes
+
+# Criar diretório de logs para o bind mount do Apache
+mkdir -p /opt/<NOME_APP>/logs/apache2
 ```
 
 ---
@@ -312,12 +315,25 @@ Como ainda não temos o container rodando em Swarm, vamos instalar as dependênc
 ### 5.1 Instalar Composer
 
 ```bash
-# Executar container para instalar dependências
+# Executar Composer usando a imagem buildada, sem iniciar o Apache
 docker run --rm \
-  -v /opt/<NOME_APP>/site:/var/www/site \
-  -w /var/www/site/app/inc/lib \
+  --entrypoint composer \
+  -v /opt/<NOME_APP>/site:/var/www/<NOME_APP>/site \
+  -w /var/www/<NOME_APP>/site/app/inc/lib \
   <NOME_APP>:latest \
-  composer install --no-dev --optimize-autoloader
+  install --no-dev --optimize-autoloader
+```
+
+Observação:
+- O parâmetro `--entrypoint composer` evita que o entrypoint da imagem suba o Apache/cron — roda apenas o Composer e sai.
+- Alternativa (sem depender da imagem buildada):
+
+```bash
+docker run --rm \
+  -v /opt/<NOME_APP>/site/app/inc/lib:/app \
+  -w /app \
+  composer:2 \
+  install --no-dev --optimize-autoloader
 ```
 
 **Aguarde** a instalação de todas as dependências.
