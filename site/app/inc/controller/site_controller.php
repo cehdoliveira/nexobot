@@ -21,7 +21,7 @@ class site_controller
         // Verificar se é uma ação AJAX (antes de renderizar HTML)
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Content-Type: application/json; charset=utf-8');
-            
+
             // Obter dados da requisição (JSON ou FormData)
             $input = $_POST;
             if (empty($input)) {
@@ -30,7 +30,7 @@ class site_controller
                     $input = json_decode($rawInput, true) ?: [];
                 }
             }
-            
+
             // Se há action, processar como AJAX
             if (!empty($input['action'])) {
                 $this->handleAjaxActions($info, $input);
@@ -99,7 +99,7 @@ class site_controller
 
         // Usar os dados de closedTradesData já filtrados e ordenados
         usort($closedTradesData, fn($a, $b) => strtotime($b['closed_at'] ?? '0') - strtotime($a['closed_at'] ?? '0'));
-        
+
         $offset = ($page - 1) * $perPage;
         $closedTrades = array_slice($closedTradesData, $offset, $perPage);
         $totalPages = ceil(count($closedTradesData) / $perPage);
@@ -152,7 +152,7 @@ class site_controller
 
                 foreach ($openTrades as $trade) {
                     $symbol = $trade["symbol"];
-
+                    $ordersModel->set_filter(["idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$trade['idx']}')"]);
                     $ordersModel->attach(["trades"]);
                     $ordersModel->load_data();
 
@@ -303,14 +303,8 @@ class site_controller
 
             // Buscar ordem de TP deste trade
             $ordersModel = new orders_model();
-            $sql = "SELECT o.* FROM orders o 
-                    INNER JOIN orders_trades ot ON ot.orders_id = o.idx 
-                    WHERE o.active = 'yes' 
-                    AND ot.active = 'yes' 
-                    AND ot.trades_id = '{$tradeIdx}' 
-                    AND o.order_type = 'take_profit'
-                    AND o.tp_target = '{$tpTarget}'";
-            $ordersModel->set_direct_query($sql);
+            $ordersModel->set_filter(["idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND order_type = 'take_profit' AND tp_target = '{$tpTarget}'"]);
+            $ordersModel->attach(["trades"]);
             $ordersModel->load_data();
 
             if (empty($ordersModel->data)) {
@@ -338,13 +332,69 @@ class site_controller
                 return;
             }
 
-            // Se FILLED, processar
+            // Se FILLED, validar se o preço realmente atingiu o target
             if ($status === 'FILLED') {
                 $orderDataArray = is_array($orderData) ? $orderData : json_decode(json_encode($orderData), true);
+
+                // Obter stop price da ordem
+                $stopPrice = (float)($orderDataArray['stopPrice'] ?? 0);
+
+                if ($stopPrice == 0) {
+                    error_log("⚠️ Ordem {$binanceOrderId} marcada como FILLED mas sem stopPrice definido");
+                    return;
+                }
+
+                // Verificar se o preço atual realmente atingiu o target
+                $currentPrice = $this->getCurrentPrice($symbol, $api);
+
+                if ($currentPrice === null) {
+                    error_log("⚠️ Não foi possível obter preço atual de {$symbol} para validar {$tpTarget}");
+                    return;
+                }
+
+                // Validar se o preço atingiu o target (com tolerância de 0.1%)
+                $tolerance = 0.001; // 0.1%
+                $priceReached = $currentPrice >= ($stopPrice * (1 - $tolerance));
+
+                if (!$priceReached) {
+                    error_log("⚠️ {$tpTarget} do trade #{$tradeIdx} ({$symbol}) marcado como FILLED na Binance, mas preço atual (\${$currentPrice}) não atingiu target (\${$stopPrice}). IGNORANDO.");
+                    return;
+                }
+
+                // Preço validado, processar
                 $this->processTakeProfitFilled($tradeIdx, $symbol, $tpTarget, $orderDataArray, $takeProfitOrder, $trade, $walletBalance);
             }
         } catch (Exception $e) {
             error_log("Erro ao verificar {$tpTarget} para trade #{$tradeIdx}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Obtém o preço atual de um símbolo na Binance
+     */
+    private function getCurrentPrice(string $symbol, $api): ?float
+    {
+        try {
+            $response = $api->tickerPrice($symbol);
+            $data = $response->getData();
+
+            // A API retorna objeto com estrutura aninhada
+            if ($data && method_exists($data, 'getTickerPriceResponse1')) {
+                $priceData = $data->getTickerPriceResponse1();
+                if ($priceData && method_exists($priceData, 'getPrice')) {
+                    return (float)$priceData->getPrice();
+                }
+            }
+
+            // Fallback: tentar acessar diretamente
+            if ($data && method_exists($data, 'getPrice')) {
+                return (float)$data->getPrice();
+            }
+
+            return null;
+        } catch (Exception $e) {
+            error_log("Erro ao obter preço atual de {$symbol}: " . $e->getMessage());
+            return null;
         }
     }
 
@@ -558,23 +608,19 @@ class site_controller
 
                 // Buscar ordens deste trade no banco de dados
                 $ordersModel = new orders_model();
-                $sql = "SELECT o.* FROM orders o 
-                        INNER JOIN orders_trades ot ON ot.orders_id = o.idx 
-                        WHERE o.active = 'yes' 
-                        AND ot.active = 'yes' 
-                        AND ot.trades_id = '{$tradeIdx}'";
-                $ordersModel->set_direct_query($sql);
+                $ordersModel->set_filter(["idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}')"]);
+                $ordersModel->attach(['trades']);
                 $ordersModel->load_data();
 
                 // Processar cada ordem
                 foreach ($ordersModel->data as $order) {
                     try {
                         $binanceOrderId = $order['binance_order_id'];
-                        
+
                         // Consultar status REAL na Binance
                         $actualStatus = null;
                         $actualOrderData = null;
-                        
+
                         try {
                             $response = $api->getOrder($symbol, $binanceOrderId);
                             $actualOrderData = $response->getData();
@@ -603,10 +649,9 @@ class site_controller
                                 'type' => $order['order_type'] ?? 'N/A',
                                 'status' => 'FILLED (já estava preenchida)'
                             ];
-
                         } elseif ($actualStatus === 'NOT_FOUND' || $actualStatus === 'CANCELLED') {
                             // Ordem já foi cancelada na Binance
-                            
+
                             // Apenas marcar como cancelada no banco
                             $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
                             $ordersModel->populate(['active' => 'no', 'status' => 'CANCELLED']);
@@ -618,7 +663,6 @@ class site_controller
                                 'type' => $order['order_type'] ?? 'N/A',
                                 'status' => 'Já estava cancelada'
                             ];
-
                         } else {
                             // Ordem está aberta (NEW, PARTIALLY_FILLED, etc) - CANCELAR
                             try {
@@ -641,7 +685,6 @@ class site_controller
                                 'type' => $order['order_type'] ?? 'N/A'
                             ];
                         }
-
                     } catch (Exception $e) {
                         $errors[] = "Erro ao processar ordem #{$order['binance_order_id']}: " . $e->getMessage();
                     }
@@ -671,7 +714,7 @@ class site_controller
 
                                 if ($free > 0) {
                                     // Vender tudo do ativo
-                                    
+
                                     $newOrderReq = new NewOrderRequest();
                                     $newOrderReq->setSymbol($symbol);
                                     $newOrderReq->setSide(Side::SELL);
@@ -682,7 +725,7 @@ class site_controller
 
                                     $orderData = $response->getData();
                                     $orderId = method_exists($orderData, 'getOrderId') ? $orderData->getOrderId() : ($orderData['orderId'] ?? null);
-                                    
+
                                     $soldPositions[] = [
                                         'symbol' => $symbol,
                                         'quantity' => $free,
@@ -719,21 +762,21 @@ class site_controller
             // 4. FECHAR OS TRADES NO BANCO DE DADOS
             // ========================================
             $closedTradesCount = 0;
-            
+
             foreach ($openTrades as $trade) {
                 try {
                     // Criar nova instância do model para cada trade
                     $tradeModel = new trades_model();
                     $tradeModel->set_filter(["idx = '{$trade['idx']}'"]);
                     $tradeModel->load_data();
-                    
+
                     if (!empty($tradeModel->data)) {
                         $tradeData = $tradeModel->data[0];
-                        
+
                         // Calcular o preço de saída médio baseado nas vendas realizadas
                         $exitPrice = 0;
                         $symbol = $tradeData['symbol'];
-                        
+
                         // Se vendemos este símbolo, usar o preço de venda
                         if (isset($soldPositions[$symbol])) {
                             $exitPrice = $soldPositions[$symbol]['price'];
@@ -741,7 +784,7 @@ class site_controller
                             // Se não vendemos, é porque já estava vendido (TP executado)
                             // Buscar o preço da última ordem FILLED deste trade
                             $exitPrice = null;
-                            
+
                             // Procurar ordens FILLED deste trade
                             foreach ($filledOrders as $filledOrder) {
                                 if ($filledOrder['symbol'] === $symbol) {
@@ -749,14 +792,14 @@ class site_controller
                                     try {
                                         $orderResp = $api->getOrder($symbol, $filledOrder['orderId']);
                                         $orderData = $orderResp->getData();
-                                        
+
                                         if (!is_array($orderData)) {
                                             $orderData = json_decode(json_encode($orderData), true);
                                         }
-                                        
+
                                         // Preço médio de execução
                                         $exitPrice = floatval($orderData['price'] ?? $orderData['avgPrice'] ?? 0);
-                                        
+
                                         if ($exitPrice > 0) {
                                             break; // Encontrou o preço
                                         }
@@ -765,19 +808,19 @@ class site_controller
                                     }
                                 }
                             }
-                            
+
                             // Se ainda não encontrou o preço, usar entry_price (assume break-even)
                             if (!$exitPrice || $exitPrice <= 0) {
                                 $exitPrice = floatval($tradeData['entry_price']);
                             }
                         }
-                        
+
                         // Calcular P/L
                         $entryPrice = floatval($tradeData['entry_price']);
                         $quantity = floatval($tradeData['quantity']);
                         $profitLoss = ($exitPrice - $entryPrice) * $quantity;
                         $profitLossPercent = (($exitPrice - $entryPrice) / $entryPrice) * 100;
-                        
+
                         // Atualizar o trade como fechado
                         $tradeModel->populate([
                             'status' => 'closed',
@@ -787,7 +830,7 @@ class site_controller
                             'profit_loss_percent' => $profitLossPercent,
                             'closed_at' => date('Y-m-d H:i:s')
                         ]);
-                        
+
                         $tradeModel->save(); // DOLModel vai limpar cache automaticamente
                         $closedTradesCount++;
                     }
@@ -826,5 +869,4 @@ class site_controller
             ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         }
     }
-
 }

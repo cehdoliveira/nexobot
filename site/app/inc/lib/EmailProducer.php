@@ -48,9 +48,11 @@ class EmailProducer
             $conf = new \RdKafka\Conf();
             $conf->set('metadata.broker.list', $this->config['host'] . ':' . $this->config['port']);
             
-            // Timeout de produção
-            $conf->set('socket.timeout.ms', '50');
-            $conf->set('queue.buffering.max.ms', '100');
+            // Timeout de produção (aumentado para produção)
+            $conf->set('socket.timeout.ms', '5000');      // 5s para operações de socket
+            $conf->set('queue.buffering.max.ms', '1000'); // 1s para buffering
+            $conf->set('message.timeout.ms', '10000');    // 10s timeout total da mensagem
+            $conf->set('request.timeout.ms', '5000');     // 5s timeout de request
             
             // Criar producer
             $this->producer = new \RdKafka\Producer($conf);
@@ -110,18 +112,38 @@ class EmailProducer
             // Enviar para Kafka
             $this->topic->produce(RD_KAFKA_PARTITION_UA, 0, $message);
             
-            // Flush assíncrono
+            // Flush assíncrono inicial
             $this->producer->poll(0);
             
-            // Flush para garantir envio (com timeout)
-            for ($flushRetries = 0; $flushRetries < 10; $flushRetries++) {
-                $result = $this->producer->flush(100);
+            // Flush com retry inteligente (timeout progressivo)
+            // Total: até 30s para garantir sucesso mesmo em ambiente de produção
+            $maxRetries = 30;
+            $timeoutMs = 1000; // 1 segundo por tentativa
+            
+            for ($flushRetries = 0; $flushRetries < $maxRetries; $flushRetries++) {
+                $result = $this->producer->flush($timeoutMs);
+                
                 if (RD_KAFKA_RESP_ERR_NO_ERROR === $result) {
+                    // Sucesso!
+                    if ($flushRetries > 5) {
+                        // Log se demorou mais que 5 tentativas (5s)
+                        error_log("EmailProducer::sendEmail - Sucesso após {$flushRetries} tentativas");
+                    }
                     return true;
+                }
+                
+                // Se não é timeout, é um erro mais sério - abortar
+                if ($result !== RD_KAFKA_RESP_ERR__TIMED_OUT) {
+                    throw new Exception("Erro Kafka: " . rd_kafka_err2str($result));
+                }
+                
+                // Pequeno delay antes de retry (aumenta progressivamente)
+                if ($flushRetries < $maxRetries - 1) {
+                    usleep(100000); // 100ms entre tentativas
                 }
             }
             
-            throw new Exception("Falha ao enviar mensagem para Kafka após flush");
+            throw new Exception("Falha ao enviar mensagem para Kafka após {$maxRetries} tentativas ({$maxRetries}s)");
             
         } catch (Exception $e) {
             error_log("EmailProducer::sendEmail Error: " . $e->getMessage());
