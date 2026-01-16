@@ -505,28 +505,91 @@
                                 <thead class="table-light">
                                     <tr>
                                         <th class="text-nowrap">Símbolo</th>
-                                        <th class="text-nowrap d-none d-md-table-cell">Entrada</th>
-                                        <th class="text-nowrap d-none d-lg-table-cell">Saída</th>
+                                        <th class="text-nowrap">Tipo</th>
+                                        <th class="text-nowrap d-none d-md-table-cell">Preço</th>
+                                        <th class="text-nowrap d-none d-md-table-cell">Qtd</th>
                                         <th class="text-nowrap d-none d-lg-table-cell">Investimento</th>
                                         <th class="text-nowrap">Resultado</th>
                                         <th class="text-nowrap">%</th>
-                                        <th class="text-nowrap d-none d-xl-table-cell">Fechado em</th>
+                                        <th class="text-nowrap d-none d-xl-table-cell">Data</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach ($dashboardData['closed_trades'] as $trade): ?>
-                                        <tr>
+                                    <?php foreach ($dashboardData['closed_trades'] as $trade): 
+                                        // Calcular P/L para TP1
+                                        $tp1_qty = (float)($trade['tp1_executed_qty'] ?? 0);
+                                        $tp1_price = (float)($trade['take_profit_1_price'] ?? 0);
+                                        $tp1_revenue = $tp1_qty * $tp1_price;
+                                        $tp1_cost = $tp1_qty * (float)($trade['entry_price'] ?? 0);
+                                        $tp1_pl = $tp1_revenue - $tp1_cost;
+                                        $tp1_pl_percent = $tp1_cost > 0 ? ($tp1_pl / $tp1_cost) * 100 : 0;
+                                        
+                                        // Calcular P/L para TP2
+                                        $tp2_qty = (float)($trade['tp2_executed_qty'] ?? 0);
+                                        $tp2_price = (float)($trade['take_profit_2_price'] ?? 0);
+                                        $tp2_revenue = $tp2_qty * $tp2_price;
+                                        $tp2_cost = $tp2_qty * (float)($trade['entry_price'] ?? 0);
+                                        $tp2_pl = $tp2_revenue - $tp2_cost;
+                                        $tp2_pl_percent = $tp2_cost > 0 ? ($tp2_pl / $tp2_cost) * 100 : 0;
+                                    ?>
+                                        <!-- Linha de ENTRADA -->
+                                        <tr class="table-info">
                                             <td class="text-nowrap"><strong><?php echo htmlspecialchars($trade['symbol']); ?></strong></td>
-                                            <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($trade['entry_price'], 8); ?></td>
-                                            <td class="text-nowrap d-none d-lg-table-cell">$<?php echo number_format($trade['exit_price'] ?? 0, 8); ?></td>
-                                            <td class="text-nowrap d-none d-lg-table-cell">$<?php echo number_format($trade['investment'], 2); ?></td>
-                                            <td class="<?php echo ($trade['profit_loss'] ?? 0) >= 0 ? 'text-success' : 'text-danger'; ?> text-nowrap">
-                                                <strong>$<?php echo number_format($trade['profit_loss'] ?? 0, 2); ?></strong>
+                                            <td class="text-nowrap"><span class="badge bg-primary">ENTRADA</span></td>
+                                            <td class="text-nowrap d-none d-md-table-cell"><strong>$<?php echo number_format($trade['entry_price'], 8); ?></strong></td>
+                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($trade['quantity'], 2); ?></td>
+                                            <td class="text-nowrap d-none d-lg-table-cell"><strong>$<?php echo number_format($trade['investment'], 2); ?></strong></td>
+                                            <td colspan="2" class="text-center text-muted small">-</td>
+                                            <td class="text-nowrap d-none d-xl-table-cell text-muted small"><?php echo date('d/m H:i', strtotime($trade['opened_at'] ?? 'now')); ?></td>
+                                        </tr>
+                                        
+                                        <!-- Linha de TP1 -->
+                                        <?php if ($tp1_qty > 0): ?>
+                                        <tr class="<?php echo $tp1_pl >= 0 ? 'table-success' : 'table-danger'; ?>">
+                                            <td class="text-nowrap"></td>
+                                            <td class="text-nowrap"><span class="badge bg-success">TP1</span></td>
+                                            <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp1_price, 8); ?></td>
+                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp1_qty, 2); ?></td>
+                                            <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
+                                            <td class="text-nowrap">
+                                                <strong class="<?php echo $tp1_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp1_pl, 2); ?></strong>
                                             </td>
-                                            <td class="<?php echo ($trade['profit_loss_percent'] ?? 0) >= 0 ? 'text-success' : 'text-danger'; ?> text-nowrap">
-                                                <strong><?php echo number_format($trade['profit_loss_percent'] ?? 0, 2); ?>%</strong>
+                                            <td class="text-nowrap">
+                                                <strong class="<?php echo $tp1_pl_percent >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($tp1_pl_percent, 2); ?>%</strong>
                                             </td>
-                                            <td class="text-nowrap d-none d-xl-table-cell"><?php echo date('d/m/Y H:i', strtotime($trade['closed_at'])); ?></td>
+                                            <td class="text-nowrap d-none d-xl-table-cell text-muted small">-</td>
+                                        </tr>
+                                        <?php endif; ?>
+                                        
+                                        <!-- Linha de TP2 -->
+                                        <?php if ($tp2_qty > 0): ?>
+                                        <tr class="<?php echo $tp2_pl >= 0 ? 'table-success' : 'table-danger'; ?>">
+                                            <td class="text-nowrap"></td>
+                                            <td class="text-nowrap"><span class="badge bg-success">TP2</span></td>
+                                            <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp2_price, 8); ?></td>
+                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp2_qty, 2); ?></td>
+                                            <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
+                                            <td class="text-nowrap">
+                                                <strong class="<?php echo $tp2_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp2_pl, 2); ?></strong>
+                                            </td>
+                                            <td class="text-nowrap">
+                                                <strong class="<?php echo $tp2_pl_percent >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($tp2_pl_percent, 2); ?>%</strong>
+                                            </td>
+                                            <td class="text-nowrap d-none d-xl-table-cell text-muted small">-</td>
+                                        </tr>
+                                        <?php endif; ?>
+                                        
+                                        <!-- Linha de RESUMO TOTAL -->
+                                        <tr class="table-light border-bottom border-2">
+                                            <td colspan="4"><strong>TOTAL</strong></td>
+                                            <td class="d-none d-lg-table-cell text-muted small">-</td>
+                                            <td>
+                                                <strong class="<?php echo ($trade['profit_loss'] ?? 0) >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($trade['profit_loss'] ?? 0, 2); ?></strong>
+                                            </td>
+                                            <td>
+                                                <strong class="<?php echo ($trade['profit_loss_percent'] ?? 0) >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($trade['profit_loss_percent'] ?? 0, 2); ?>%</strong>
+                                            </td>
+                                            <td class="text-nowrap d-none d-xl-table-cell text-muted small"><?php echo date('d/m/Y H:i', strtotime($trade['closed_at'])); ?></td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>

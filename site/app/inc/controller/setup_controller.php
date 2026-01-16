@@ -154,7 +154,8 @@ class setup_controller
     public function display(): void
     {
         try {
-            $topMoedas = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "XRPUSDC", "ADAUSDC", "DOTUSDC", "AVAXUSDC", "LTCUSDC", "LINKUSDC", "UNIUSDC"];
+            // $topMoedas = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "XRPUSDC", "ADAUSDC", "DOTUSDC", "AVAXUSDC", "LTCUSDC", "LINKUSDC", "UNIUSDC"];
+            $topMoedas = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "XRPUSDC", "ADAUSDC", "LTCUSDC", "LINKUSDC", "AVAXUSDC", "AAVEUSDC"];
             $this->processSymbols($topMoedas);
         } catch (Exception $e) {
             $this->log("Erro no método display: " . $e->getMessage(), 'ERROR', 'SYSTEM');
@@ -600,7 +601,8 @@ class setup_controller
                     'symbol' => $symbol,
                     'side' => 'SELL',
                     'type' => 'TAKE_PROFIT',
-                    'order_type' => 'take_profit_1',
+                    'order_type' => 'take_profit',
+                    'tp_target' => 'tp1',
                     'stop_price' => $orderConfigs["tp1_price"],
                     'quantity' => $qtdTp1,
                     'status' => $tp1Status,
@@ -654,7 +656,8 @@ class setup_controller
                     'symbol' => $symbol,
                     'side' => 'SELL',
                     'type' => 'TAKE_PROFIT_LIMIT',
-                    'order_type' => 'take_profit_2',
+                    'order_type' => 'take_profit',
+                    'tp_target' => 'tp2',
                     'stop_price' => $orderConfigs["tp2_stop_price"],
                     'price' => $orderConfigs["tp2_limit_price"],
                     'quantity' => $qtdTp2,

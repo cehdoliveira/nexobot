@@ -97,17 +97,12 @@ class site_controller
         $perPage = isset($info["get"]["paginate"]) && (int)$info["get"]["paginate"] > 20 ? $info["get"]["paginate"] : 20;
         $page = isset($info["sr"]) && (int)$info["sr"] > 0 ? (int)$info["sr"] : 1;
 
-        $tradesModelClosed = new trades_model();
-        $tradesModelClosed->set_filter(["active = 'yes'", "status = 'closed'"]);
-        $tradesModelClosed->set_order(["closed_at DESC"]);
-        $tradesModelClosed->set_paginate([$page, $perPage]);
-        $tradesModelClosed->load_data();
-
-        // Paginação manual
-        $allClosedTrades = $tradesModelClosed->data;
+        // Usar os dados de closedTradesData já filtrados e ordenados
+        usort($closedTradesData, fn($a, $b) => strtotime($b['closed_at'] ?? '0') - strtotime($a['closed_at'] ?? '0'));
+        
         $offset = ($page - 1) * $perPage;
-        $closedTrades = array_slice($allClosedTrades, $offset, $perPage);
-        $totalPages = ceil(count($allClosedTrades) / $perPage);
+        $closedTrades = array_slice($closedTradesData, $offset, $perPage);
+        $totalPages = ceil(count($closedTradesData) / $perPage);
 
         // === BUSCAR SALDO DA CARTEIRA NA BINANCE ===
         try {
