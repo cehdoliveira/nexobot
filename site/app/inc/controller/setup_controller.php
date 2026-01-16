@@ -8,7 +8,7 @@ use Binance\Client\Spot\Model\OrderType;
 
 class setup_controller
 {
-    private const TIMEFRAME = "5m"; // 15 minutos
+    private const TIMEFRAME = "15m"; // 15 minutos
     private const QTD_CANDLES = 1000;
     private const BOLLINGER_PERIOD = 20;
     private const BOLLINGER_DEVIATION = 2;

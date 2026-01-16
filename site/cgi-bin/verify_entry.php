@@ -3,6 +3,9 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
+// Configurar timezone ANTES de qualquer operação com data/hora
+date_default_timezone_set("America/Sao_Paulo");
+
 // Log de início da execução
 $logMsg = "[" . date('Y-m-d H:i:s') . "] verify_entry.php - INÍCIO DA EXECUÇÃO\n";
 file_put_contents('/var/log/cron.log', $logMsg, FILE_APPEND);
