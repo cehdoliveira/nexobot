@@ -107,7 +107,7 @@ services:
     
     # Sobrescrever CMD padrão (apache) para rodar worker
     entrypoint: []
-    command: ["php", "/var/www/site/cgi-bin/kafka_email_worker.php"]
+    command: ["php", "/var/www/<NOME_APP>/site/cgi-bin/kafka_email_worker.php"]
     
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f kafka_email_worker.php || exit 1"]
