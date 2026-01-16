@@ -211,7 +211,7 @@ class setup_controller
     {
         try {
             $symbolsParam = implode(',', array_map(fn($s) => '"' . $s . '"', $symbols));
-            $url = "https://testnet.binance.vision/api/v3/exchangeInfo?symbols=[{$symbolsParam}]";
+            $url = "https://api.binance.com/api/v3/exchangeInfo?symbols=[{$symbolsParam}]";
             $response = $this->fetchApiData($url);
             $data = json_decode($response, true);
 
@@ -239,7 +239,7 @@ class setup_controller
     private function getBinanceData(string $symbol, string $interval, int $limit): array
     {
         try {
-            $url = "https://testnet.binance.vision/api/v3/klines?symbol={$symbol}&interval={$interval}&limit={$limit}";
+            $url = "https://api.binance.com/api/v3/klines?symbol={$symbol}&interval={$interval}&limit={$limit}";
             $response = $this->fetchApiData($url);
 
             if ($response === false) {
@@ -285,7 +285,7 @@ class setup_controller
         }
 
         try {
-            $url = "https://testnet.binance.vision/api/v3/exchangeInfo?symbol={$symbol}";
+            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
             $response = $this->fetchApiData($url);
 
             if ($response === false) {
