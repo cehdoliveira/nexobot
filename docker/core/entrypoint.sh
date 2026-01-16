@@ -4,6 +4,7 @@ set -e
 echo "Executando composer install nas pastas lib..."
 
 # Instalar dependências do composer para site
+# Altere o caminho: /var/www/nexobot para /var/www/<NOME_APP>
 if [ -f "/var/www/nexobot/site/app/inc/lib/composer.json" ]; then
     echo "Instalando dependências do site..."
     cd /var/www/nexobot/site/app/inc/lib

@@ -1,0 +1,73 @@
+<?php
+
+/**
+ * Kernel - Configuração Global
+ * PHP 8.4+ | MySQL 8.0 | Redis 7.2 | Kafka
+ * 
+ * INSTRUÇÕES:
+ * 1. Copie este arquivo para kernel.php
+ * 2. Substitua as tags <PLACEHOLDER> com seus valores
+ * 3. NÃO VERSIONAR em Git
+ */
+
+// ===== TIMEZONE E ENCODING =====
+date_default_timezone_set("America/Sao_Paulo");
+ini_set("default_charset", "UTF-8");
+ini_set("post_max_size", "4096M");
+ini_set("upload_max_filesize", "4096M");
+
+// ===== BANCO DE DADOS =====
+define("DB_HOST", "<DB_HOST>");           // Exemplo: mysql_<NOME_APP>
+define("DB_NAME", "<DB_NAME>");           // Exemplo: mysql_<NOME_APP>
+define("DB_USER", "<DB_USER>");           // Exemplo: user_<NOME_APP>
+define("DB_PASS", "<DB_PASS>");           // Exemplo: 123456
+
+// ===== REDIS =====
+define("REDIS_HOST", "<REDIS_HOST>");     // Exemplo: redis_<NOME_APP>
+define("REDIS_PORT", 6379);
+define("REDIS_PREFIX", "<NOME_APP>:site:");
+define("REDIS_DATABASE", 0);
+define("REDIS_ENABLED", true);
+define("REDIS_DEFAULT_TTL", 3600);
+
+// ===== KAFKA =====
+define("KAFKA_HOST", "<KAFKA_HOST>");     // Exemplo: kafka_<NOME_APP>
+define("KAFKA_PORT", "9092");
+define("KAFKA_TOPIC_EMAIL", "<NOME_APP>_site_emails");
+define("KAFKA_CONSUMER_GROUP", "<NOME_APP>-email-worker-group");
+
+// ===== EMAIL (SMTP) =====
+define("mail_from_name", "<PROJETO_NOME>");
+define("mail_from_mail", "noreply@<SEU_DOMINIO>");
+define("mail_from_host", "<SMTP_HOST>");   // Exemplo: smtp.gmail.com
+define("mail_from_port", "<SMTP_PORT>");   // Exemplo: 587
+define("mail_from_user", "<SMTP_USER>");
+define("mail_from_pwd", "<SMTP_PASS>");
+
+// ===== APLICAÇÃO =====
+define("cAppKey", "<NOME_APP>_site_session");
+define("cTitle", "<PROJETO_NOME>");
+define("cAppRoot", "/");
+define("cRootServer", sprintf("%s%s", $_SERVER["DOCUMENT_ROOT"], constant("cAppRoot")));
+define("cRootServer_APP", sprintf("%s%s", $_SERVER["DOCUMENT_ROOT"], constant("cAppRoot") . "../app"));
+define("cFrontend", sprintf("http://%s%s", $_SERVER["HTTP_HOST"] ?? "localhost", constant("cAppRoot")));
+define("cAssets", sprintf("%s%s", constant("cFrontend"), "assets/"));
+
+// ===== UPLOAD =====
+define("UPLOAD_DIR", "/var/www/<NOME_APP>/site/public_html/assets/upload/");
+define("UPLOAD_MAX_SIZE", 10);
+define("UPLOAD_ALLOWED_TYPES", "jpg,jpeg,png,gif,pdf,doc,docx,xls,xlsx");
+
+// ===== SESSÃO =====
+define("SESSION_LIFETIME", 7200);
+define("SESSION_USE_REDIS", false);
+
+// ===== INICIALIZAR REDIS =====
+if (REDIS_ENABLED && class_exists("RedisCache")) {
+    try {
+        $GLOBALS["redis"] = RedisCache::getInstance();
+    } catch (Exception $e) {
+        error_log("Redis Error: " . $e->getMessage());
+        $GLOBALS["redis"] = null;
+    }
+}
