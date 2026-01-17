@@ -17,7 +17,7 @@ class setup_controller
     private const API_LOG = 'binance_api.log';
     private const TRADE_LOG = 'trading.log';
 
-    private const CACHE_TTL_EXCHANGE_INFO = 3600;
+    private const CACHE_TTL_EXCHANGE_INFO = 60;
     private const CACHE_TTL_ACCOUNT_INFO = 2;
 
     private $client;

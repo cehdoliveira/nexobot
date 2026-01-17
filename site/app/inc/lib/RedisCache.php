@@ -112,7 +112,7 @@ class RedisCache
      * @param int $ttl Tempo de vida em segundos (0 = sem expiração)
      * @return bool
      */
-    public function set(string $key, $value, int $ttl = 3600): bool
+    public function set(string $key, $value, int $ttl = 60): bool
     {
         if (!$this->isConnected()) {
             return false;
@@ -337,7 +337,7 @@ public function flush(): bool
      * @param int $ttl Tempo de vida em segundos (aplicado a todas as chaves)
      * @return bool
      */
-    public function setMultiple(array $data, int $ttl = 3600): bool
+    public function setMultiple(array $data, int $ttl = 60): bool
     {
         if (!$this->isConnected() || empty($data)) {
             return false;
@@ -391,7 +391,7 @@ public function flush(): bool
      * @param int $ttl Tempo de vida em segundos
      * @return mixed
      */
-    public function remember(string $key, callable $callback, int $ttl = 3600)
+    public function remember(string $key, callable $callback, int $ttl = 60)
     {
         $value = $this->get($key);
         

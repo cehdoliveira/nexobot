@@ -3,7 +3,7 @@ class DOLModel extends rootOBJ
 {
 	protected $cache;
 	protected $cacheEnabled = false;
-	protected $cacheTTL = 3600;
+	protected $cacheTTL = 60;
 
 	function __construct($table)
 	{
