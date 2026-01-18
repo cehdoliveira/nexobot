@@ -9,7 +9,7 @@ class AppSettings
             $m->set_filter([
                 "active = 'yes'",
                 "namespace = '" . self::esc($namespace) . "'",
-                "`key` = '" . self::esc($key) . "'"
+                "cfg_key = '" . self::esc($key) . "'"
             ]);
             $m->set_paginate([1]);
             $m->load_data();
@@ -29,7 +29,7 @@ class AppSettings
             $m->set_filter([
                 "active = 'yes'",
                 "namespace = '" . self::esc($namespace) . "'",
-                "`key` = '" . self::esc($key) . "'"
+                "cfg_key = '" . self::esc($key) . "'"
             ]);
             $m->set_paginate([1]);
             $m->load_data();
@@ -47,7 +47,7 @@ class AppSettings
             $m2 = new settings_model();
             $m2->populate([
                 'namespace' => $namespace,
-                'key' => $key,
+                'cfg_key' => $key,
                 'value' => $value,
                 'description' => null
             ]);
