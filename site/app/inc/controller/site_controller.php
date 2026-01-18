@@ -332,36 +332,9 @@ class site_controller
                 return;
             }
 
-            // Se FILLED, validar se o preço realmente atingiu o target
+            // Se FILLED, processar imediatamente (sem validação de preço)
             if ($status === 'FILLED') {
                 $orderDataArray = is_array($orderData) ? $orderData : json_decode(json_encode($orderData), true);
-
-                // Obter stop price da ordem
-                $stopPrice = (float)($orderDataArray['stopPrice'] ?? 0);
-
-                if ($stopPrice == 0) {
-                    error_log("⚠️ Ordem {$binanceOrderId} marcada como FILLED mas sem stopPrice definido");
-                    return;
-                }
-
-                // Verificar se o preço atual realmente atingiu o target
-                $currentPrice = $this->getCurrentPrice($symbol, $api);
-
-                if ($currentPrice === null) {
-                    error_log("⚠️ Não foi possível obter preço atual de {$symbol} para validar {$tpTarget}");
-                    return;
-                }
-
-                // Validar se o preço atingiu o target (com tolerância de 0.1%)
-                $tolerance = 0.001; // 0.1%
-                $priceReached = $currentPrice >= ($stopPrice * (1 - $tolerance));
-
-                if (!$priceReached) {
-                    error_log("⚠️ {$tpTarget} do trade #{$tradeIdx} ({$symbol}) marcado como FILLED na Binance, mas preço atual (\${$currentPrice}) não atingiu target (\${$stopPrice}). IGNORANDO.");
-                    return;
-                }
-
-                // Preço validado, processar
                 $this->processTakeProfitFilled($tradeIdx, $symbol, $tpTarget, $orderDataArray, $takeProfitOrder, $trade, $walletBalance);
             }
         } catch (Exception $e) {

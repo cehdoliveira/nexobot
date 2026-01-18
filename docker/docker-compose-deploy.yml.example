@@ -39,7 +39,7 @@ services:
       - /opt/<NOME_APP>/migrations:/var/www/<NOME_APP>/migrations:rw
       
       # Logs compartilhados (garanta que o diretório existe)
-      - /opt/<NOME_APP>/logs/apache2:/var/log/apache2:rw
+      - /opt/<NOME_APP>/logs:/var/log:rw
 
       # Monta a raiz do projeto em /git para permitir git pull completo
       - /opt/<NOME_APP>:/git:rw
