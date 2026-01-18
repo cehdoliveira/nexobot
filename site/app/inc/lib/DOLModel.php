@@ -208,7 +208,8 @@ class DOLModel extends rootOBJ
 			$pa = isset($this->paginate) ? " LIMIT " . implode(" , ", $this->paginate) . " " : "";
 
 			$query = $this->table . ':' . $ff . $fi . $gp . $or . $pa;
-			$cacheKey = 'query:' . md5($query);
+			$cacheKeyPrefix = 'query:' . $this->table . ':';
+			$cacheKey = $cacheKeyPrefix . md5($query);
 
 			$cachedData = $this->cache->get($cacheKey);
 			if ($cachedData !== null) {
@@ -410,7 +411,8 @@ class DOLModel extends rootOBJ
 	{
 		if ($this->cacheEnabled && $this->cache) {
 			try {
-				$pattern = 'query:*' . $this->table . '*';
+				// Keys são armazenadas como "query:<tabela>:<hash>"; remover pelo prefixo garante invalidação determinística
+				$pattern = 'query:' . $this->table . ':*';
 				$this->cache->deletePattern($pattern);
 			} catch (Exception $e) {
 				error_log('DOLModel::clearTableCache Error: ' . $e->getMessage());
