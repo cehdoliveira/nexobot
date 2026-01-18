@@ -2,7 +2,7 @@
 
 class BinanceConfig
 {
-    private const SETTINGS_FILE = '/config/binance_settings.json';
+    private const SETTINGS_FILE = 'config/binance_settings.json';
     private const MODE_DEV = 'dev';
     private const MODE_PROD = 'prod';
 
@@ -49,17 +49,32 @@ class BinanceConfig
         $dir = dirname($settingsPath);
 
         if (!is_dir($dir)) {
-            if (!@mkdir($dir, 0755, true) && !is_dir($dir)) {
+            $mkdirResult = @mkdir($dir, 0755, true);
+            if (!$mkdirResult && !is_dir($dir)) {
+                error_log("BinanceConfig: Failed to create directory: {$dir}");
                 return false;
             }
         }
 
-        $payload = json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-        if ($payload === false) {
+        if (!is_writable($dir)) {
+            error_log("BinanceConfig: Directory not writable: {$dir}");
             return false;
         }
 
-        return file_put_contents($settingsPath, $payload) !== false;
+        $payload = json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($payload === false) {
+            error_log("BinanceConfig: JSON encode failed");
+            return false;
+        }
+
+        $result = file_put_contents($settingsPath, $payload);
+        if ($result === false) {
+            error_log("BinanceConfig: Failed to write settings file: {$settingsPath}");
+            return false;
+        }
+
+        @chmod($settingsPath, 0644);
+        return true;
     }
 
     public static function getActiveCredentials(): array
