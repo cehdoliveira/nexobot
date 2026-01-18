@@ -45,7 +45,7 @@ class BinanceConfig
             'prod_api_secret' => $prodSecret !== '' ? $prodSecret : ($current['prod_api_secret'] ?? '')
         ];
 
-        $settingsPath = self::getSettingsPath();
+        $settingsPath = self::getWritableSettingsPath();
         $dir = dirname($settingsPath);
 
         if (!is_dir($dir)) {
@@ -120,7 +120,44 @@ class BinanceConfig
 
     private static function getSettingsPath(): string
     {
-        $root = defined('cRootServer_APP') ? rtrim(constant('cRootServer_APP'), '/') : __DIR__;
-        return $root . self::SETTINGS_FILE;
+        // Preferível: APP/inc/config
+        $appRoot = defined('cRootServer_APP') ? rtrim(constant('cRootServer_APP'), '/') : __DIR__;
+        $primary = $appRoot . '/' . self::SETTINGS_FILE;
+
+        // Alternativo: diretório de upload (normalmente gravável pelo servidor web)
+        $uploadDir = defined('UPLOAD_DIR') ? rtrim(constant('UPLOAD_DIR'), '/') : null;
+        $fallback = $uploadDir ? ($uploadDir . '/binance_settings.json') : null;
+
+        // Se o primário não existe, mas o fallback existe, use fallback
+        if (!file_exists($primary) && $fallback && file_exists($fallback)) {
+            return $fallback;
+        }
+
+        return $primary;
+    }
+
+    private static function getWritableSettingsPath(): string
+    {
+        $paths = [];
+        $appRoot = defined('cRootServer_APP') ? rtrim(constant('cRootServer_APP'), '/') : __DIR__;
+        $paths[] = $appRoot . '/' . self::SETTINGS_FILE;
+
+        $uploadDir = defined('UPLOAD_DIR') ? rtrim(constant('UPLOAD_DIR'), '/') : null;
+        if ($uploadDir) {
+            $paths[] = $uploadDir . '/binance_settings.json';
+        }
+
+        foreach ($paths as $path) {
+            $dir = dirname($path);
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0775, true);
+            }
+            if (is_dir($dir) && is_writable($dir)) {
+                return $path;
+            }
+        }
+
+        // Último recurso: usar APP mesmo que não seja gravável (vai falhar com log)
+        return $paths[0];
     }
 }
