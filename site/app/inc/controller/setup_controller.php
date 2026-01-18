@@ -579,116 +579,157 @@ class setup_controller
                     $qtdTp2 = $qtdTotal - $qtdTp1;
                 }
 
+                // Respeitar limite MAX_NUM_ALGO_ORDERS (5). MARKET não conta, TP/SL contam.
+                $maxAlgoOrders = 5;
+                $openAlgoOrders = $this->getOpenAlgoOrdersCount();
+                $availableAlgoSlots = $maxAlgoOrders - $openAlgoOrders;
+
+                if ($availableAlgoSlots <= 0) {
+                    $this->logTradeOperation($symbol, 'ALGO_LIMIT_REACHED', [
+                        'maxAlgo' => $maxAlgoOrders,
+                        'openAlgo' => $openAlgoOrders,
+                        'skipped' => ['tp1', 'tp2']
+                    ]);
+
+                    $tradesLogModelLimit = new tradelogs_model();
+                    $tradesLogModelLimit->populate([
+                        'trades_id' => $tradeIdx,
+                        'log_type' => 'warning',
+                        'event' => 'algo_limit_reached',
+                        'message' => "TPs não criados: limite de ordens algorítmicas atingido (" . $openAlgoOrders . "/" . $maxAlgoOrders . ")"
+                    ]);
+                    $tradesLogModelLimit->save();
+
+                    return; // Não cria nenhum TP se já está no limite
+                }
+
+                $placeTp1 = $availableAlgoSlots >= 1;
+                $placeTp2 = $availableAlgoSlots >= 2;
+
                 // TP1 – TAKE_PROFIT (market quando stopPrice for atingido)
-                $tp1Req = new NewOrderRequest();
-                $tp1Req->setSymbol($symbol);
-                $tp1Req->setSide(Side::SELL);
-                $tp1Req->setType(OrderType::TAKE_PROFIT);
-                $tp1Req->setQuantity($qtdTp1);
-                $tp1Req->setStopPrice((float)$orderConfigs["tp1_price"]);
+                if ($placeTp1) {
+                    $tp1Req = new NewOrderRequest();
+                    $tp1Req->setSymbol($symbol);
+                    $tp1Req->setSide(Side::SELL);
+                    $tp1Req->setType(OrderType::TAKE_PROFIT);
+                    $tp1Req->setQuantity($qtdTp1);
+                    $tp1Req->setStopPrice((float)$orderConfigs["tp1_price"]);
 
-                $tp1Resp = $this->client->newOrder($tp1Req);
-                $tp1Order = $tp1Resp->getData();
+                    $tp1Resp = $this->client->newOrder($tp1Req);
+                    $tp1Order = $tp1Resp->getData();
 
-                $tp1OrderId = method_exists($tp1Order, 'getOrderId') ? $tp1Order->getOrderId() : ($tp1Order["orderId"] ?? null);
-                $tp1ClientOrderId = method_exists($tp1Order, 'getClientOrderId') ? $tp1Order->getClientOrderId() : ($tp1Order["clientOrderId"] ?? null);
-                $tp1Status = method_exists($tp1Order, 'getStatus') ? $tp1Order->getStatus() : ($tp1Order["status"] ?? 'UNKNOWN');
+                    $tp1OrderId = method_exists($tp1Order, 'getOrderId') ? $tp1Order->getOrderId() : ($tp1Order["orderId"] ?? null);
+                    $tp1ClientOrderId = method_exists($tp1Order, 'getClientOrderId') ? $tp1Order->getClientOrderId() : ($tp1Order["clientOrderId"] ?? null);
+                    $tp1Status = method_exists($tp1Order, 'getStatus') ? $tp1Order->getStatus() : ($tp1Order["status"] ?? 'UNKNOWN');
 
-                $ordersModelTp1 = new orders_model();
-                $ordersModelTp1->populate([
-                    'binance_order_id' => $tp1OrderId,
-                    'binance_client_order_id' => $tp1ClientOrderId,
-                    'symbol' => $symbol,
-                    'side' => 'SELL',
-                    'type' => 'TAKE_PROFIT',
-                    'order_type' => 'take_profit',
-                    'tp_target' => 'tp1',
-                    'stop_price' => $orderConfigs["tp1_price"],
-                    'quantity' => $qtdTp1,
-                    'status' => $tp1Status,
-                    'order_created_at' => round(microtime(true) * 1000),
-                    'api_response' => json_encode(is_object($tp1Order) ? json_decode(json_encode($tp1Order), true) : $tp1Order)
-                ]);
-                $tp1OrderIdx = $ordersModelTp1->save();
-                $ordersModelTp1->save_attach(['idx' => $tp1OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
-
-                $this->logTradeOperation($symbol, 'TAKE_PROFIT_1_CREATED', [
-                    'orderId' => $tp1OrderId,
-                    'quantity' => $qtdTp1,
-                    'stopPrice' => $orderConfigs["tp1_price"]
-                ]);
-
-                $tradesLogModelTp1 = new tradelogs_model();
-                $tradesLogModelTp1->populate([
-                    'trades_id' => $tradeIdx,
-                    'log_type' => 'success',
-                    'event' => 'tp1_created',
-                    'message' => "Ordem de TP1 criada: $tp1OrderId",
-                    'data' => json_encode([
-                        'order_id' => $tp1OrderId,
+                    $ordersModelTp1 = new orders_model();
+                    $ordersModelTp1->populate([
+                        'binance_order_id' => $tp1OrderId,
+                        'binance_client_order_id' => $tp1ClientOrderId,
+                        'symbol' => $symbol,
+                        'side' => 'SELL',
+                        'type' => 'TAKE_PROFIT',
+                        'order_type' => 'take_profit',
+                        'tp_target' => 'tp1',
                         'stop_price' => $orderConfigs["tp1_price"],
-                        'quantity' => $qtdTp1
-                    ])
-                ]);
-                $tradesLogModelTp1->save();
+                        'quantity' => $qtdTp1,
+                        'status' => $tp1Status,
+                        'order_created_at' => round(microtime(true) * 1000),
+                        'api_response' => json_encode(is_object($tp1Order) ? json_decode(json_encode($tp1Order), true) : $tp1Order)
+                    ]);
+                    $tp1OrderIdx = $ordersModelTp1->save();
+                    $ordersModelTp1->save_attach(['idx' => $tp1OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
+
+                    $this->logTradeOperation($symbol, 'TAKE_PROFIT_1_CREATED', [
+                        'orderId' => $tp1OrderId,
+                        'quantity' => $qtdTp1,
+                        'stopPrice' => $orderConfigs["tp1_price"]
+                    ]);
+
+                    $tradesLogModelTp1 = new tradelogs_model();
+                    $tradesLogModelTp1->populate([
+                        'trades_id' => $tradeIdx,
+                        'log_type' => 'success',
+                        'event' => 'tp1_created',
+                        'message' => "Ordem de TP1 criada: $tp1OrderId",
+                        'data' => json_encode([
+                            'order_id' => $tp1OrderId,
+                            'stop_price' => $orderConfigs["tp1_price"],
+                            'quantity' => $qtdTp1
+                        ])
+                    ]);
+                    $tradesLogModelTp1->save();
+                }
 
                 // TP2 – TAKE_PROFIT_LIMIT (limit quando stopPrice for atingido) [web:12][web:24][web:65]
-                $tp2Req = new NewOrderRequest();
-                $tp2Req->setSymbol($symbol);
-                $tp2Req->setSide(Side::SELL);
-                $tp2Req->setType(OrderType::TAKE_PROFIT_LIMIT);
-                $tp2Req->setTimeInForce('GTC');
-                $tp2Req->setQuantity($qtdTp2);
-                $tp2Req->setStopPrice((float)$orderConfigs["tp2_stop_price"]);
-                $tp2Req->setPrice((float)$orderConfigs["tp2_limit_price"]);
+                if ($placeTp2) {
+                    $tp2Req = new NewOrderRequest();
+                    $tp2Req->setSymbol($symbol);
+                    $tp2Req->setSide(Side::SELL);
+                    $tp2Req->setType(OrderType::TAKE_PROFIT_LIMIT);
+                    $tp2Req->setTimeInForce('GTC');
+                    $tp2Req->setQuantity($qtdTp2);
+                    $tp2Req->setStopPrice((float)$orderConfigs["tp2_stop_price"]);
+                    $tp2Req->setPrice((float)$orderConfigs["tp2_limit_price"]);
 
-                $tp2Resp = $this->client->newOrder($tp2Req);
-                $tp2Order = $tp2Resp->getData();
+                    $tp2Resp = $this->client->newOrder($tp2Req);
+                    $tp2Order = $tp2Resp->getData();
 
-                $tp2OrderId = method_exists($tp2Order, 'getOrderId') ? $tp2Order->getOrderId() : ($tp2Order["orderId"] ?? null);
-                $tp2ClientOrderId = method_exists($tp2Order, 'getClientOrderId') ? $tp2Order->getClientOrderId() : ($tp2Order["clientOrderId"] ?? null);
-                $tp2Status = method_exists($tp2Order, 'getStatus') ? $tp2Order->getStatus() : ($tp2Order["status"] ?? 'UNKNOWN');
+                    $tp2OrderId = method_exists($tp2Order, 'getOrderId') ? $tp2Order->getOrderId() : ($tp2Order["orderId"] ?? null);
+                    $tp2ClientOrderId = method_exists($tp2Order, 'getClientOrderId') ? $tp2Order->getClientOrderId() : ($tp2Order["clientOrderId"] ?? null);
+                    $tp2Status = method_exists($tp2Order, 'getStatus') ? $tp2Order->getStatus() : ($tp2Order["status"] ?? 'UNKNOWN');
 
-                $ordersModelTp2 = new orders_model();
-                $ordersModelTp2->populate([
-                    'binance_order_id' => $tp2OrderId,
-                    'binance_client_order_id' => $tp2ClientOrderId,
-                    'symbol' => $symbol,
-                    'side' => 'SELL',
-                    'type' => 'TAKE_PROFIT_LIMIT',
-                    'order_type' => 'take_profit',
-                    'tp_target' => 'tp2',
-                    'stop_price' => $orderConfigs["tp2_stop_price"],
-                    'price' => $orderConfigs["tp2_limit_price"],
-                    'quantity' => $qtdTp2,
-                    'status' => $tp2Status,
-                    'order_created_at' => round(microtime(true) * 1000),
-                    'api_response' => json_encode(is_object($tp2Order) ? json_decode(json_encode($tp2Order), true) : $tp2Order)
-                ]);
-                $tp2OrderIdx = $ordersModelTp2->save();
-                $ordersModelTp2->save_attach(['idx' => $tp2OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
-
-                $this->logTradeOperation($symbol, 'TAKE_PROFIT_2_CREATED', [
-                    'orderId' => $tp2OrderId,
-                    'quantity' => $qtdTp2,
-                    'stopPrice' => $orderConfigs["tp2_stop_price"],
-                    'limitPrice' => $orderConfigs["tp2_limit_price"]
-                ]);
-
-                $tradesLogModelTp2 = new tradelogs_model();
-                $tradesLogModelTp2->populate([
-                    'trades_id' => $tradeIdx,
-                    'log_type' => 'success',
-                    'event' => 'tp2_created',
-                    'message' => "Ordem de TP2 criada: $tp2OrderId",
-                    'data' => json_encode([
-                        'order_id' => $tp2OrderId,
+                    $ordersModelTp2 = new orders_model();
+                    $ordersModelTp2->populate([
+                        'binance_order_id' => $tp2OrderId,
+                        'binance_client_order_id' => $tp2ClientOrderId,
+                        'symbol' => $symbol,
+                        'side' => 'SELL',
+                        'type' => 'TAKE_PROFIT_LIMIT',
+                        'order_type' => 'take_profit',
+                        'tp_target' => 'tp2',
                         'stop_price' => $orderConfigs["tp2_stop_price"],
-                        'limit_price' => $orderConfigs["tp2_limit_price"],
-                        'quantity' => $qtdTp2
-                    ])
-                ]);
-                $tradesLogModelTp2->save();
+                        'price' => $orderConfigs["tp2_limit_price"],
+                        'quantity' => $qtdTp2,
+                        'status' => $tp2Status,
+                        'order_created_at' => round(microtime(true) * 1000),
+                        'api_response' => json_encode(is_object($tp2Order) ? json_decode(json_encode($tp2Order), true) : $tp2Order)
+                    ]);
+                    $tp2OrderIdx = $ordersModelTp2->save();
+                    $ordersModelTp2->save_attach(['idx' => $tp2OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
+
+                    $this->logTradeOperation($symbol, 'TAKE_PROFIT_2_CREATED', [
+                        'orderId' => $tp2OrderId,
+                        'quantity' => $qtdTp2,
+                        'stopPrice' => $orderConfigs["tp2_stop_price"],
+                        'limitPrice' => $orderConfigs["tp2_limit_price"]
+                    ]);
+
+                    $tradesLogModelTp2 = new tradelogs_model();
+                    $tradesLogModelTp2->populate([
+                        'trades_id' => $tradeIdx,
+                        'log_type' => 'success',
+                        'event' => 'tp2_created',
+                        'message' => "Ordem de TP2 criada: $tp2OrderId",
+                        'data' => json_encode([
+                            'order_id' => $tp2OrderId,
+                            'stop_price' => $orderConfigs["tp2_stop_price"],
+                            'limit_price' => $orderConfigs["tp2_limit_price"],
+                            'quantity' => $qtdTp2
+                        ])
+                    ]);
+                    $tradesLogModelTp2->save();
+                } elseif ($placeTp1 && !$placeTp2) {
+                    // Só TP1 coube; registrar que TP2 ficou de fora pelo limite
+                    $tradesLogModelTp2Skip = new tradelogs_model();
+                    $tradesLogModelTp2Skip->populate([
+                        'trades_id' => $tradeIdx,
+                        'log_type' => 'warning',
+                        'event' => 'tp2_skipped_algo_limit',
+                        'message' => "TP2 não criado: faltou slot de ordem algorítmica (" . $openAlgoOrders . "/" . $maxAlgoOrders . ")"
+                    ]);
+                    $tradesLogModelTp2Skip->save();
+                }
             }
         } catch (Exception $e) {
             $this->logBinanceError('executarOrdens', $e->getMessage(), [
@@ -832,5 +873,46 @@ class setup_controller
         $trimmed = rtrim($value, '0');
         $dotPos = strpos($trimmed, '.');
         return $dotPos !== false ? strlen($trimmed) - $dotPos - 1 : 0;
+    }
+
+    /**
+     * Conta ordens algorítmicas abertas para não estourar MAX_NUM_ALGO_ORDERS (5).
+     */
+    private function getOpenAlgoOrdersCount(): int
+    {
+        try {
+            $resp = $this->client->getOpenOrders();
+            $orders = $resp->getData();
+
+            if (is_object($orders)) {
+                $orders = json_decode(json_encode($orders), true);
+            }
+
+            if (!is_array($orders)) {
+                return 0;
+            }
+
+            $algoTypes = [
+                'STOP_LOSS',
+                'STOP_LOSS_LIMIT',
+                'TAKE_PROFIT',
+                'TAKE_PROFIT_LIMIT',
+                'STOP',
+                'TAKE_PROFIT_MARKET'
+            ];
+
+            $count = 0;
+            foreach ($orders as $order) {
+                $type = $order['type'] ?? null;
+                if ($type && in_array($type, $algoTypes, true)) {
+                    $count++;
+                }
+            }
+
+            return $count;
+        } catch (Exception $e) {
+            error_log('Erro ao contar ordens algorítmicas: ' . $e->getMessage());
+            return 0;
+        }
     }
 }
