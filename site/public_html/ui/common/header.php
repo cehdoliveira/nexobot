@@ -12,7 +12,8 @@
                 <div class="collapse navbar-collapse" id="mainNav">
                     <div class="d-flex align-items-center ms-auto">
                         <?php if (auth_controller::check_login()) { ?>
-                            <a class="btn btn-outline-danger" href="<?php echo $GLOBALS['logout_url']; ?>"><i class="bi bi-box-arrow-in-right"></i> Sair</a>
+                            <a class="btn btn-outline-light me-2" href="<?php echo $GLOBALS['config_url']; ?>"><i class="bi bi-gear"></i> Configurações</a>
+                            <a class="btn btn-outline-danger" href="<?php echo $GLOBALS['logout_url']; ?>"><i class="bi bi-box-arrow-right"></i> Sair</a>
                         <?php } else { ?>
                             <a class="btn btn-outline-light" href="<?php echo $GLOBALS['login_url']; ?>"><i class="bi bi-box-arrow-in-right"></i> Entrar</a>
                         <?php } ?>

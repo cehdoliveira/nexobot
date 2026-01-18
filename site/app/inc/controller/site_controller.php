@@ -104,10 +104,13 @@ class site_controller
         $closedTrades = array_slice($closedTradesData, $offset, $perPage);
         $totalPages = ceil(count($closedTradesData) / $perPage);
 
+        $binanceConfig = BinanceConfig::getActiveCredentials();
+
         // === BUSCAR SALDO DA CARTEIRA NA BINANCE ===
         try {
             $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
-            $configurationBuilder->apiKey(binanceAPIKey)->secretKey(binanceSecretKey);
+            $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+            $configurationBuilder->url($binanceConfig['baseUrl']);
             $api = new SpotRestApi($configurationBuilder->build());
 
             $accountInfo = $api->getAccount();
@@ -224,7 +227,9 @@ class site_controller
                 'total_pages' => $totalPages,
                 'per_page' => $perPage,
                 'total_records' => $totalClosedTrades
-            ]
+            ],
+            'binance_env' => $binanceConfig['mode'] ?? 'dev',
+            'binance_base_url' => $binanceConfig['baseUrl'] ?? ''
         ];
 
         // Renderizar view
@@ -543,8 +548,10 @@ class site_controller
     {
         try {
             // Inicializar API Binance
+            $binanceConfig = BinanceConfig::getActiveCredentials();
             $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
-            $configurationBuilder->apiKey(binanceAPIKey)->secretKey(binanceSecretKey);
+            $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+            $configurationBuilder->url($binanceConfig['baseUrl']);
             $api = new SpotRestApi($configurationBuilder->build());
 
             $cancelledOrders = [];

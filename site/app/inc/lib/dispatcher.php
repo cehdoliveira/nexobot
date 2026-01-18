@@ -86,15 +86,32 @@ class dispatcher
 		}
 	}
 
+	private function evaluateCheck($check): bool
+	{
+		if (is_null($check)) {
+			return true;
+		}
+
+		if (is_callable($check)) {
+			return (bool) call_user_func($check);
+		}
+
+		return (bool) $check;
+	}
+
 	public function exec()
 	{
 		$server_method = $_SERVER["REQUEST_METHOD"];
 		foreach ($this->_routes as $entry) {
 			if ($server_method === $entry["http_method"]) {
-				if (! is_null($entry["check"]) && $entry["check"] === false) {
-					continue;
-				}
 				if (preg_match("/^" . str_replace("/", "\\/", $entry["url_pattern"]) . "$/", $this->_path_info, $matches)) {
+					if (! $this->evaluateCheck($entry["check"])) {
+						if (isset($GLOBALS["login_url"])) {
+							basic_redir($GLOBALS["login_url"]);
+						}
+						return false;
+					}
+
 					$class = $method_name = NULL;
 					if (is_string($entry["exec"])) {
 						if (($pos = strpos($entry["exec"], "function:")) !== false) {

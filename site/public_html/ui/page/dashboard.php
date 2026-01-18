@@ -10,7 +10,10 @@
                         Bem-vindo, <strong><?php echo $_SESSION[constant("cAppKey")]["credential"]["name"] ?? 'Trader'; ?></strong>
                     </p>
                 </div>
-                <div class="d-flex gap-2">
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge <?php echo ($dashboardData['binance_env'] ?? 'dev') === 'prod' ? 'bg-danger' : 'bg-secondary'; ?>">
+                        Ambiente: <?php echo strtoupper($dashboardData['binance_env'] ?? 'dev'); ?>
+                    </span>
                     <button class="btn btn-outline-primary btn-sm" @click="refreshData()">
                         <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Atualizar</span>
                     </button>

@@ -22,6 +22,7 @@ class setup_controller
 
     private $client;
     private $curlHandle;
+    private $restBaseUrl = 'https://api.binance.com';
     private $exchangeInfoCache = [];
     private $accountInfoCache = null;
     private $accountInfoCacheTime = 0;
@@ -44,16 +45,20 @@ class setup_controller
 
     private function initializeBinanceClient(): void
     {
+        $binanceConfig = BinanceConfig::getActiveCredentials();
+        $this->restBaseUrl = $binanceConfig['restBaseUrl'] ?? $this->restBaseUrl;
+
         $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
-        $configurationBuilder->apiKey(binanceAPIKey);
-        $configurationBuilder->secretKey(binanceSecretKey);
+        $configurationBuilder->apiKey($binanceConfig['apiKey']);
+        $configurationBuilder->secretKey($binanceConfig['secretKey']);
+        $configurationBuilder->url($binanceConfig['baseUrl']);
         $this->client = new SpotRestApi($configurationBuilder->build());
     }
 
     private function initializeLogger(): void
     {
-        $primary = defined('LOG_DIR') ? rtrim(constant('LOG_DIR'), '/') . '/' : '/var/log/tradebot-binance/';
-        $fallbacks = ['/var/log/tradebot-binance/', rtrim(sys_get_temp_dir(), '/') . '/tradebot-binance/logs/'];
+        $primary = defined('LOG_DIR') ? rtrim(constant('LOG_DIR'), '/') . '/' : '/var/log/';
+        $fallbacks = ['/var/log/', rtrim(sys_get_temp_dir(), '/') . '/logs/'];
 
         $candidates = array_unique(array_merge([$primary], $fallbacks));
 
@@ -91,7 +96,7 @@ class setup_controller
 
     private function log(string $message, string $level = 'ERROR', string $type = 'SYSTEM'): void
     {
-        $basePath = $this->logPath ?: (defined('LOG_DIR') ? rtrim(constant('LOG_DIR'), '/') . '/' : '/var/log/tradebot-binance/');
+        $basePath = $this->logPath ?: (defined('LOG_DIR') ? rtrim(constant('LOG_DIR'), '/') . '/' : '/var/log/');
         $logFile = match ($type) {
             'API' => $basePath . self::API_LOG,
             'TRADE' => $basePath . self::TRADE_LOG,
@@ -211,7 +216,7 @@ class setup_controller
     {
         try {
             $symbolsParam = implode(',', array_map(fn($s) => '"' . $s . '"', $symbols));
-            $url = "https://api.binance.com/api/v3/exchangeInfo?symbols=[{$symbolsParam}]";
+            $url = "{$this->restBaseUrl}/api/v3/exchangeInfo?symbols=[{$symbolsParam}]";
             $response = $this->fetchApiData($url);
             $data = json_decode($response, true);
 
@@ -239,7 +244,7 @@ class setup_controller
     private function getBinanceData(string $symbol, string $interval, int $limit): array
     {
         try {
-            $url = "https://api.binance.com/api/v3/klines?symbol={$symbol}&interval={$interval}&limit={$limit}";
+            $url = "{$this->restBaseUrl}/api/v3/klines?symbol={$symbol}&interval={$interval}&limit={$limit}";
             $response = $this->fetchApiData($url);
 
             if ($response === false) {
@@ -285,7 +290,7 @@ class setup_controller
         }
 
         try {
-            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
+            $url = "{$this->restBaseUrl}/api/v3/exchangeInfo?symbol={$symbol}";
             $response = $this->fetchApiData($url);
 
             if ($response === false) {
