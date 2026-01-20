@@ -429,9 +429,39 @@ class setup_controller
                 return;
             }
 
+            // VALIDAÇÃO CRÍTICA: Verificar se há espaço para TPs ANTES de comprar
+            $maxAlgoOrders = 5;
+            $openAlgoOrders = $this->getOpenAlgoOrdersCount();
+            $availableAlgoSlots = $maxAlgoOrders - $openAlgoOrders;
+
             // Determina qual TP será efetivamente criado baseado no orderConfigs
             $numTps = $orderConfigs['num_take_profits'] ?? 2;
             $hasTp2 = $numTps >= 2 && (float)$orderConfigs['quantity_tp2'] > 0;
+            $tpsNecessarios = $hasTp2 ? 2 : 1;
+
+            // Se não há espaço nem para 1 TP, cancelar o trade
+            if ($availableAlgoSlots < 1) {
+                $this->log(
+                    "Limite de ordens algorítmicas atingido ({$openAlgoOrders}/{$maxAlgoOrders}). "
+                    . "Necessários {$tpsNecessarios} slots. Trade ignorado para {$symbol}",
+                    'WARNING',
+                    'TRADE'
+                );
+                return;
+            }
+
+            // Se há espaço mas não suficiente para 2 TPs, reduzir para 1 TP
+            if ($hasTp2 && $availableAlgoSlots < 2) {
+                $this->log(
+                    "Espaço reduzido para TPs em {$symbol}. Disponível: {$availableAlgoSlots}/2. "
+                    . "Será criado apenas TP1",
+                    'INFO',
+                    'TRADE'
+                );
+                // Forçar para 1 TP apenas
+                $hasTp2 = false;
+                $numTps = 1;
+            }
 
             $tradesData = [
                 'symbol' => $symbol,
@@ -599,28 +629,28 @@ class setup_controller
                     $qtdTp2 = $qtdTotal - $qtdTp1;
                 }
 
-                // Respeitar limite MAX_NUM_ALGO_ORDERS (5). MARKET não conta, TP/SL contam.
+                // Verificação final de slots (já foi verificado antes, mas double-check por segurança)
                 $maxAlgoOrders = 5;
                 $openAlgoOrders = $this->getOpenAlgoOrdersCount();
                 $availableAlgoSlots = $maxAlgoOrders - $openAlgoOrders;
 
+                // Se não há slots, algo deu muito errado - logar mas não impedir TP1
                 if ($availableAlgoSlots <= 0) {
-                    $this->logTradeOperation($symbol, 'ALGO_LIMIT_REACHED', [
+                    $this->logTradeOperation($symbol, 'ALGO_LIMIT_REACHED_UNEXPECTED', [
                         'maxAlgo' => $maxAlgoOrders,
                         'openAlgo' => $openAlgoOrders,
-                        'skipped' => ['tp1', 'tp2']
+                        'detail' => 'Esta condição deveria ter sido verificada ANTES da ordem MARKET'
                     ]);
 
-                    $tradesLogModelLimit = new tradelogs_model();
-                    $tradesLogModelLimit->populate([
-                        'trades_id' => $tradeIdx,
-                        'log_type' => 'warning',
-                        'event' => 'algo_limit_reached',
-                        'message' => "TPs não criados: limite de ordens algorítmicas atingido (" . $openAlgoOrders . "/" . $maxAlgoOrders . ")"
-                    ]);
-                    $tradesLogModelLimit->save();
-
-                    return; // Não cria nenhum TP se já está no limite
+                    // Log crítico para investigação
+                    $this->log(
+                        "CRÍTICO: Limite de ordens algorítmicas atingido APÓS compra para {$symbol}. "
+                        . "Verificação pré-compra falhou. OpenAlgo: {$openAlgoOrders}/{$maxAlgoOrders}",
+                        'ERROR',
+                        'TRADE'
+                    );
+                    
+                    return; // Não criar TPs nesta situação crítica
                 }
 
                 $placeTp1 = $availableAlgoSlots >= 1 && $qtdTp1 > 0;
