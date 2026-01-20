@@ -155,7 +155,7 @@ class site_controller
 
                 foreach ($openTrades as $trade) {
                     $symbol = $trade["symbol"];
-                    $ordersModel->set_filter(["idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$trade['idx']}')"]);
+                    $ordersModel->set_filter(["active = 'yes'", "idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$trade['idx']}')"]);
                     $ordersModel->attach(["trades"]);
                     $ordersModel->load_data();
 
@@ -308,7 +308,7 @@ class site_controller
 
             // Buscar ordem de TP deste trade
             $ordersModel = new orders_model();
-            $ordersModel->set_filter(["idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND order_type = 'take_profit' AND tp_target = '{$tpTarget}'"]);
+            $ordersModel->set_filter(["active = 'yes'", "idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND order_type = 'take_profit' AND tp_target = '{$tpTarget}'"]);
             $ordersModel->attach(["trades"]);
             $ordersModel->load_data();
 
@@ -394,7 +394,7 @@ class site_controller
 
             // Atualizar status do TP
             $tradesModel = new trades_model();
-            $tradesModel->set_filter(["idx = '{$tradeIdx}'"]);
+            $tradesModel->set_filter(["active = 'yes'", "idx = '{$tradeIdx}'"]);
             $updateData = [
                 $tpStatusColumn => 'filled',
                 $tpExecutedColumn => $executedQty
@@ -405,6 +405,7 @@ class site_controller
             // Atualizar ordem
             $ordersModel = new orders_model();
             $ordersModel->set_filter([
+                "active = 'yes'",
                 "binance_order_id = '{$takeProfitOrder['binance_order_id']}'"
             ]);
             $ordersModel->populate([
@@ -447,7 +448,7 @@ class site_controller
 
             // Fechar trade
             $tradesModel = new trades_model();
-            $tradesModel->set_filter(["idx = '{$tradeIdx}'"]);
+            $tradesModel->set_filter(["active = 'yes'", "idx = '{$tradeIdx}'"]);
             $tradesModel->populate([
                 'status' => 'closed',
                 'exit_price' => $avgExitPrice,
@@ -588,7 +589,7 @@ class site_controller
 
                 // Buscar ordens deste trade no banco de dados
                 $ordersModel = new orders_model();
-                $ordersModel->set_filter(["idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}')"]);
+                $ordersModel->set_filter(["active = 'yes'", "idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}')"]);
                 $ordersModel->attach(['trades']);
                 $ordersModel->load_data();
 
@@ -616,7 +617,7 @@ class site_controller
                         // Processar baseado no status
                         if ($actualStatus === 'FILLED') {
                             // Ordem já foi preenchida - atualizar no banco de dados
-                            $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                            $ordersModel->set_filter(["active = 'yes'", "idx = '{$order['idx']}'"]);
                             $ordersModel->populate([
                                 'status' => 'FILLED',
                                 'executed_qty' => $actualOrderData['executedQty'] ?? $actualOrderData->getExecutedQty() ?? $order['quantity']
@@ -633,7 +634,7 @@ class site_controller
                             // Ordem já foi cancelada na Binance
 
                             // Apenas marcar como cancelada no banco
-                            $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                            $ordersModel->set_filter(["active = 'yes'", "idx = '{$order['idx']}'"]);
                             $ordersModel->populate(['active' => 'no', 'status' => 'CANCELLED']);
                             $ordersModel->save();
 
@@ -655,7 +656,7 @@ class site_controller
                             }
 
                             // Cancelar no banco de dados
-                            $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                            $ordersModel->set_filter(["active = 'yes'", "idx = '{$order['idx']}'"]);
                             $ordersModel->populate(['active' => 'no', 'status' => 'CANCELLED']);
                             $ordersModel->save();
 
@@ -747,7 +748,7 @@ class site_controller
                 try {
                     // Criar nova instância do model para cada trade
                     $tradeModel = new trades_model();
-                    $tradeModel->set_filter(["idx = '{$trade['idx']}'"]);
+                    $tradeModel->set_filter(["active = 'yes'", "idx = '{$trade['idx']}'"]);
                     $tradeModel->load_data();
 
                     if (!empty($tradeModel->data)) {
