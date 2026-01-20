@@ -424,6 +424,11 @@ class setup_controller
 
             $orderConfigs = $this->getOrderDetailsForSymbol($symbol, $precoEntrada, $takeProfit1, $takeProfit2, $investimento);
 
+            if ((float)$orderConfigs['quantity_total'] <= 0) {
+                $this->log("Quantidade calculada zero ou abaixo do minNotional para {$symbol}; trade ignorado", 'INFO', 'TRADE');
+                return;
+            }
+
             $tradesModel = new trades_model();
             $tradesModel->populate([
                 'symbol' => $symbol,
@@ -608,8 +613,8 @@ class setup_controller
                     return; // Não cria nenhum TP se já está no limite
                 }
 
-                $placeTp1 = $availableAlgoSlots >= 1;
-                $placeTp2 = $availableAlgoSlots >= 2;
+                $placeTp1 = $availableAlgoSlots >= 1 && $qtdTp1 > 0;
+                $placeTp2 = $availableAlgoSlots >= 2 && $qtdTp2 > 0;
 
                 // TP1 – TAKE_PROFIT (market quando stopPrice for atingido)
                 if ($placeTp1) {
@@ -766,7 +771,9 @@ class setup_controller
     ): array {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize) = $this->extractFilters($symbolData);
+            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+
+            $minNotionalFloat = $minNotional !== null ? (float)$minNotional : 0.0;
 
             $stepSizeFloat = (float)$stepSize;
 
@@ -775,6 +782,18 @@ class setup_controller
 
             $quantityTotalFloat = (float)$quantityTotal;
             if ($quantityTotalFloat <= 0) {
+                return [
+                    'quantity_total' => '0',
+                    'quantity_tp1' => '0',
+                    'quantity_tp2' => '0',
+                    'tp1_price' => '0',
+                    'tp2_stop_price' => '0',
+                    'tp2_limit_price' => '0',
+                ];
+            }
+
+            $totalNotional = $quantityTotalFloat * $currentPrice;
+            if ($minNotionalFloat > 0 && $totalNotional < $minNotionalFloat) {
                 return [
                     'quantity_total' => '0',
                     'quantity_tp1' => '0',
@@ -804,6 +823,37 @@ class setup_controller
             $tp2LimitRaw = ((float)$tp2StopPrice) - $tickSizeFloat;
             $tp2LimitPrice = $this->adjustPriceToTickSize($tp2LimitRaw, $tickSize);
 
+            // Validação: cada TP precisa atingir o minNotional; senão, colapsa para um único TP
+            $tp1Notional = $qtdTp1Float * (float)$tp1Price;
+            $tp2Notional = $qtdTp2Float * (float)$tp2LimitPrice;
+            $tp1Ok = $minNotionalFloat <= 0 || $tp1Notional >= $minNotionalFloat;
+            $tp2Ok = $minNotionalFloat <= 0 || $tp2Notional >= $minNotionalFloat;
+
+            if (!$tp1Ok || !$tp2Ok) {
+                $singleTpQtyFloat = $quantityTotalFloat;
+                $singleTpNotional = $singleTpQtyFloat * (float)$tp1Price;
+
+                if ($minNotionalFloat > 0 && $singleTpNotional < $minNotionalFloat) {
+                    return [
+                        'quantity_total' => '0',
+                        'quantity_tp1' => '0',
+                        'quantity_tp2' => '0',
+                        'tp1_price' => '0',
+                        'tp2_stop_price' => '0',
+                        'tp2_limit_price' => '0',
+                    ];
+                }
+
+                $qtdTp1Float = $singleTpQtyFloat;
+                $qtdTp2Float = 0.0;
+
+                $qtdTp1 = number_format($qtdTp1Float, $decimalPlacesQty, '.', '');
+                $qtdTp2 = number_format($qtdTp2Float, $decimalPlacesQty, '.', '');
+
+                $tp2StopPrice = '0';
+                $tp2LimitPrice = '0';
+            }
+
             return [
                 'quantity_total' => $quantityTotal,
                 'quantity_tp1' => $qtdTp1,
@@ -823,7 +873,19 @@ class setup_controller
         if (!isset($filters['LOT_SIZE'], $filters['PRICE_FILTER'])) {
             throw new Exception("Filtros não encontrados nos dados do símbolo.");
         }
-        return [$filters['LOT_SIZE']['stepSize'], $filters['PRICE_FILTER']['tickSize']];
+
+        $minNotional = null;
+        if (isset($filters['MIN_NOTIONAL']['minNotional'])) {
+            $minNotional = (float)$filters['MIN_NOTIONAL']['minNotional'];
+        } elseif (isset($filters['NOTIONAL']['minNotional'])) {
+            $minNotional = (float)$filters['NOTIONAL']['minNotional'];
+        }
+
+        return [
+            $filters['LOT_SIZE']['stepSize'],
+            $filters['PRICE_FILTER']['tickSize'],
+            $minNotional
+        ];
     }
 
     private function calculateAdjustedQuantity(float $investimento, float $currentPrice, string $stepSize): string
@@ -846,7 +908,7 @@ class setup_controller
     {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize) = $this->extractFilters($symbolData);
+            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
 
             $stepSizeFloat = (float)$stepSize;
             $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
