@@ -273,14 +273,33 @@ class site_controller
                 $this->checkAndExecuteTargetProfit($tradeIdx, $symbol, 'tp1', $trade, $api, $currentWalletBalance);
             }
 
-            // Verificar TP2
-            if (($trade['tp2_status'] ?? 'pending') !== 'filled' && ($trade['tp2_status'] ?? 'pending') !== 'cancelled') {
+            // Verificar TP2 (apenas se o trade tiver TP2)
+            $hasTP2 = !empty($trade['take_profit_2_price']) && (float)$trade['take_profit_2_price'] > 0;
+            if ($hasTP2 && ($trade['tp2_status'] ?? 'pending') !== 'filled' && ($trade['tp2_status'] ?? 'pending') !== 'cancelled') {
                 $this->checkAndExecuteTargetProfit($tradeIdx, $symbol, 'tp2', $trade, $api, $currentWalletBalance);
             }
 
-            // Se ambos os TPs foram preenchidos, fechar o trade
-            if (($trade['tp1_status'] ?? 'pending') === 'filled' && ($trade['tp2_status'] ?? 'pending') === 'filled') {
-                $this->finalizeTradeAfterBothTPs($tradeIdx, $symbol, $trade, $currentWalletBalance);
+            // Recarregar trade para obter status atualizado
+            $tradesModel = new trades_model();
+            $tradesModel->set_filter(["active = 'yes'", "idx = '{$tradeIdx}'"]);
+            $tradesModel->load_data();
+            
+            if (empty($tradesModel->data)) {
+                continue;
+            }
+            
+            $updatedTrade = $tradesModel->data[0];
+            
+            // Se tem TP2: fechar quando ambos forem executados
+            // Se não tem TP2: fechar quando TP1 for executado
+            if ($hasTP2) {
+                if (($updatedTrade['tp1_status'] ?? 'pending') === 'filled' && ($updatedTrade['tp2_status'] ?? 'pending') === 'filled') {
+                    $this->finalizeTradeAfterBothTPs($tradeIdx, $symbol, $updatedTrade, $currentWalletBalance);
+                }
+            } else {
+                if (($updatedTrade['tp1_status'] ?? 'pending') === 'filled') {
+                    $this->finalizeTradeWithSingleTP($tradeIdx, $symbol, $updatedTrade, $currentWalletBalance);
+                }
             }
         }
     }
@@ -489,6 +508,64 @@ class site_controller
     }
 
     /**
+     * Finaliza o trade quando apenas TP1 foi preenchido (não existe TP2)
+     */
+    private function finalizeTradeWithSingleTP(int $tradeIdx, string $symbol, array $trade, float $walletBalance): void
+    {
+        try {
+            $buyPrice = (float)($trade['entry_price'] ?? 0);
+            $investment = (float)($trade['investment'] ?? 0);
+            $quantity = (float)($trade['quantity'] ?? 0);
+
+            $tp1Qty = (float)($trade['tp1_executed_qty'] ?? 0);
+            $tp1Price = (float)($trade['take_profit_1_price'] ?? 0);
+
+            // Calcular P/L do TP1 único
+            $profitLoss = ($tp1Qty * $tp1Price) - $investment;
+            $profitLossPercent = $investment > 0 ? (($profitLoss / $investment) * 100) : 0;
+
+            // Fechar trade
+            $tradesModel = new trades_model();
+            $tradesModel->set_filter(["active = 'yes'", "idx = '{$tradeIdx}'"]);
+            $tradesModel->populate([
+                'status' => 'closed',
+                'exit_price' => $tp1Price,
+                'exit_type' => 'take_profit',
+                'profit_loss' => $profitLoss,
+                'profit_loss_percent' => $profitLossPercent,
+                'closed_at' => date('Y-m-d H:i:s')
+            ]);
+            $tradesModel->save();
+
+            // Snapshot
+            $snapshotId = WalletBalanceHelper::snapshotAfterTrade($tradeIdx, $walletBalance);
+
+            // Log
+            $tradeLogsModel = new tradelogs_model();
+            $tradeLogsModel->populate([
+                'trades_id' => $tradeIdx,
+                'log_type' => 'success',
+                'event' => 'trade_closed_single_tp',
+                'message' => "Trade finalizado - TP1 único executado",
+                'data' => json_encode([
+                    'tp1_qty' => $tp1Qty,
+                    'tp1_price' => $tp1Price,
+                    'exit_price' => $tp1Price,
+                    'profit_loss' => $profitLoss,
+                    'profit_loss_percent' => $profitLossPercent,
+                    'wallet_balance' => $walletBalance,
+                    'snapshot_id' => $snapshotId
+                ])
+            ]);
+            $tradeLogsModel->save();
+
+            error_log("✅ Trade #{$tradeIdx} ({$symbol}) FINALIZADO (TP único). P/L: $" . number_format($profitLoss, 2) . " ({$profitLossPercent}%)");
+        } catch (Exception $e) {
+            error_log("❌ Erro ao finalizar trade #{$tradeIdx} (TP único): " . $e->getMessage());
+        }
+    }
+
+    /**
      * Fecha um trade quando sua ordem de TAKE_PROFIT foi executada (status FILLED)
      * 
      * Atualiza o trade como 'closed', calcula profit/loss, atualiza a ordem no banco
@@ -527,6 +604,9 @@ class site_controller
         $action = $input['action'] ?? null;
 
         switch ($action) {
+            case 'clearCache':
+                $this->clearCache();
+                break;
             case 'closeAllPositions':
                 $this->closeAllPositions();
                 break;
@@ -534,6 +614,46 @@ class site_controller
                 echo json_encode(['success' => false, 'message' => 'Ação não encontrada'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         }
 
+        exit;
+    }
+
+    /**
+     * Limpa completamente o cache do Redis
+     */
+    private function clearCache()
+    {
+        try {
+            $cache = RedisCache::getInstance();
+            
+            if (!$cache || !$cache->isConnected()) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Redis não está conectado'
+                ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+
+            // Limpar todo o cache
+            $flushed = $cache->flush();
+
+            if ($flushed) {
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Cache limpo com sucesso'
+                ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            } else {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Erro ao limpar cache'
+                ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            }
+        } catch (Exception $e) {
+            error_log("Erro ao limpar cache: " . $e->getMessage());
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao limpar cache: ' . $e->getMessage()
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
         exit;
     }
 

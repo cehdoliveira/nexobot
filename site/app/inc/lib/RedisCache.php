@@ -234,18 +234,18 @@ class RedisCache
  * @return bool
  */
 public function flush(): bool
-    {
-        if (!$this->isConnected()) {
-            return false;
-        }
-
-        try {
-            return $this->redis->flushDB();
-        } catch (Exception $e) {
-            error_log('RedisCache::flush Error: ' . $e->getMessage());
-            return false;
-        }
+{
+    if (!$this->isConnected()) {
+        return false;
     }
+
+    try {
+        return $this->redis->flushDB();
+    } catch (Exception $e) {
+        error_log('RedisCache::flush Error: ' . $e->getMessage());
+        return false;
+    }
+}
 
     /**
      * Incrementa um valor numérico

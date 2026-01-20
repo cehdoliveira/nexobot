@@ -285,12 +285,16 @@
                                 </div>
 
                                 <!-- Alvos de Take Profit -->
+                                <?php 
+                                    $hasTP2 = !empty($trade['take_profit_2_price']) && (float)$trade['take_profit_2_price'] > 0;
+                                    $colClass = $hasTP2 ? 'col-12 col-md-6' : 'col-12';
+                                ?>
                                 <div class="row g-3">
                                     <!-- TP1 (Conservador) -->
-                                    <div class="col-12 col-md-6">
+                                    <div class="<?php echo $colClass; ?>">
                                         <div class="border rounded p-2 bg-light">
                                             <div class="d-flex justify-content-between align-items-center mb-2">
-                                                <small class="text-muted"><strong>TP1 (Conservador)</strong></small>
+                                                <small class="text-muted"><strong><?php echo $hasTP2 ? 'TP1 (Conservador)' : 'Take Profit'; ?></strong></small>
                                                 <?php 
                                                     $tp1Status = $trade['tp1_status'] ?? 'pending';
                                                     $tp1BadgeClass = match($tp1Status) {
@@ -319,7 +323,8 @@
                                         </div>
                                     </div>
 
-                                    <!-- TP2 (Agressivo) -->
+                                    <!-- TP2 (Agressivo) - Exibir apenas se existir -->
+                                    <?php if ($hasTP2): ?>
                                     <div class="col-12 col-md-6">
                                         <div class="border rounded p-2 bg-light">
                                             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -351,6 +356,7 @@
                                             <?php endif; ?>
                                         </div>
                                     </div>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         <?php endforeach; ?>

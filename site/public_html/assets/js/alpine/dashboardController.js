@@ -13,13 +13,47 @@ document.addEventListener("alpine:init", () => {
     refreshTime: 60, // segundos
 
     /**
-     * Atualizar dados do dashboard
+     * Atualizar dados do dashboard e limpar cache
      */
-    refreshData() {
+    async refreshData() {
       this.isLoading = true;
 
-      // Recarregar a página para buscar novos dados
-      window.location.reload();
+      try {
+        // Limpar cache no servidor
+        const response = await fetch(window.location.pathname, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: 'clearCache'
+          })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          // Cache foi limpo com sucesso
+          console.log('✅ Cache limpo:', data.message);
+          
+          // Aguardar um pouco e recarregar a página
+          setTimeout(() => {
+            window.location.reload();
+          }, 500);
+        } else {
+          console.warn('⚠️ Erro ao limpar cache:', data.message);
+          // Mesmo em caso de erro, recarregar a página
+          setTimeout(() => {
+            window.location.reload();
+          }, 500);
+        }
+      } catch (error) {
+        console.error('❌ Erro ao fazer requisição:', error);
+        // Em caso de erro, apenas recarregar
+        setTimeout(() => {
+          window.location.reload();
+        }, 500);
+      }
     },
 
     /**
