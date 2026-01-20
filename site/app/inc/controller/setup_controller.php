@@ -429,8 +429,11 @@ class setup_controller
                 return;
             }
 
-            $tradesModel = new trades_model();
-            $tradesModel->populate([
+            // Determina qual TP será efetivamente criado baseado no orderConfigs
+            $numTps = $orderConfigs['num_take_profits'] ?? 2;
+            $hasTp2 = $numTps >= 2 && (float)$orderConfigs['quantity_tp2'] > 0;
+
+            $tradesData = [
                 'symbol' => $symbol,
                 'status' => 'open',
                 'timeframe' => '15m',
@@ -439,13 +442,20 @@ class setup_controller
                 'investment' => $investimento,
                 'take_profit_price' => $takeProfit1, // TP principal (deprecated, mantido para compatibilidade)
                 'take_profit_1_price' => $takeProfit1, // Alvo conservador
-                'take_profit_2_price' => $takeProfit2, // Alvo agressivo
                 'tp1_status' => 'pending',
-                'tp2_status' => 'pending',
                 'tp1_executed_qty' => 0,
-                'tp2_executed_qty' => 0,
                 'opened_at' => date('Y-m-d H:i:s')
-            ]);
+            ];
+
+            // Salva TP2 apenas se for efetivamente criado
+            if ($hasTp2) {
+                $tradesData['take_profit_2_price'] = $takeProfit2;
+                $tradesData['tp2_status'] = 'pending';
+                $tradesData['tp2_executed_qty'] = 0;
+            }
+
+            $tradesModel = new trades_model();
+            $tradesModel->populate($tradesData);
             $tradeIdx = $tradesModel->save();
 
             try {
@@ -854,6 +864,8 @@ class setup_controller
                 $tp2LimitPrice = '0';
             }
 
+            $numTakeProfit = ($qtdTp1 > 0 ? 1 : 0) + ($qtdTp2 > 0 ? 1 : 0);
+
             return [
                 'quantity_total' => $quantityTotal,
                 'quantity_tp1' => $qtdTp1,
@@ -861,6 +873,7 @@ class setup_controller
                 'tp1_price' => $tp1Price,
                 'tp2_stop_price' => $tp2StopPrice,
                 'tp2_limit_price' => $tp2LimitPrice,
+                'num_take_profits' => $numTakeProfit,
             ];
         } catch (Exception $e) {
             throw new Exception("Erro ao calcular detalhes da ordem: " . $e->getMessage());
