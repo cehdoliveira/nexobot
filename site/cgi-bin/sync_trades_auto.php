@@ -1,15 +1,4 @@
-#!/usr/bin/env php
 <?php
-/**
- * Script de Sincronização Automática de Trades
- * 
- * Este script é executado pelo cron a cada 5 minutos e sincroniza
- * automaticamente todos os trades fechados com a API da Binance.
- * 
- * Adicione ao crontab:
- * */5 * * * * /usr/bin/php /var/www/nexobot/site/cgi-bin/sync_trades_auto.php >> /var/log/nexobot/sync.log 2>&1
- */
-
 ini_set('display_errors', 0);
 error_reporting(0);
 
