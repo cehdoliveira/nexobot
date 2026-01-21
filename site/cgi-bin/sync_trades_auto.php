@@ -1,4 +1,7 @@
 <?php
+use Binance\Client\Spot\Api\SpotRestApi;
+use Binance\Client\Spot\SpotRestApiUtil;
+
 ini_set('display_errors', 0);
 error_reporting(0);
 
@@ -14,9 +17,6 @@ set_include_path($_SERVER["DOCUMENT_ROOT"] . PATH_SEPARATOR . get_include_path()
 
 try {
     require_once($_SERVER["DOCUMENT_ROOT"] . "../app/inc/main.php");
-    
-    use Binance\Client\Spot\Api\SpotRestApi;
-    use Binance\Client\Spot\SpotRestApiUtil;
 
     // Log message
     $logFile = '/var/log/nexobot/sync.log';
