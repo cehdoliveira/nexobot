@@ -33,7 +33,7 @@ try {
     $api = new SpotRestApi($configurationBuilder->build());
     
     // Buscar informações da conta
-    $accountResp = $api->account();
+    $accountResp = $api->getAccount();
     $accountData = $accountResp->getData();
     
     $balances = is_array($accountData) ? $accountData['balances'] : $accountData->getBalances();

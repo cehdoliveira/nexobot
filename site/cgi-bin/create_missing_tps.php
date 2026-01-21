@@ -73,6 +73,18 @@ try {
     $result = $con->select("*", "trades", $filter . " ORDER BY opened_at DESC");
     $trades = $con->results($result);
 
+    // Saldos atuais (free + locked) para usar a quantidade real disponível
+    $accountResp = $api->getAccount();
+    $accountData = $accountResp->getData();
+    $balances = is_array($accountData) ? ($accountData['balances'] ?? []) : $accountData->getBalances();
+    $wallet = [];
+    foreach ($balances as $b) {
+        $asset = is_array($b) ? $b['asset'] : $b->getAsset();
+        $free = is_array($b) ? (float)$b['free'] : (float)$b->getFree();
+        $locked = is_array($b) ? (float)$b['locked'] : (float)$b->getLocked();
+        $wallet[$asset] = ['free' => $free, 'locked' => $locked, 'total' => $free + $locked];
+    }
+
     if (empty($trades)) {
         echo "❌ Nenhum trade encontrado.\n";
         exit(0);
@@ -89,8 +101,20 @@ try {
         $tradeIdx = $trade['idx'];
         $symbol = $trade['symbol'];
         $quantity = (float)$trade['quantity'];
+        $asset = str_replace('USDC', '', $symbol);
+        $availableQty = $wallet[$asset]['total'] ?? 0;
+        $baseQty = min($quantity, $availableQty);
         
         echo "📈 Trade #{$tradeIdx} - {$symbol}\n";
+
+        if ($baseQty <= 0) {
+            echo "   ⚠️  Sem saldo disponível na Binance para este ativo. Pulando...\n\n";
+            $skipped++;
+            continue;
+        }
+        if ($availableQty < $quantity) {
+            echo "   ⚠️  Ajustando quantidade por saldo real. DB: {$quantity} | Binance: {$availableQty}\n";
+        }
         
         // Buscar ordens existentes
         $ordersResult = $con->select(
@@ -167,7 +191,7 @@ try {
                         $sellReq->setSymbol($symbol);
                         $sellReq->setSide(Side::SELL);
                         $sellReq->setType(OrderType::MARKET);
-                        $sellReq->setQuantity($quantity);
+                        $sellReq->setQuantity($baseQty);
                         
                         $sellResp = $api->newOrder($sellReq);
                         $sellOrder = $sellResp->getData();
@@ -207,7 +231,8 @@ try {
                 }
                 
                 // Criar TP1
-                $tp1Qty = (float)$trade['tp1_executed_qty'] ?: ($quantity * 0.4); // 40% se não definido
+                $tp1Qty = (float)$trade['tp1_executed_qty'] ?: ($baseQty * 0.4); // 40% se não definido
+                $tp1Qty = min($tp1Qty, $baseQty);
                 
                 echo "   📝 Criando TP1...\n";
                 echo "      Preço: \${$tp1Price}\n";
@@ -262,7 +287,19 @@ try {
                 }
                 
                 // Criar TP2
-                $tp2Qty = (float)$trade['tp2_executed_qty'] ?: ($quantity * 0.6); // 60% se não definido
+                $tp2Qty = (float)$trade['tp2_executed_qty'];
+                if (!$tp2Qty) {
+                    $tp2Qty = $baseQty - ($tp1Qty ?? 0);
+                    if ($tp2Qty <= 0) {
+                        $tp2Qty = $baseQty * 0.6; // fallback se não restar nada calculado
+                    }
+                }
+                $tp2Qty = min($tp2Qty, $baseQty);
+                if ($tp2Qty <= 0) {
+                    echo "   ⚠️  Quantidade insuficiente para criar TP2. Pulando...\n\n";
+                    $skipped++;
+                    continue;
+                }
                 
                 echo "   📝 Criando TP2...\n";
                 echo "      Preço: \${$tp2Price}\n";
