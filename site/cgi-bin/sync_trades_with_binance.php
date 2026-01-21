@@ -54,7 +54,6 @@ try {
     $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
     $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
     $configurationBuilder->url($binanceConfig['baseUrl']);
-    $configurationBuilder->timeoutSeconds(30);
     $api = new SpotRestApi($configurationBuilder->build());
     
     echo "✅ Conexão com Binance (" . $binanceConfig['mode'] . ") estabelecida\n\n";

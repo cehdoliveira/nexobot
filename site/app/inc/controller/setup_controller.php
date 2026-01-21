@@ -711,16 +711,14 @@ class setup_controller
                     $tradesLogModelTp1->save();
                 }
 
-                // TP2 – TAKE_PROFIT_LIMIT (limit quando stopPrice for atingido) [web:12][web:24][web:65]
+                // TP2 – TAKE_PROFIT (market quando stopPrice for atingido) - Não exige margem
                 if ($placeTp2) {
                     $tp2Req = new NewOrderRequest();
                     $tp2Req->setSymbol($symbol);
                     $tp2Req->setSide(Side::SELL);
-                    $tp2Req->setType(OrderType::TAKE_PROFIT_LIMIT);
-                    $tp2Req->setTimeInForce('GTC');
+                    $tp2Req->setType(OrderType::TAKE_PROFIT);
                     $tp2Req->setQuantity($qtdTp2);
                     $tp2Req->setStopPrice((float)$orderConfigs["tp2_stop_price"]);
-                    $tp2Req->setPrice((float)$orderConfigs["tp2_limit_price"]);
 
                     $tp2Resp = $this->client->newOrder($tp2Req);
                     $tp2Order = $tp2Resp->getData();
@@ -735,11 +733,11 @@ class setup_controller
                         'binance_client_order_id' => $tp2ClientOrderId,
                         'symbol' => $symbol,
                         'side' => 'SELL',
-                        'type' => 'TAKE_PROFIT_LIMIT',
+                        'type' => 'TAKE_PROFIT',
                         'order_type' => 'take_profit',
                         'tp_target' => 'tp2',
                         'stop_price' => $orderConfigs["tp2_stop_price"],
-                        'price' => $orderConfigs["tp2_limit_price"],
+                        'price' => $orderConfigs["tp2_stop_price"],
                         'quantity' => $qtdTp2,
                         'status' => $tp2Status,
                         'order_created_at' => round(microtime(true) * 1000),
@@ -751,8 +749,7 @@ class setup_controller
                     $this->logTradeOperation($symbol, 'TAKE_PROFIT_2_CREATED', [
                         'orderId' => $tp2OrderId,
                         'quantity' => $qtdTp2,
-                        'stopPrice' => $orderConfigs["tp2_stop_price"],
-                        'limitPrice' => $orderConfigs["tp2_limit_price"]
+                        'stopPrice' => $orderConfigs["tp2_stop_price"]
                     ]);
 
                     $tradesLogModelTp2 = new tradelogs_model();
