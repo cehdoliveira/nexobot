@@ -131,9 +131,26 @@ try {
         
         try {
             // Obter preço atual
-            $tickerResp = $api->getTicker($symbol);
-            $tickerData = $tickerResp->getData();
-            $currentPrice = is_array($tickerData) ? (float)$tickerData['price'] : (float)$tickerData->getPrice();
+            $response = $api->tickerPrice($symbol);
+            $data = $response->getData();
+            
+            $currentPrice = null;
+            if ($data && method_exists($data, 'getTickerPriceResponse1')) {
+                $priceData = $data->getTickerPriceResponse1();
+                if ($priceData && method_exists($priceData, 'getPrice')) {
+                    $currentPrice = (float)$priceData->getPrice();
+                }
+            }
+            
+            if (!$currentPrice && $data && method_exists($data, 'getPrice')) {
+                $currentPrice = (float)$data->getPrice();
+            }
+            
+            if (!$currentPrice) {
+                echo "   ⚠️  Não foi possível obter preço atual. Pulando...\n\n";
+                $skipped++;
+                continue;
+            }
             
             echo "   Preço atual: \${$currentPrice}\n";
             
