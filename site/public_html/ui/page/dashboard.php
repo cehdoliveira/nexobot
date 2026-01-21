@@ -546,7 +546,7 @@
                                             <td class="text-nowrap"><strong><?php echo htmlspecialchars($trade['symbol']); ?></strong></td>
                                             <td class="text-nowrap"><span class="badge bg-primary">ENTRADA</span></td>
                                             <td class="text-nowrap d-none d-md-table-cell"><strong>$<?php echo number_format($trade['entry_price'], 8); ?></strong></td>
-                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($trade['quantity'], 2); ?></td>
+                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($trade['quantity'], 5); ?></td>
                                             <td class="text-nowrap d-none d-lg-table-cell"><strong>$<?php echo number_format($trade['investment'], 2); ?></strong></td>
                                             <td colspan="2" class="text-center text-muted small">-</td>
                                             <td class="text-nowrap d-none d-xl-table-cell text-muted small"><?php echo date('d/m H:i', strtotime($trade['opened_at'] ?? 'now')); ?></td>
@@ -558,7 +558,7 @@
                                             <td class="text-nowrap"></td>
                                             <td class="text-nowrap"><span class="badge bg-success">TP1</span></td>
                                             <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp1_price, 8); ?></td>
-                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp1_qty, 2); ?></td>
+                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp1_qty, 5); ?></td>
                                             <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
                                             <td class="text-nowrap">
                                                 <strong class="<?php echo $tp1_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp1_pl, 2); ?></strong>
@@ -576,7 +576,7 @@
                                             <td class="text-nowrap"></td>
                                             <td class="text-nowrap"><span class="badge bg-success">TP2</span></td>
                                             <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp2_price, 8); ?></td>
-                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp2_qty, 2); ?></td>
+                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp2_qty, 5); ?></td>
                                             <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
                                             <td class="text-nowrap">
                                                 <strong class="<?php echo $tp2_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp2_pl, 2); ?></strong>
