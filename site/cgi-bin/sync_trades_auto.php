@@ -1,4 +1,5 @@
 <?php
+
 use Binance\Client\Spot\Api\SpotRestApi;
 use Binance\Client\Spot\SpotRestApiUtil;
 
@@ -19,13 +20,14 @@ try {
     require_once($_SERVER["DOCUMENT_ROOT"] . "../app/inc/main.php");
 
     // Log message
-    $logFile = '/var/log/nexobot/sync.log';
+    $logFile = '/var/log/sync.log';
     $logDir = dirname($logFile);
     if (!is_dir($logDir)) {
         @mkdir($logDir, 0755, true);
     }
 
-    function logMsg($msg) {
+    function logMsg($msg)
+    {
         global $logFile;
         $timestamp = date('Y-m-d H:i:s');
         $msg = "[{$timestamp}] {$msg}\n";
@@ -44,10 +46,10 @@ try {
     // Buscar trades fechados dos últimos 7 dias
     $con = new local_pdo();
     $sevenDaysAgo = date('Y-m-d H:i:s', strtotime('-7 days'));
-    
+
     $result = $con->select(
-        "*", 
-        "trades", 
+        "*",
+        "trades",
         "WHERE active = 'yes' AND status = 'closed' AND closed_at > '{$sevenDaysAgo}' ORDER BY closed_at DESC"
     );
     $trades = $con->results($result);
@@ -69,8 +71,8 @@ try {
 
             // Buscar ordens de compra
             $ordersResult = $con->select(
-                "*", 
-                "orders", 
+                "*",
+                "orders",
                 "WHERE active = 'yes' AND idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND side = 'BUY' AND order_type = 'entry'"
             );
             $orders = $con->results($ordersResult);
@@ -87,7 +89,7 @@ try {
             try {
                 $response = $api->getOrder($tradeSymbol, $binanceOrderId);
                 $binanceOrder = $response->getData();
-                
+
                 if (!is_array($binanceOrder)) {
                     $binanceOrder = json_decode(json_encode($binanceOrder), true);
                 }
@@ -100,13 +102,13 @@ try {
 
             $executedQty = (float)($binanceOrder['executedQty'] ?? 0);
             $realInvestment = (float)($binanceOrder['cummulativeQuoteQty'] ?? 0);
-            
+
             if ($executedQty == 0) {
                 continue;
             }
 
             $oldInvestment = (float)$trade['investment'];
-            
+
             // Verificar se há diferença significativa
             if (abs($realInvestment - $oldInvestment) < 0.001) {
                 continue;
@@ -128,7 +130,7 @@ try {
                 "profit_loss = '" . $con->real_escape_string((string)$newProfitLoss) . "'",
                 "profit_loss_percent = '" . $con->real_escape_string((string)$newProfitLossPercent) . "'"
             ];
-            
+
             $con->update(
                 implode(", ", $updateFields),
                 "trades",
@@ -145,7 +147,6 @@ try {
 
             logMsg("✅ Trade #{$tradeIdx} atualizado");
             $updated++;
-
         } catch (Exception $e) {
             logMsg("❌ Erro no trade #{$tradeIdx}: " . $e->getMessage());
             $errors++;
@@ -153,8 +154,7 @@ try {
     }
 
     logMsg("✅ Sincronização concluída - {$updated} atualizado(s), {$errors} erro(s)");
-
 } catch (Exception $e) {
-    @file_put_contents('/var/log/nexobot/sync.log', "[" . date('Y-m-d H:i:s') . "] ❌ ERRO FATAL: " . $e->getMessage() . "\n", FILE_APPEND);
+    @file_put_contents('/var/log/sync.log', "[" . date('Y-m-d H:i:s') . "] ❌ ERRO FATAL: " . $e->getMessage() . "\n", FILE_APPEND);
     exit(1);
 }
