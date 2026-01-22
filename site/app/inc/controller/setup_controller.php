@@ -624,7 +624,8 @@ class setup_controller
                 $freeAsset = (float)$this->getAvailableBalance($symbol);
                 $executedQtyFloat = (float)$executedQty;
 
-                $sellableRaw = min($executedQtyFloat, $freeAsset) * 0.999; // margem para fee/arredondamento
+                // Usa todo o saldo livre do ativo (incluindo sobras de trades anteriores), com margem de segurança
+                $sellableRaw = $freeAsset * 0.999; // margem para fee/arredondamento
                 $sellable = floor($sellableRaw / $stepSizeFloat) * $stepSizeFloat;
 
                 if ($sellable <= 0) {
