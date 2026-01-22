@@ -614,20 +614,55 @@ class setup_controller
 
             $statusFilled = $status === 'FILLED';
             if ($orderId && $statusFilled) {
-                // Supondo que a quantidade executada ≈ quantity_total, distribuímos entre TP1 e TP2
-                $qtdTotal = (float)$orderConfigs["quantity_total"];
-                if ($qtdTotal <= 0) {
+                // Recalcula o que é vendável considerando fee já debitada do ativo comprado
+                $symbolData = $this->getExchangeInfo($symbol);
+                list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                $stepSizeFloat = (float)$stepSize;
+                $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+                $minNotionalFloat = $minNotional !== null ? (float)$minNotional : 0.0;
+
+                $freeAsset = (float)$this->getAvailableBalance($symbol);
+                $executedQtyFloat = (float)$executedQty;
+
+                $sellableRaw = min($executedQtyFloat, $freeAsset) * 0.999; // margem para fee/arredondamento
+                $sellable = floor($sellableRaw / $stepSizeFloat) * $stepSizeFloat;
+
+                if ($sellable <= 0) {
+                    $this->logTradeOperation($symbol, 'NO_SELLABLE_QTY', [
+                        'executedQty' => $executedQtyFloat,
+                        'freeAsset' => $freeAsset
+                    ]);
                     return;
                 }
 
-                $qtdTp1 = (float)$orderConfigs["quantity_tp1"];
-                $qtdTp2 = (float)$orderConfigs["quantity_tp2"];
+                // Split 40/60 e garante minNotional; se não der, colapsa para 1 TP
+                $qtdTp1Float = floor(($sellable * 0.4) / $stepSizeFloat) * $stepSizeFloat;
+                $qtdTp2Float = $sellable - $qtdTp1Float;
 
-                // Segurança: se algo sair errado, força soma = quantidade executada
-                if (abs(($qtdTp1 + $qtdTp2) - $qtdTotal) > 0.0000001) {
-                    $qtdTp1 = $qtdTotal * 0.4;
-                    $qtdTp2 = $qtdTotal - $qtdTp1;
+                $tp1Price = (float)$orderConfigs["tp1_price"];
+                $tp2StopPrice = (float)$orderConfigs["tp2_stop_price"];
+
+                $tp1Ok = $qtdTp1Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp1Float * $tp1Price) >= $minNotionalFloat);
+                $tp2Ok = $qtdTp2Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp2Float * $tp2StopPrice) >= $minNotionalFloat);
+
+                if (!$tp2Ok) {
+                    $qtdTp1Float = $sellable;
+                    $qtdTp2Float = 0.0;
+                    $tp2StopPrice = 0.0;
                 }
+
+                if (!$tp1Ok) {
+                    $this->logTradeOperation($symbol, 'NO_TP_MIN_NOTIONAL', [
+                        'sellable' => $sellable,
+                        'tp1Price' => $tp1Price,
+                        'minNotional' => $minNotionalFloat
+                    ]);
+                    return;
+                }
+
+                $qtdTp1 = number_format($qtdTp1Float, $decimalPlacesQty, '.', '');
+                $qtdTp2 = number_format($qtdTp2Float, $decimalPlacesQty, '.', '');
+                $qtdTotal = $qtdTp1Float + $qtdTp2Float;
 
                 // Verificação final de slots (já foi verificado antes, mas double-check por segurança)
                 $maxAlgoOrders = 5;
@@ -653,8 +688,8 @@ class setup_controller
                     return; // Não criar TPs nesta situação crítica
                 }
 
-                $placeTp1 = $availableAlgoSlots >= 1 && $qtdTp1 > 0;
-                $placeTp2 = $availableAlgoSlots >= 2 && $qtdTp2 > 0;
+                $placeTp1 = $availableAlgoSlots >= 1 && (float)$qtdTp1 > 0;
+                $placeTp2 = $availableAlgoSlots >= 2 && (float)$qtdTp2 > 0;
 
                 // TP1 – TAKE_PROFIT (market quando stopPrice for atingido)
                 if ($placeTp1) {
