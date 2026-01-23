@@ -429,6 +429,26 @@ class setup_controller
                 return;
             }
 
+            // Pré-checagem: garantir que ao menos 1 TP atenderá minNotional considerando fee (0.1%)
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSizePre, $tickSizePre, $minNotionalPre) = $this->extractFilters($symbolData);
+            $stepSizePreFloat = (float)$stepSizePre;
+            $minNotionalPreFloat = $minNotionalPre !== null ? (float)$minNotionalPre : 0.0;
+
+            $qtyTotalPre = (float)$orderConfigs['quantity_total'];
+            $tp1PricePre = (float)$orderConfigs['tp1_price'];
+            $projectedSellable = floor(($qtyTotalPre * 0.999) / $stepSizePreFloat) * $stepSizePreFloat;
+            $projectedNotional = $projectedSellable * $tp1PricePre;
+
+            if ($projectedSellable <= 0 || ($minNotionalPreFloat > 0 && $projectedNotional < $minNotionalPreFloat)) {
+                $this->log(
+                    "Pré-check falhou: TP não atinge minNotional para {$symbol}; trade ignorado",
+                    'INFO',
+                    'TRADE'
+                );
+                return;
+            }
+
             // VALIDAÇÃO CRÍTICA: Verificar se há espaço para TPs ANTES de comprar
             $maxAlgoOrders = 5;
             $openAlgoOrders = $this->getOpenAlgoOrdersCount();
@@ -634,6 +654,8 @@ class setup_controller
                         'executedQty' => $executedQtyFloat,
                         'freeAsset' => $freeAsset
                     ]);
+                    // Tenta saída de emergência se possível
+                    $this->attemptEmergencyExit($symbol, max(0.0, $freeAsset * 0.995));
                     return;
                 }
 
@@ -668,6 +690,7 @@ class setup_controller
                             'tp1Price' => $tp1Price,
                             'minNotional' => $minNotionalFloat
                         ]);
+                        $this->attemptEmergencyExit($symbol, $sellable * 0.995);
                         return;
                     }
                 }
@@ -973,6 +996,51 @@ class setup_controller
             $filters['PRICE_FILTER']['tickSize'],
             $minNotional
         ];
+    }
+
+    /**
+     * Saída de emergência: vende a mercado a quantidade indicada para evitar ficar exposto sem TP.
+     */
+    private function attemptEmergencyExit(string $symbol, float $quantity): void
+    {
+        if ($quantity <= 0) {
+            return;
+        }
+
+        try {
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+            $stepSizeFloat = (float)$stepSize;
+            $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+
+            $safeQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
+            if ($safeQty <= 0) {
+                return;
+            }
+
+            $sellReq = new NewOrderRequest();
+            $sellReq->setSymbol($symbol);
+            $sellReq->setSide(Side::SELL);
+            $sellReq->setType(OrderType::MARKET);
+            $sellReq->setQuantity((float)number_format($safeQty, $decimalPlacesQty, '.', ''));
+
+            $resp = $this->client->newOrder($sellReq);
+            $data = $resp->getData();
+
+            $orderId = method_exists($data, 'getOrderId') ? $data->getOrderId() : ($data['orderId'] ?? null);
+            $status = method_exists($data, 'getStatus') ? $data->getStatus() : ($data['status'] ?? 'UNKNOWN');
+
+            $this->logTradeOperation($symbol, 'EMERGENCY_SELL', [
+                'quantity' => $safeQty,
+                'orderId' => $orderId,
+                'status' => $status
+            ]);
+        } catch (Exception $e) {
+            $this->logTradeOperation($symbol, 'EMERGENCY_SELL_FAILED', [
+                'quantity' => $quantity,
+                'error' => $e->getMessage()
+            ]);
+        }
     }
 
     private function calculateAdjustedQuantity(float $investimento, float $currentPrice, string $stepSize): string
