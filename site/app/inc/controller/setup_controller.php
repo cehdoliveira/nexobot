@@ -167,10 +167,10 @@ class setup_controller
         }
     }
 
-    private function getAccountInfo(): array
+    private function getAccountInfo(bool $forceRefresh = false): array
     {
         $now = time();
-        if ($this->accountInfoCache && ($now - $this->accountInfoCacheTime) < self::CACHE_TTL_ACCOUNT_INFO) {
+        if (!$forceRefresh && $this->accountInfoCache && ($now - $this->accountInfoCacheTime) < self::CACHE_TTL_ACCOUNT_INFO) {
             return $this->accountInfoCache;
         }
 
@@ -621,7 +621,8 @@ class setup_controller
                 $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
                 $minNotionalFloat = $minNotional !== null ? (float)$minNotional : 0.0;
 
-                $freeAsset = (float)$this->getAvailableBalance($symbol);
+                // Pega saldo livre atual do ativo, forçando refresh para refletir o fill recém-executado
+                $freeAsset = (float)$this->getAvailableBalance($symbol, true);
                 $executedQtyFloat = (float)$executedQty;
 
                 // Usa todo o saldo livre do ativo (incluindo sobras de trades anteriores), com margem de segurança
@@ -646,19 +647,29 @@ class setup_controller
                 $tp1Ok = $qtdTp1Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp1Float * $tp1Price) >= $minNotionalFloat);
                 $tp2Ok = $qtdTp2Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp2Float * $tp2StopPrice) >= $minNotionalFloat);
 
+                // Se TP2 não atinge minNotional, colapsa em 1 TP
                 if (!$tp2Ok) {
                     $qtdTp1Float = $sellable;
                     $qtdTp2Float = 0.0;
                     $tp2StopPrice = 0.0;
+                    $tp2Ok = false;
+                    $tp1Ok = $qtdTp1Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp1Float * $tp1Price) >= $minNotionalFloat);
                 }
 
+                // Se TP1 original não atinge minNotional, tente colapsar tudo em 1 TP com a quantidade total
                 if (!$tp1Ok) {
-                    $this->logTradeOperation($symbol, 'NO_TP_MIN_NOTIONAL', [
-                        'sellable' => $sellable,
-                        'tp1Price' => $tp1Price,
-                        'minNotional' => $minNotionalFloat
-                    ]);
-                    return;
+                    $qtdTp1Float = $sellable;
+                    $qtdTp2Float = 0.0;
+                    $tp2StopPrice = 0.0;
+                    $tp1Ok = $qtdTp1Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp1Float * $tp1Price) >= $minNotionalFloat);
+                    if (!$tp1Ok) {
+                        $this->logTradeOperation($symbol, 'NO_TP_MIN_NOTIONAL', [
+                            'sellable' => $sellable,
+                            'tp1Price' => $tp1Price,
+                            'minNotional' => $minNotionalFloat
+                        ]);
+                        return;
+                    }
                 }
 
                 $qtdTp1 = number_format($qtdTp1Float, $decimalPlacesQty, '.', '');
@@ -980,7 +991,7 @@ class setup_controller
         return number_format($price, $decimalPlacesPrice, '.', '');
     }
 
-    public function getAvailableBalance(string $symbol): string
+    public function getAvailableBalance(string $symbol, bool $forceRefresh = false): string
     {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
@@ -989,7 +1000,7 @@ class setup_controller
             $stepSizeFloat = (float)$stepSize;
             $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
 
-            $accountInfo = $this->getAccountInfo();
+            $accountInfo = $this->getAccountInfo($forceRefresh);
             $asset = str_replace('USDC', '', $symbol);
 
             $wallet = null;
