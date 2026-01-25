@@ -224,13 +224,17 @@ try {
             }
 
             // Recalcular profit/loss com valores reais da Binance
-            $totalRevenue = $tp1Revenue + $tp2Revenue;
+            $totalRevenue = $totalSellRevenue;
             $newProfitLoss = $totalRevenue - $realInvestment;
             $newProfitLossPercent = $realInvestment > 0 ? (($newProfitLoss / $realInvestment) * 100) : 0;
             
             // Calcular preços médios para atualizar no banco
             $tp1AvgPrice = $tp1Qty > 0 ? ($tp1Revenue / $tp1Qty) : (float)($trade['take_profit_1_price'] ?? 0);
             $tp2AvgPrice = $tp2Qty > 0 ? ($tp2Revenue / $tp2Qty) : (float)($trade['take_profit_2_price'] ?? 0);
+            
+            echo "\n   💰 Receita total: $" . number_format($totalRevenue, 8) . "\n";
+            echo "   💵 Investimento:  $" . number_format($realInvestment, 8) . "\n";
+
 
             echo "\n   P/L Antigo: $" . number_format((float)$trade['profit_loss'], 8) . " (" . number_format((float)$trade['profit_loss_percent'], 2) . "%)\n";
             echo "   P/L Novo:  $" . number_format($newProfitLoss, 8) . " (" . number_format($newProfitLossPercent, 2) . "%)\n";
