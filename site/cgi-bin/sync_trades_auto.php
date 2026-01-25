@@ -109,26 +109,82 @@ try {
 
             $oldInvestment = (float)$trade['investment'];
 
-            // Verificar se há diferença significativa
-            if (abs($realInvestment - $oldInvestment) < 0.001) {
-                continue;
+            // Buscar e sincronizar ordens de venda (TP1 e TP2)
+            $tp1Qty = 0;
+            $tp1Revenue = 0;
+            $tp2Qty = 0;
+            $tp2Revenue = 0;
+            
+            // Buscar ordem TP1
+            $tp1OrderResult = $con->select("*", "orders", "WHERE active = 'yes' AND idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND side = 'SELL' AND order_type = 'tp1'");
+            $tp1Orders = $con->results($tp1OrderResult);
+            
+            if (!empty($tp1Orders)) {
+                try {
+                    $tp1Response = $api->getOrder($tradeSymbol, $tp1Orders[0]['binance_order_id']);
+                    $tp1BinanceOrder = $tp1Response->getData();
+                    if (!is_array($tp1BinanceOrder)) {
+                        $tp1BinanceOrder = json_decode(json_encode($tp1BinanceOrder), true);
+                    }
+                    $tp1Qty = (float)($tp1BinanceOrder['executedQty'] ?? 0);
+                    $tp1Revenue = (float)($tp1BinanceOrder['cummulativeQuoteQty'] ?? 0);
+                } catch (Exception $e) {
+                    // Se não encontrar na Binance, usa dados do banco
+                    $tp1Qty = (float)($trade['tp1_executed_qty'] ?? 0);
+                    $tp1Price = (float)($trade['take_profit_1_price'] ?? 0);
+                    $tp1Revenue = $tp1Qty * $tp1Price;
+                }
+            }
+            
+            // Buscar ordem TP2
+            $tp2OrderResult = $con->select("*", "orders", "WHERE active = 'yes' AND idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND side = 'SELL' AND order_type = 'tp2'");
+            $tp2Orders = $con->results($tp2OrderResult);
+            
+            if (!empty($tp2Orders)) {
+                try {
+                    $tp2Response = $api->getOrder($tradeSymbol, $tp2Orders[0]['binance_order_id']);
+                    $tp2BinanceOrder = $tp2Response->getData();
+                    if (!is_array($tp2BinanceOrder)) {
+                        $tp2BinanceOrder = json_decode(json_encode($tp2BinanceOrder), true);
+                    }
+                    $tp2Qty = (float)($tp2BinanceOrder['executedQty'] ?? 0);
+                    $tp2Revenue = (float)($tp2BinanceOrder['cummulativeQuoteQty'] ?? 0);
+                } catch (Exception $e) {
+                    // Se não encontrar na Binance, usa dados do banco
+                    $tp2Qty = (float)($trade['tp2_executed_qty'] ?? 0);
+                    $tp2Price = (float)($trade['take_profit_2_price'] ?? 0);
+                    $tp2Revenue = $tp2Qty * $tp2Price;
+                }
             }
 
-            // Recalcular P/L
-            $tp1Qty = (float)($trade['tp1_executed_qty'] ?? 0);
-            $tp1Price = (float)($trade['take_profit_1_price'] ?? 0);
-            $tp2Qty = (float)($trade['tp2_executed_qty'] ?? 0);
-            $tp2Price = (float)($trade['take_profit_2_price'] ?? 0);
-
-            $totalRevenue = ($tp1Qty * $tp1Price) + ($tp2Qty * $tp2Price);
+            // Recalcular P/L com valores reais da Binance
+            $totalRevenue = $tp1Revenue + $tp2Revenue;
             $newProfitLoss = $totalRevenue - $realInvestment;
             $newProfitLossPercent = $realInvestment > 0 ? (($newProfitLoss / $realInvestment) * 100) : 0;
+            
+            // Calcular preços médios
+            $tp1AvgPrice = $tp1Qty > 0 ? ($tp1Revenue / $tp1Qty) : (float)($trade['take_profit_1_price'] ?? 0);
+            $tp2AvgPrice = $tp2Qty > 0 ? ($tp2Revenue / $tp2Qty) : (float)($trade['take_profit_2_price'] ?? 0);
+            
+            // Verificar se há diferença significativa em qualquer valor
+            $hasChanges = abs($realInvestment - $oldInvestment) >= 0.001 ||
+                         abs($newProfitLoss - (float)$trade['profit_loss']) >= 0.001 ||
+                         abs($tp1Qty - (float)($trade['tp1_executed_qty'] ?? 0)) >= 0.001 ||
+                         abs($tp2Qty - (float)($trade['tp2_executed_qty'] ?? 0)) >= 0.001;
+            
+            if (!$hasChanges) {
+                continue;
+            }
 
             // Atualizar banco
             $updateFields = [
                 "investment = '" . $con->real_escape_string((string)$realInvestment) . "'",
                 "profit_loss = '" . $con->real_escape_string((string)$newProfitLoss) . "'",
-                "profit_loss_percent = '" . $con->real_escape_string((string)$newProfitLossPercent) . "'"
+                "profit_loss_percent = '" . $con->real_escape_string((string)$newProfitLossPercent) . "'",
+                "tp1_executed_qty = '" . $con->real_escape_string((string)$tp1Qty) . "'",
+                "tp2_executed_qty = '" . $con->real_escape_string((string)$tp2Qty) . "'",
+                "take_profit_1_price = '" . $con->real_escape_string((string)$tp1AvgPrice) . "'",
+                "take_profit_2_price = '" . $con->real_escape_string((string)$tp2AvgPrice) . "'"
             ];
 
             $con->update(
