@@ -148,78 +148,51 @@ try {
             // Buscar ordens de venda (TP1 e TP2) e sincronizar com Binance
             echo "\n🔍 Sincronizando ordens de venda...\n";
             
+            // Buscar todas as ordens SELL (take_profit) do trade
+            $sellOrdersResult = $con->select("*", "orders", "WHERE active = 'yes' AND idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND side = 'SELL' AND order_type = 'take_profit' ORDER BY binance_order_id ASC");
+            $sellOrders = $con->results($sellOrdersResult);
+            
+            echo "   📋 Ordens de venda encontradas: " . count($sellOrders) . "\n";
+            
             $tp1Qty = 0;
             $tp1Revenue = 0;
             $tp2Qty = 0;
             $tp2Revenue = 0;
-                        // Debug: Buscar todas as ordens relacionadas ao trade
-            $allOrdersResult = $con->select("o.idx, o.side, o.order_type, o.binance_order_id, o.status", "orders o INNER JOIN orders_trades ot ON o.idx = ot.orders_id", "WHERE o.active = 'yes' AND ot.active = 'yes' AND ot.trades_id = '{$tradeIdx}'");
-            $allOrders = $con->results($allOrdersResult);
-            echo "   📋 Ordens encontradas no banco: " . count($allOrders) . "\n";
-            foreach ($allOrders as $ord) {
-                echo "      - Ordem #{$ord['idx']}: {$ord['side']} {$ord['order_type']} (Binance ID: {$ord['binance_order_id']}, Status: {$ord['status']})\\n";
-            }
-                        // Buscar ordem TP1
-            $tp1OrderResult = $con->select("*", "orders", "WHERE active = 'yes' AND idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND side = 'SELL' AND order_type = 'tp1'");
-            $tp1Orders = $con->results($tp1OrderResult);
+            $totalSellRevenue = 0;
             
-            if (!empty($tp1Orders)) {
-                $tp1Order = $tp1Orders[0];
-                $tp1BinanceId = $tp1Order['binance_order_id'];
+            foreach ($sellOrders as $idx => $sellOrder) {
+                $sellBinanceId = $sellOrder['binance_order_id'];
+                $orderNum = $idx + 1;
                 
                 try {
-                    $tp1Response = $api->getOrder($tradeSymbol, $tp1BinanceId);
-                    $tp1BinanceOrder = $tp1Response->getData();
+                    $sellResponse = $api->getOrder($tradeSymbol, $sellBinanceId);
+                    $sellBinanceOrder = $sellResponse->getData();
                     
-                    if (!is_array($tp1BinanceOrder)) {
-                        $tp1BinanceOrder = json_decode(json_encode($tp1BinanceOrder), true);
+                    if (!is_array($sellBinanceOrder)) {
+                        $sellBinanceOrder = json_decode(json_encode($sellBinanceOrder), true);
                     }
                     
-                    $tp1Qty = (float)($tp1BinanceOrder['executedQty'] ?? 0);
-                    $tp1Revenue = (float)($tp1BinanceOrder['cummulativeQuoteQty'] ?? 0);
+                    $sellQty = (float)($sellBinanceOrder['executedQty'] ?? 0);
+                    $sellRevenue = (float)($sellBinanceOrder['cummulativeQuoteQty'] ?? 0);
                     
-                    echo "   ✅ TP1 (Ordem #{$tp1BinanceId}): " . number_format($tp1Qty, 8) . " = $" . number_format($tp1Revenue, 8) . "\n";
+                    $totalSellRevenue += $sellRevenue;
+                    
+                    // Primeira ordem = TP1, Segunda = TP2
+                    if ($idx == 0) {
+                        $tp1Qty = $sellQty;
+                        $tp1Revenue = $sellRevenue;
+                    } elseif ($idx == 1) {
+                        $tp2Qty = $sellQty;
+                        $tp2Revenue = $sellRevenue;
+                    }
+                    
+                    echo "   ✅ Ordem SELL #{$orderNum} (Binance: {$sellBinanceId}): " . number_format($sellQty, 8) . " un = $" . number_format($sellRevenue, 8) . "\n";
                 } catch (Exception $e) {
                     if (strpos($e->getMessage(), '-2013') === false && strpos($e->getMessage(), '404') === false) {
-                        echo "   ⚠️  Erro ao buscar TP1: " . $e->getMessage() . "\n";
+                        echo "   ⚠️  Erro ao buscar ordem #{$sellBinanceId}: " . $e->getMessage() . "\n";
+                    } else {
+                        echo "   ⚠️  Ordem #{$sellBinanceId} não encontrada na Binance\n";
                     }
-                    // Se não encontrar na Binance, usa dados do banco
-                    $tp1Qty = (float)($trade['tp1_executed_qty'] ?? 0);
-                    $tp1Price = (float)($trade['take_profit_1_price'] ?? 0);
-                    $tp1Revenue = $tp1Qty * $tp1Price;
-                    echo "   ⚠️  TP1 não encontrado na Binance, usando dados do banco\n";
-                }
-            }
-            
-            // Buscar ordem TP2
-            $tp2OrderResult = $con->select("*", "orders", "WHERE active = 'yes' AND idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND side = 'SELL' AND order_type = 'tp2'");
-            $tp2Orders = $con->results($tp2OrderResult);
-            
-            if (!empty($tp2Orders)) {
-                $tp2Order = $tp2Orders[0];
-                $tp2BinanceId = $tp2Order['binance_order_id'];
-                
-                try {
-                    $tp2Response = $api->getOrder($tradeSymbol, $tp2BinanceId);
-                    $tp2BinanceOrder = $tp2Response->getData();
-                    
-                    if (!is_array($tp2BinanceOrder)) {
-                        $tp2BinanceOrder = json_decode(json_encode($tp2BinanceOrder), true);
-                    }
-                    
-                    $tp2Qty = (float)($tp2BinanceOrder['executedQty'] ?? 0);
-                    $tp2Revenue = (float)($tp2BinanceOrder['cummulativeQuoteQty'] ?? 0);
-                    
-                    echo "   ✅ TP2 (Ordem #{$tp2BinanceId}): " . number_format($tp2Qty, 8) . " = $" . number_format($tp2Revenue, 8) . "\n";
-                } catch (Exception $e) {
-                    if (strpos($e->getMessage(), '-2013') === false && strpos($e->getMessage(), '404') === false) {
-                        echo "   ⚠️  Erro ao buscar TP2: " . $e->getMessage() . "\n";
-                    }
-                    // Se não encontrar na Binance, usa dados do banco
-                    $tp2Qty = (float)($trade['tp2_executed_qty'] ?? 0);
-                    $tp2Price = (float)($trade['take_profit_2_price'] ?? 0);
-                    $tp2Revenue = $tp2Qty * $tp2Price;
-                    echo "   ⚠️  TP2 não encontrado na Binance, usando dados do banco\n";
                 }
             }
 
