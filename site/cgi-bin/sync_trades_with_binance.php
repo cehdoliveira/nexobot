@@ -152,8 +152,14 @@ try {
             $tp1Revenue = 0;
             $tp2Qty = 0;
             $tp2Revenue = 0;
-            
-            // Buscar ordem TP1
+                        // Debug: Buscar todas as ordens relacionadas ao trade
+            $allOrdersResult = $con->select("o.idx, o.side, o.order_type, o.binance_order_id, o.status", "orders o INNER JOIN orders_trades ot ON o.idx = ot.orders_id", "WHERE o.active = 'yes' AND ot.active = 'yes' AND ot.trades_id = '{$tradeIdx}'");
+            $allOrders = $con->results($allOrdersResult);
+            echo "   📋 Ordens encontradas no banco: " . count($allOrders) . "\n";
+            foreach ($allOrders as $ord) {
+                echo "      - Ordem #{$ord['idx']}: {$ord['side']} {$ord['order_type']} (Binance ID: {$ord['binance_order_id']}, Status: {$ord['status']})\\n";
+            }
+                        // Buscar ordem TP1
             $tp1OrderResult = $con->select("*", "orders", "WHERE active = 'yes' AND idx IN (SELECT orders_id FROM orders_trades WHERE active = 'yes' AND trades_id = '{$tradeIdx}') AND side = 'SELL' AND order_type = 'tp1'");
             $tp1Orders = $con->results($tp1OrderResult);
             
