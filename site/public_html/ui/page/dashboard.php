@@ -259,7 +259,7 @@
                         <!-- Container do Carrossel com espaçamento para as setas -->
                         <div class="position-relative" style="padding: 0 60px;">
                             <!-- Carrossel de Trades -->
-                            <div id="openTradesCarousel" class="carousel slide" data-bs-ride="false">
+                            <div id="openTradesCarousel" class="carousel slide" data-bs-ride="carousel">
                                 <div class="carousel-inner py-2">
                                     <?php foreach ($tradesChunks as $chunkIndex => $tradesChunk): ?>
                                         <div class="carousel-item <?php echo $chunkIndex === 0 ? 'active' : ''; ?>">
