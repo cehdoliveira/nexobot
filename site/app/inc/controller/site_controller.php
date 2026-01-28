@@ -117,6 +117,7 @@ class site_controller
             $accountData = $accountInfo->getData();
 
             $walletTotal = 0;
+            $usdcBalance = 0;
             $walletBalances = [];
 
             if ($accountData && isset($accountData["balances"])) {
@@ -128,6 +129,11 @@ class site_controller
                     if ($total > 0) {
                         $asset = $balance["asset"];
                         $valueInUsdc = $total;
+
+                        // Guardar saldo de USDC separadamente
+                        if ($asset === "USDC") {
+                            $usdcBalance = $total;
+                        }
 
                         // Se não for USDC, converter para USDC usando preço atual da Binance
                         if ($asset !== "USDC") {
@@ -175,6 +181,7 @@ class site_controller
         } catch (Exception $e) {
             error_log("Erro ao buscar saldo da carteira: " . $e->getMessage());
             $walletTotal = 0;
+            $usdcBalance = 0;
             $walletBalances = [];
         }
 
@@ -249,6 +256,7 @@ class site_controller
         $dashboardData = [
             'stats' => $stats,
             'wallet_total' => $walletTotal,
+            'usdc_balance' => $usdcBalance,
             'wallet_balances' => $walletBalances,
             'patrimonial_growth' => $patrimonialGrowth,
             'open_trades' => array_values($openTrades),

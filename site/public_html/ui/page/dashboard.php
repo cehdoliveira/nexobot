@@ -98,7 +98,7 @@
                         </div>
                         <div class="flex-grow-1 ms-sm-3">
                             <p class="text-muted mb-1 small">Saldo USDC</p>
-                            <h4 class="mb-0 fs-6 fs-sm-5">$<?php echo number_format($dashboardData['wallet_total'] ?? 0, 2, '.', ','); ?></h4>
+                            <h4 class="mb-0 fs-6 fs-sm-5">$<?php echo number_format($dashboardData['usdc_balance'] ?? 0, 2, '.', ','); ?></h4>
                         </div>
                     </div>
                 </div>
