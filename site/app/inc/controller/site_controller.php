@@ -126,17 +126,40 @@ class site_controller
                     $total = $free + $locked;
 
                     if ($total > 0) {
+                        $asset = $balance["asset"];
+                        $valueInUsdc = $total;
+
+                        // Se não for USDC, converter para USDC usando preço atual da Binance
+                        if ($asset !== "USDC") {
+                            try {
+                                // Tentar buscar preço do par ASSET/USDC
+                                $symbol = $asset . "USDC";
+                                $priceResponse = $api->getPrice($symbol);
+                                $priceData = $priceResponse->getData();
+                                $price = (float)($priceData["price"] ?? 0);
+                                
+                                if ($price > 0) {
+                                    $valueInUsdc = $total * $price;
+                                } else {
+                                    // Se não conseguir o preço, não contabilizar no total
+                                    $valueInUsdc = 0;
+                                }
+                            } catch (Exception $priceError) {
+                                // Se não conseguir buscar o preço (par não existe), não contabilizar
+                                $valueInUsdc = 0;
+                            }
+                        }
+
                         $walletBalances[] = [
-                            "asset" => $balance["asset"],
+                            "asset" => $asset,
                             "free" => $free,
                             "locked" => $locked,
-                            "total" => $total
+                            "total" => $total,
+                            "value_usdc" => $valueInUsdc
                         ];
 
-                        // Contabilizar USDC no total
-                        if (in_array($balance["asset"], ["USDC"])) {
-                            $walletTotal += $total;
-                        }
+                        // Contabilizar TODOS os ativos no total (em USDC)
+                        $walletTotal += $valueInUsdc;
                     }
                 }
             }
@@ -211,7 +234,7 @@ class site_controller
         }
 
         // === BUSCAR CRESCIMENTO PATRIMONIAL ===
-        $patrimonialGrowth = WalletBalanceHelper::getTotalGrowth();
+        $patrimonialGrowth = WalletBalanceHelper::getTotalGrowth($walletTotal);
 
         // === PREPARAR DADOS PARA A VIEW ===
         $dashboardData = [

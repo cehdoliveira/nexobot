@@ -103,9 +103,10 @@ class WalletBalanceHelper
 
     /**
      * Calcula o crescimento patrimonial total desde o primeiro snapshot
+     * @param float|null $currentWalletTotal Saldo total atual da carteira (todos ativos em USDC). Se null, usa último snapshot.
      * @return array Informações de crescimento patrimonial
      */
-    public static function getTotalGrowth()
+    public static function getTotalGrowth($currentWalletTotal = null)
     {
         try {
             $walletModel = new walletbalances_model();
@@ -113,10 +114,10 @@ class WalletBalanceHelper
             $walletModel->set_order(["snapshot_at ASC"]);
             $walletModel->load_data();
 
-            if (count($walletModel->data) < 2) {
+            if (count($walletModel->data) < 1) {
                 return [
                     'has_data' => false,
-                    'message' => 'Necessário pelo menos 2 snapshots para calcular crescimento'
+                    'message' => 'Necessário pelo menos 1 snapshot para calcular crescimento'
                 ];
             }
 
@@ -124,7 +125,10 @@ class WalletBalanceHelper
             $lastSnapshot = $walletModel->data[count($walletModel->data) - 1];
 
             $initialBalance = (float)$firstSnapshot['balance_usdc'];
-            $currentBalance = (float)$lastSnapshot['balance_usdc'];
+            
+            // Usar saldo atual da carteira (se fornecido) ou último snapshot
+            $currentBalance = $currentWalletTotal !== null ? (float)$currentWalletTotal : (float)$lastSnapshot['balance_usdc'];
+            
             $difference = $currentBalance - $initialBalance;
             $growthPercent = $initialBalance > 0 ? (($difference / $initialBalance) * 100) : 0;
 
