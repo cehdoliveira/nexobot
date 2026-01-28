@@ -94,8 +94,8 @@ class site_controller
         ];
 
         // === PAGINAÇÃO DE TRADES FECHADOS ===
-        $perPage = isset($info["get"]["paginate"]) && (int)$info["get"]["paginate"] > 20 ? $info["get"]["paginate"] : 20;
-        $page = isset($info["sr"]) && (int)$info["sr"] > 0 ? (int)$info["sr"] : 1;
+        $perPage = isset($info["get"]["paginate"]) && (int)$info["get"]["paginate"] > 3 ? $info["get"]["paginate"] : 3;
+        $page = isset($info["get"]["page"]) && (int)$info["get"]["page"] > 0 ? (int)$info["get"]["page"] : 1;
 
         // Usar os dados de closedTradesData já filtrados e ordenados
         usort($closedTradesData, fn($a, $b) => strtotime($b['closed_at'] ?? '0') - strtotime($a['closed_at'] ?? '0'));
@@ -222,6 +222,7 @@ class site_controller
             'open_trades' => array_values($openTrades),
             'open_orders' => $ordensAbertas,
             'closed_trades' => $closedTrades,
+            'closed_trades_all' => $closedTradesData,
             'pagination' => [
                 'current_page' => $page,
                 'total_pages' => $totalPages,
@@ -283,13 +284,13 @@ class site_controller
             $tradesModel = new trades_model();
             $tradesModel->set_filter(["active = 'yes'", "idx = '{$tradeIdx}'"]);
             $tradesModel->load_data();
-            
+
             if (empty($tradesModel->data)) {
                 continue;
             }
-            
+
             $updatedTrade = $tradesModel->data[0];
-            
+
             // Se tem TP2: fechar quando ambos forem executados
             // Se não tem TP2: fechar quando TP1 for executado
             if ($hasTP2) {
@@ -624,7 +625,7 @@ class site_controller
     {
         try {
             $cache = RedisCache::getInstance();
-            
+
             if (!$cache || !$cache->isConnected()) {
                 echo json_encode([
                     'success' => false,

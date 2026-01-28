@@ -18,7 +18,7 @@
                         <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Atualizar</span>
                     </button>
                     <button class="btn btn-danger btn-sm" @click="closeAllPositions()" :disabled="isClosingPositions">
-                        <i class="bi bi-exclamation-triangle"></i> 
+                        <i class="bi bi-exclamation-triangle"></i>
                         <span class="d-none d-sm-inline" x-text="isClosingPositions ? 'Encerrando...' : 'Encerrar Tudo'"></span>
                         <span class="d-sm-none" x-text="isClosingPositions ? '...' : 'Encerrar'"></span>
                     </button>
@@ -240,7 +240,7 @@
     <?php endif; ?>
 
     <!-- Trades Abertos -->
-    <!-- Trades em Aberto (com suporte a múltiplos TPs) -->
+    <!-- Trades em Aberto (com suporte a múltiplos TPs e Carrossel) -->
     <div class="row mb-4">
         <div class="col-12">
             <div class="card border-0 shadow-sm">
@@ -250,116 +250,146 @@
                 </div>
                 <?php if (!empty($dashboardData['open_trades'])): ?>
                     <div class="card-body">
-                        <?php foreach ($dashboardData['open_trades'] as $trade): ?>
-                            <div class="border-bottom pb-3 mb-3">
-                                <!-- Cabeçalho do Trade -->
-                                <div class="row align-items-center mb-2">
-                                    <div class="col-auto">
-                                        <h6 class="mb-0">
-                                            <span class="badge bg-primary"><?php echo htmlspecialchars($trade['symbol']); ?></span>
-                                        </h6>
-                                    </div>
-                                    <div class="col-auto ms-auto">
-                                        <small class="text-muted"><?php echo date('d/m/Y H:i', strtotime($trade['opened_at'])); ?></small>
-                                    </div>
-                                </div>
+                        <?php
+                        // Dividir trades em grupos de 2
+                        $openTrades = $dashboardData['open_trades'];
+                        $tradesChunks = array_chunk($openTrades, 2);
+                        ?>
 
-                                <!-- Dados do Trade -->
-                                <div class="row g-3 mb-3 text-sm">
-                                    <div class="col-6 col-md-3">
-                                        <p class="text-muted mb-1 small"><strong>Preço Entrada</strong></p>
-                                        <p class="mb-0">$<?php echo number_format($trade['entry_price'], 8); ?></p>
-                                    </div>
-                                    <div class="col-6 col-md-3">
-                                        <p class="text-muted mb-1 small"><strong>Quantidade</strong></p>
-                                        <p class="mb-0"><?php echo number_format($trade['quantity'], 8); ?></p>
-                                    </div>
-                                    <div class="col-6 col-md-3">
-                                        <p class="text-muted mb-1 small"><strong>Investimento</strong></p>
-                                        <p class="mb-0">$<?php echo number_format($trade['investment'], 2); ?></p>
-                                    </div>
-                                    <div class="col-6 col-md-3">
-                                        <p class="text-muted mb-1 small"><strong>Dias Aberto</strong></p>
-                                        <p class="mb-0"><?php echo (int)((time() - strtotime($trade['opened_at'])) / 86400); ?> dias</p>
-                                    </div>
-                                </div>
+                        <!-- Container do Carrossel com espaçamento para as setas -->
+                        <div class="position-relative" style="padding: 0 60px;">
+                            <!-- Carrossel de Trades -->
+                            <div id="openTradesCarousel" class="carousel slide" data-bs-ride="false">
+                                <div class="carousel-inner py-2">
+                                    <?php foreach ($tradesChunks as $chunkIndex => $tradesChunk): ?>
+                                        <div class="carousel-item <?php echo $chunkIndex === 0 ? 'active' : ''; ?>">
+                                            <div class="row g-3">
+                                                <?php foreach ($tradesChunk as $trade): ?>
+                                                    <div class="col-12 col-lg-6">
+                                                        <div class="border rounded p-3 h-100">
+                                                            <!-- Cabeçalho do Trade -->
+                                                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                                                <h6 class="mb-0">
+                                                                    <span class="badge bg-primary"><?php echo htmlspecialchars($trade['symbol']); ?></span>
+                                                                </h6>
+                                                                <small class="text-muted"><?php echo date('d/m/Y H:i', strtotime($trade['opened_at'])); ?></small>
+                                                            </div>
 
-                                <!-- Alvos de Take Profit -->
-                                <?php 
-                                    $hasTP2 = !empty($trade['take_profit_2_price']) && (float)$trade['take_profit_2_price'] > 0;
-                                    $colClass = $hasTP2 ? 'col-12 col-md-6' : 'col-12';
-                                ?>
-                                <div class="row g-3">
-                                    <!-- TP1 (Conservador) -->
-                                    <div class="<?php echo $colClass; ?>">
-                                        <div class="border rounded p-2 bg-light">
-                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                <small class="text-muted"><strong><?php echo $hasTP2 ? 'TP1 (Conservador)' : 'Take Profit'; ?></strong></small>
-                                                <?php 
-                                                    $tp1Status = $trade['tp1_status'] ?? 'pending';
-                                                    $tp1BadgeClass = match($tp1Status) {
-                                                        'filled' => 'bg-success',
-                                                        'partially_filled' => 'bg-warning',
-                                                        'cancelled' => 'bg-secondary',
-                                                        default => 'bg-info'
-                                                    };
-                                                    $tp1Label = match($tp1Status) {
-                                                        'filled' => 'Executado',
-                                                        'partially_filled' => 'Parcialmente',
-                                                        'cancelled' => 'Cancelado',
-                                                        default => 'Aguardando'
-                                                    };
-                                                ?>
-                                                <span class="badge <?php echo $tp1BadgeClass; ?>"><?php echo $tp1Label; ?></span>
+                                                            <!-- Dados do Trade -->
+                                                            <div class="row g-2 mb-3">
+                                                                <div class="col-6">
+                                                                    <p class="text-muted mb-1 small"><strong>Preço Entrada</strong></p>
+                                                                    <p class="mb-0 small">$<?php echo number_format($trade['entry_price'], 8); ?></p>
+                                                                </div>
+                                                                <div class="col-6">
+                                                                    <p class="text-muted mb-1 small"><strong>Quantidade</strong></p>
+                                                                    <p class="mb-0 small"><?php echo number_format($trade['quantity'], 8); ?></p>
+                                                                </div>
+                                                                <div class="col-6">
+                                                                    <p class="text-muted mb-1 small"><strong>Investimento</strong></p>
+                                                                    <p class="mb-0 small">$<?php echo number_format($trade['investment'], 2); ?></p>
+                                                                </div>
+                                                                <div class="col-6">
+                                                                    <p class="text-muted mb-1 small"><strong>Dias Aberto</strong></p>
+                                                                    <p class="mb-0 small"><?php echo (int)((time() - strtotime($trade['opened_at'])) / 86400); ?> dias</p>
+                                                                </div>
+                                                            </div>
+
+                                                            <!-- Alvos de Take Profit -->
+                                                            <?php
+                                                            $hasTP2 = !empty($trade['take_profit_2_price']) && (float)$trade['take_profit_2_price'] > 0;
+                                                            ?>
+                                                            <div class="row g-2">
+                                                                <!-- TP1 (Conservador) -->
+                                                                <div class="col-12 <?php echo $hasTP2 ? 'col-md-6' : ''; ?>">
+                                                                    <div class="border rounded p-2 bg-light">
+                                                                        <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                            <small class="text-muted"><strong><?php echo $hasTP2 ? 'TP1' : 'Take Profit'; ?></strong></small>
+                                                                            <?php
+                                                                            $tp1Status = $trade['tp1_status'] ?? 'pending';
+                                                                            $tp1BadgeClass = match ($tp1Status) {
+                                                                                'filled' => 'bg-success',
+                                                                                'partially_filled' => 'bg-warning',
+                                                                                'cancelled' => 'bg-secondary',
+                                                                                default => 'bg-info'
+                                                                            };
+                                                                            $tp1Label = match ($tp1Status) {
+                                                                                'filled' => 'Executado',
+                                                                                'partially_filled' => 'Parcial',
+                                                                                'cancelled' => 'Cancelado',
+                                                                                default => 'Aguardando'
+                                                                            };
+                                                                            ?>
+                                                                            <span class="badge <?php echo $tp1BadgeClass; ?> badge-sm"><?php echo $tp1Label; ?></span>
+                                                                        </div>
+                                                                        <p class="mb-0 small">
+                                                                            <strong>$<?php echo number_format($trade['take_profit_1_price'] ?? 0, 8); ?></strong>
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+
+                                                                <!-- TP2 (Agressivo) - Exibir apenas se existir -->
+                                                                <?php if ($hasTP2): ?>
+                                                                    <div class="col-12 col-md-6">
+                                                                        <div class="border rounded p-2 bg-light">
+                                                                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                                                                <small class="text-muted"><strong>TP2</strong></small>
+                                                                                <?php
+                                                                                $tp2Status = $trade['tp2_status'] ?? 'pending';
+                                                                                $tp2BadgeClass = match ($tp2Status) {
+                                                                                    'filled' => 'bg-success',
+                                                                                    'partially_filled' => 'bg-warning',
+                                                                                    'cancelled' => 'bg-secondary',
+                                                                                    default => 'bg-info'
+                                                                                };
+                                                                                $tp2Label = match ($tp2Status) {
+                                                                                    'filled' => 'Executado',
+                                                                                    'partially_filled' => 'Parcial',
+                                                                                    'cancelled' => 'Cancelado',
+                                                                                    default => 'Aguardando'
+                                                                                };
+                                                                                ?>
+                                                                                <span class="badge <?php echo $tp2BadgeClass; ?> badge-sm"><?php echo $tp2Label; ?></span>
+                                                                            </div>
+                                                                            <p class="mb-0 small">
+                                                                                <strong>$<?php echo number_format($trade['take_profit_2_price'] ?? 0, 8); ?></strong>
+                                                                            </p>
+                                                                        </div>
+                                                                    </div>
+                                                                <?php endif; ?>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                <?php endforeach; ?>
                                             </div>
-                                            <p class="mb-1 small">
-                                                Preço: <strong>$<?php echo number_format($trade['take_profit_1_price'] ?? 0, 8); ?></strong>
-                                            </p>
-                                            <?php if (($trade['tp1_status'] ?? 'pending') !== 'pending'): ?>
-                                                <p class="mb-0 small text-muted">
-                                                    Executado: <?php echo number_format($trade['tp1_executed_qty'] ?? 0, 8); ?>
-                                                </p>
-                                            <?php endif; ?>
                                         </div>
-                                    </div>
-
-                                    <!-- TP2 (Agressivo) - Exibir apenas se existir -->
-                                    <?php if ($hasTP2): ?>
-                                    <div class="col-12 col-md-6">
-                                        <div class="border rounded p-2 bg-light">
-                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                <small class="text-muted"><strong>TP2 (Agressivo)</strong></small>
-                                                <?php 
-                                                    $tp2Status = $trade['tp2_status'] ?? 'pending';
-                                                    $tp2BadgeClass = match($tp2Status) {
-                                                        'filled' => 'bg-success',
-                                                        'partially_filled' => 'bg-warning',
-                                                        'cancelled' => 'bg-secondary',
-                                                        default => 'bg-info'
-                                                    };
-                                                    $tp2Label = match($tp2Status) {
-                                                        'filled' => 'Executado',
-                                                        'partially_filled' => 'Parcialmente',
-                                                        'cancelled' => 'Cancelado',
-                                                        default => 'Aguardando'
-                                                    };
-                                                ?>
-                                                <span class="badge <?php echo $tp2BadgeClass; ?>"><?php echo $tp2Label; ?></span>
-                                            </div>
-                                            <p class="mb-1 small">
-                                                Preço: <strong>$<?php echo number_format($trade['take_profit_2_price'] ?? 0, 8); ?></strong>
-                                            </p>
-                                            <?php if (($trade['tp2_status'] ?? 'pending') !== 'pending'): ?>
-                                                <p class="mb-0 small text-muted">
-                                                    Executado: <?php echo number_format($trade['tp2_executed_qty'] ?? 0, 8); ?>
-                                                </p>
-                                            <?php endif; ?>
-                                        </div>
-                                    </div>
-                                    <?php endif; ?>
+                                    <?php endforeach; ?>
                                 </div>
+
+                                <!-- Controles do Carrossel -->
+                                <?php if (count($tradesChunks) > 1): ?>
+                                    <button class="carousel-control-prev position-absolute" type="button" data-bs-target="#openTradesCarousel" data-bs-slide="prev" style="left: -60px; width: 40px; opacity: 1;">
+                                        <span class="carousel-control-prev-icon bg-primary rounded-circle p-2 shadow" aria-hidden="true"></span>
+                                        <span class="visually-hidden">Anterior</span>
+                                    </button>
+                                    <button class="carousel-control-next position-absolute" type="button" data-bs-target="#openTradesCarousel" data-bs-slide="next" style="right: -60px; width: 40px; opacity: 1;">
+                                        <span class="carousel-control-next-icon bg-primary rounded-circle p-2 shadow" aria-hidden="true"></span>
+                                        <span class="visually-hidden">Próximo</span>
+                                    </button>
+
+                                    <!-- Indicadores -->
+                                    <div class="carousel-indicators position-relative mt-3 mb-0">
+                                        <?php foreach ($tradesChunks as $chunkIndex => $chunk): ?>
+                                            <button type="button" data-bs-target="#openTradesCarousel" data-bs-slide-to="<?php echo $chunkIndex; ?>"
+                                                class="<?php echo $chunkIndex === 0 ? 'active' : ''; ?> bg-primary"
+                                                aria-current="<?php echo $chunkIndex === 0 ? 'true' : 'false'; ?>"
+                                                aria-label="Slide <?php echo $chunkIndex + 1; ?>">
+                                            </button>
+                                        <?php endforeach; ?>
+                                    </div>
+                                <?php endif; ?>
                             </div>
-                        <?php endforeach; ?>
+                        </div>
                     </div>
                 <?php else: ?>
                     <div class="card-body text-center text-muted py-5">
@@ -441,56 +471,75 @@
                 </div>
                 <div class="card-body">
                     <?php
-                        // Calcular estatísticas sobre os TPs
-                        $tp1Hits = 0;
-                        $tp2Hits = 0;
-                        $bothTPsHits = 0;
-                        $openTradesWithTP1Filled = 0;
-                        $openTradesWithTP2Filled = 0;
-                        
-                        foreach (($dashboardData['open_trades'] ?? []) as $trade) {
-                            if (($trade['tp1_status'] ?? 'pending') === 'filled') $openTradesWithTP1Filled++;
+                    // Calcular estatísticas sobre os TPs (usando TODOS os trades, não apenas os paginados)
+                    $totalTrades = 0;           // Total de trades fechados
+                    $tp1Hits = 0;               // Trades que atingiram TP1
+                    $tp2Hits = 0;               // Trades que atingiram TP2 (onde TP2 existe)
+                    $tradesWithTP2 = 0;         // Trades que possuem TP2 definido
+                    $openTradesWithTP1Filled = 0;
+                    $openTradesWithTP2Filled = 0;
+                    $openTradesWithTP2Defined = 0;
+
+                    foreach (($dashboardData['open_trades'] ?? []) as $trade) {
+                        if (($trade['tp1_status'] ?? 'pending') === 'filled') $openTradesWithTP1Filled++;
+                        // Verificar se TP2 existe (não é vazio/null/0)
+                        if (!empty($trade['take_profit_2_price']) && (float)$trade['take_profit_2_price'] > 0) {
+                            $openTradesWithTP2Defined++;
                             if (($trade['tp2_status'] ?? 'pending') === 'filled') $openTradesWithTP2Filled++;
                         }
-                        
-                        // Também contar nos trades fechados
-                        foreach (($dashboardData['closed_trades'] ?? []) as $trade) {
-                            if (($trade['tp1_status'] ?? 'pending') === 'filled') $tp1Hits++;
-                            if (($trade['tp2_status'] ?? 'pending') === 'filled') $tp2Hits++;
-                            if (($trade['tp1_status'] ?? 'pending') === 'filled' && ($trade['tp2_status'] ?? 'pending') === 'filled') $bothTPsHits++;
+                    }
+
+                    // Contar nos trades fechados (usando a lista completa, não paginada)
+                    foreach (($dashboardData['closed_trades_all'] ?? []) as $trade) {
+                        $totalTrades++;
+                        $tp1Filled = ($trade['tp1_status'] ?? 'pending') === 'filled';
+
+                        // TP1 Hits: atingiu o TP1
+                        if ($tp1Filled) {
+                            $tp1Hits++;
                         }
+
+                        // TP2: verificar se o trade possui TP2 definido
+                        if (!empty($trade['take_profit_2_price']) && (float)$trade['take_profit_2_price'] > 0) {
+                            $tradesWithTP2++;
+                            // TP2 Hits: atingiu o TP2
+                            if (($trade['tp2_status'] ?? 'pending') === 'filled') {
+                                $tp2Hits++;
+                            }
+                        }
+                    }
                     ?>
                     <div class="row g-3">
                         <div class="col-12 col-md-6 col-lg-3">
                             <div class="p-3 bg-light rounded">
-                                <p class="text-muted mb-1 small"><strong>TP1 Atingidos</strong></p>
+                                <p class="text-muted mb-1 small"><strong>Total de Trades</strong></p>
+                                <h5 class="mb-0 text-primary"><?php echo $totalTrades; ?></h5>
+                                <small class="text-muted">Quantos foram abertos</small>
+                            </div>
+                        </div>
+                        <div class="col-12 col-md-6 col-lg-3">
+                            <div class="p-3 bg-light rounded">
+                                <p class="text-muted mb-1 small"><strong>TPs Conservadores</strong></p>
                                 <h5 class="mb-0 text-success"><?php echo $tp1Hits + $openTradesWithTP1Filled; ?></h5>
-                                <small class="text-muted">Alvos Conservadores</small>
+                                <small class="text-muted">Atingiram TP1</small>
                             </div>
                         </div>
                         <div class="col-12 col-md-6 col-lg-3">
                             <div class="p-3 bg-light rounded">
-                                <p class="text-muted mb-1 small"><strong>TP2 Atingidos</strong></p>
-                                <h5 class="mb-0 text-info"><?php echo $tp2Hits + $openTradesWithTP2Filled; ?></h5>
-                                <small class="text-muted">Alvos Agressivos</small>
+                                <p class="text-muted mb-1 small"><strong>TPs Agressivos</strong></p>
+                                <h5 class="mb-0 text-warning"><?php echo $tp2Hits + $openTradesWithTP2Filled; ?></h5>
+                                <small class="text-muted">Atingiram TP2 (com TP2 definido)</small>
                             </div>
                         </div>
                         <div class="col-12 col-md-6 col-lg-3">
                             <div class="p-3 bg-light rounded">
-                                <p class="text-muted mb-1 small"><strong>Ambos TPs Atingidos</strong></p>
-                                <h5 class="mb-0 text-warning"><?php echo $bothTPsHits; ?></h5>
-                                <small class="text-muted">Execução Total</small>
-                            </div>
-                        </div>
-                        <div class="col-12 col-md-6 col-lg-3">
-                            <div class="p-3 bg-light rounded">
-                                <p class="text-muted mb-1 small"><strong>Taxa Efetiva</strong></p>
-                                <?php 
-                                    $totalClosedTrades = count($dashboardData['closed_trades'] ?? []);
-                                    $effectiveRate = $totalClosedTrades > 0 ? round(($bothTPsHits / $totalClosedTrades) * 100, 1) : 0;
+                                <p class="text-muted mb-1 small"><strong>Taxa de Sucesso</strong></p>
+                                <?php
+                                $totalWithTP2 = $tradesWithTP2 + $openTradesWithTP2Defined;
+                                $successRate = $totalWithTP2 > 0 ? round((($tp2Hits + $openTradesWithTP2Filled) / $totalWithTP2) * 100, 1) : 0;
                                 ?>
-                                <h5 class="mb-0 <?php echo $effectiveRate >= 50 ? 'text-success' : 'text-warning'; ?>"><?php echo $effectiveRate; ?>%</h5>
-                                <small class="text-muted">Ambos TPs / Total</small>
+                                <h5 class="mb-0 <?php echo $successRate >= 50 ? 'text-success' : 'text-warning'; ?>"><?php echo $successRate; ?>%</h5>
+                                <small class="text-muted">TPs Agressivos / Trades com TP2</small>
                             </div>
                         </div>
                     </div>
@@ -524,7 +573,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <?php foreach ($dashboardData['closed_trades'] as $trade): 
+                                    <?php foreach ($dashboardData['closed_trades'] as $trade):
                                         // Calcular P/L para TP1
                                         $tp1_qty = (float)($trade['tp1_executed_qty'] ?? 0);
                                         $tp1_price = (float)($trade['take_profit_1_price'] ?? 0);
@@ -532,7 +581,7 @@
                                         $tp1_cost = $tp1_qty * (float)($trade['entry_price'] ?? 0);
                                         $tp1_pl = $tp1_revenue - $tp1_cost;
                                         $tp1_pl_percent = $tp1_cost > 0 ? ($tp1_pl / $tp1_cost) * 100 : 0;
-                                        
+
                                         // Calcular P/L para TP2
                                         $tp2_qty = (float)($trade['tp2_executed_qty'] ?? 0);
                                         $tp2_price = (float)($trade['take_profit_2_price'] ?? 0);
@@ -551,43 +600,43 @@
                                             <td colspan="2" class="text-center text-muted small">-</td>
                                             <td class="text-nowrap d-none d-xl-table-cell text-muted small"><?php echo date('d/m H:i', strtotime($trade['opened_at'] ?? 'now')); ?></td>
                                         </tr>
-                                        
+
                                         <!-- Linha de TP1 -->
                                         <?php if ($tp1_qty > 0): ?>
-                                        <tr class="<?php echo $tp1_pl >= 0 ? 'table-success' : 'table-danger'; ?>">
-                                            <td class="text-nowrap"></td>
-                                            <td class="text-nowrap"><span class="badge bg-success">TP1</span></td>
-                                            <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp1_price, 8); ?></td>
-                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp1_qty, 5); ?></td>
-                                            <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
-                                            <td class="text-nowrap">
-                                                <strong class="<?php echo $tp1_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp1_pl, 2); ?></strong>
-                                            </td>
-                                            <td class="text-nowrap">
-                                                <strong class="<?php echo $tp1_pl_percent >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($tp1_pl_percent, 2); ?>%</strong>
-                                            </td>
-                                            <td class="text-nowrap d-none d-xl-table-cell text-muted small">-</td>
-                                        </tr>
+                                            <tr class="<?php echo $tp1_pl >= 0 ? 'table-success' : 'table-danger'; ?>">
+                                                <td class="text-nowrap"></td>
+                                                <td class="text-nowrap"><span class="badge bg-success">TP1</span></td>
+                                                <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp1_price, 8); ?></td>
+                                                <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp1_qty, 5); ?></td>
+                                                <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
+                                                <td class="text-nowrap">
+                                                    <strong class="<?php echo $tp1_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp1_pl, 2); ?></strong>
+                                                </td>
+                                                <td class="text-nowrap">
+                                                    <strong class="<?php echo $tp1_pl_percent >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($tp1_pl_percent, 2); ?>%</strong>
+                                                </td>
+                                                <td class="text-nowrap d-none d-xl-table-cell text-muted small">-</td>
+                                            </tr>
                                         <?php endif; ?>
-                                        
+
                                         <!-- Linha de TP2 -->
                                         <?php if ($tp2_qty > 0): ?>
-                                        <tr class="<?php echo $tp2_pl >= 0 ? 'table-success' : 'table-danger'; ?>">
-                                            <td class="text-nowrap"></td>
-                                            <td class="text-nowrap"><span class="badge bg-success">TP2</span></td>
-                                            <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp2_price, 8); ?></td>
-                                            <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp2_qty, 5); ?></td>
-                                            <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
-                                            <td class="text-nowrap">
-                                                <strong class="<?php echo $tp2_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp2_pl, 2); ?></strong>
-                                            </td>
-                                            <td class="text-nowrap">
-                                                <strong class="<?php echo $tp2_pl_percent >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($tp2_pl_percent, 2); ?>%</strong>
-                                            </td>
-                                            <td class="text-nowrap d-none d-xl-table-cell text-muted small">-</td>
-                                        </tr>
+                                            <tr class="<?php echo $tp2_pl >= 0 ? 'table-success' : 'table-danger'; ?>">
+                                                <td class="text-nowrap"></td>
+                                                <td class="text-nowrap"><span class="badge bg-success">TP2</span></td>
+                                                <td class="text-nowrap d-none d-md-table-cell">$<?php echo number_format($tp2_price, 8); ?></td>
+                                                <td class="text-nowrap d-none d-md-table-cell"><?php echo number_format($tp2_qty, 5); ?></td>
+                                                <td class="text-nowrap d-none d-lg-table-cell text-muted small">-</td>
+                                                <td class="text-nowrap">
+                                                    <strong class="<?php echo $tp2_pl >= 0 ? 'text-success' : 'text-danger'; ?>">$<?php echo number_format($tp2_pl, 2); ?></strong>
+                                                </td>
+                                                <td class="text-nowrap">
+                                                    <strong class="<?php echo $tp2_pl_percent >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($tp2_pl_percent, 2); ?>%</strong>
+                                                </td>
+                                                <td class="text-nowrap d-none d-xl-table-cell text-muted small">-</td>
+                                            </tr>
                                         <?php endif; ?>
-                                        
+
                                         <!-- Linha de RESUMO TOTAL -->
                                         <tr class="table-light border-bottom border-2">
                                             <td colspan="4"><strong>TOTAL</strong></td>
