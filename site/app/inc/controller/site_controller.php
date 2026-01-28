@@ -134,9 +134,18 @@ class site_controller
                             try {
                                 // Tentar buscar preço do par ASSET/USDC
                                 $symbol = $asset . "USDC";
-                                $priceResponse = $api->getPrice($symbol);
+                                $priceResponse = $api->tickerPrice($symbol);
                                 $priceData = $priceResponse->getData();
-                                $price = (float)($priceData["price"] ?? 0);
+                                
+                                // A API retorna um objeto TickerPriceResponse
+                                if ($priceData && method_exists($priceData, 'getTickerPriceResponse1')) {
+                                    $tickerData = $priceData->getTickerPriceResponse1();
+                                    $price = $tickerData && method_exists($tickerData, 'getPrice') ? (float)$tickerData->getPrice() : 0;
+                                } elseif (is_array($priceData) && isset($priceData['price'])) {
+                                    $price = (float)$priceData['price'];
+                                } else {
+                                    $price = 0;
+                                }
                                 
                                 if ($price > 0) {
                                     $valueInUsdc = $total * $price;
