@@ -4,7 +4,7 @@
  */
 
 document.addEventListener("alpine:init", () => {
-  Alpine.data("dashboardController", () => ({
+  Alpine.data("gridDashboardController", () => ({
     // Estado
     isLoading: false,
     isClosingPositions: false,

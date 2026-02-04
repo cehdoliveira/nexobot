@@ -8,10 +8,256 @@ use Binance\Client\Spot\Model\OrderType;
 
 class site_controller
 {
+
+    /**
+     * Dashboard do Grid Trading
+     */
+    public function dashboard($info)
+    {
+        // Verificar login
+        if (!auth_controller::check_login()) {
+            basic_redir($GLOBALS["login_url"]);
+        }
+
+        // Verificar se é uma ação AJAX
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            header('Content-Type: application/json; charset=utf-8');
+
+            $input = $_POST;
+            if (empty($input)) {
+                $rawInput = file_get_contents('php://input');
+                if (!empty($rawInput)) {
+                    $input = json_decode($rawInput, true) ?: [];
+                }
+            }
+
+            if (!empty($input['action'])) {
+                if ($input['action'] === 'refreshGridData') {
+                    echo json_encode([
+                        'success' => true,
+                        'message' => 'Dados atualizados com sucesso'
+                    ]);
+                }
+                exit;
+            }
+        }
+
+        // === BUSCAR DADOS DOS GRIDS ===
+        $gridsModel = new grids_model();
+        $gridsModel->set_filter(["active = 'yes'"]);
+        $gridsModel->load_data();
+        $allGrids = $gridsModel->data;
+
+        // === BUSCAR ORDENS DE GRID (com relacionamento manual) ===
+        $gridsOrdersModel = new grids_orders_model();
+        $gridsOrdersModel->load_data();
+        $gridOrdersData = $gridsOrdersModel->data;
+
+        // Carregar ordens relacionadas
+        if (!empty($gridOrdersData)) {
+            $orderIds = array_column($gridOrdersData, 'orders_id');
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter([
+                "active = 'yes'",
+                "idx IN (" . implode(',', array_map('intval', $orderIds)) . ")"
+            ]);
+            $ordersModel->load_data();
+
+            // Mapear ordens por ID
+            $ordersMap = [];
+            foreach ($ordersModel->data as $order) {
+                $ordersMap[$order['idx']] = $order;
+            }
+
+            // Anexar ordens aos grid_orders
+            $allGridOrders = [];
+            foreach ($gridOrdersData as $gridOrder) {
+                if (isset($ordersMap[$gridOrder['orders_id']])) {
+                    $gridOrder['orders'] = [$ordersMap[$gridOrder['orders_id']]];
+                    $allGridOrders[] = $gridOrder;
+                }
+            }
+        } else {
+            $allGridOrders = [];
+        }
+
+        // === BUSCAR LOGS DE GRID ===
+        $gridLogsModel = new grid_logs_model();
+        $gridLogsModel->load_data();
+        $gridLogs = $gridLogsModel->data;
+
+        // === PROCESSAR ESTATÍSTICAS ===
+        $activeGrids = array_filter($allGrids, fn($g) => $g['status'] === 'active');
+
+        // Ordens abertas = NEW ou PARTIALLY_FILLED
+        $openOrders = array_filter($allGridOrders, function ($o) {
+            $status = $o['orders'][0]['status'] ?? null;
+            return in_array($status, ['NEW', 'PARTIALLY_FILLED']);
+        });
+
+        // Ordens fechadas = FILLED ou CANCELED
+        $closedOrders = array_filter($allGridOrders, function ($o) {
+            $status = $o['orders'][0]['status'] ?? null;
+            return in_array($status, ['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED']);
+        });
+
+        // Total de lucro
+        $totalProfit = 0;
+        foreach ($allGrids as $grid) {
+            $totalProfit += (float)($grid['accumulated_profit_usdc'] ?? 0);
+        }
+
+        // Capital total alocado
+        $totalCapitalAllocated = 0;
+        foreach ($allGrids as $grid) {
+            $totalCapitalAllocated += (float)($grid['capital_allocated_usdc'] ?? 0);
+        }
+
+        // Estatísticas por símbolo
+        $symbolsStats = [];
+        foreach ($allGrids as $grid) {
+            $symbol = $grid['symbol'];
+            if (!isset($symbolsStats[$symbol])) {
+                $symbolsStats[$symbol] = [
+                    'profit' => 0,
+                    'orders' => 0
+                ];
+            }
+            $symbolsStats[$symbol]['profit'] += (float)($grid['accumulated_profit_usdc'] ?? 0);
+
+            // Contar ordens deste símbolo
+            $symbolOrders = array_filter(
+                $allGridOrders,
+                fn($o) =>
+                isset($o['orders'][0]) && ($o['orders'][0]['symbol'] ?? '') === $symbol
+            );
+            $symbolsStats[$symbol]['orders'] += count($symbolOrders);
+        }
+
+        // Taxa de sucesso (ordens fechadas com lucro)
+        $profitableOrders = 0;
+        foreach ($closedOrders as $order) {
+            if ((float)($order['profit_usdc'] ?? 0) > 0) {
+                $profitableOrders++;
+            }
+        }
+        $successRate = count($closedOrders) > 0 ? ($profitableOrders / count($closedOrders)) * 100 : 0;
+
+        // Lucro médio por ordem
+        $avgProfitPerOrder = count($closedOrders) > 0 ? $totalProfit / count($closedOrders) : 0;
+
+        // ROI
+        $roiPercent = $totalCapitalAllocated > 0 ? ($totalProfit / $totalCapitalAllocated) * 100 : 0;
+
+        // === PREPARAR NÍVEIS DO GRID ===
+        // ESTRATÉGIA REVISADA: Exibir apenas ordens REAIS que existem no banco,
+        // usando grid_level da tabela grids_orders
+        $gridsWithLevels = [];
+        foreach ($allGrids as &$grid) {  // Usar referência (&) para modificar o array original
+            $gridId = $grid['idx'];
+
+            // Buscar ordens deste grid (apenas as que EXISTEM)
+            $gridOrders = array_filter($allGridOrders, fn($o) => ($o['grids_id'] ?? 0) == $gridId);
+
+            $buyLevels = [];
+            $sellLevels = [];
+
+            // Processar cada ordem real
+            foreach ($gridOrders as $gridOrder) {
+                $order = $gridOrder['orders'][0] ?? null;
+                if (!$order) continue;
+
+                $levelData = [
+                    'level' => (int)($gridOrder['grid_level'] ?? 0),
+                    'price' => (float)($order['price'] ?? 0),
+                    'quantity' => (float)($order['quantity'] ?? 0),
+                    'side' => $order['side'] ?? 'UNKNOWN',
+                    'status' => $order['status'] ?? 'UNKNOWN',
+                    'order_id' => (int)($order['idx'] ?? 0),
+                    'has_order' => true,
+                    'created_at' => $order['created_at'] ?? null
+                ];
+
+                // Separar por lado
+                if ($levelData['side'] === 'BUY') {
+                    $buyLevels[] = $levelData;
+                } elseif ($levelData['side'] === 'SELL') {
+                    $sellLevels[] = $levelData;
+                }
+            }
+
+            // Ordenar por preço para garantir ordem consistente
+            usort($buyLevels, fn($a, $b) => $a['price'] <=> $b['price']); // Crescente: baixo->alto
+            usort($sellLevels, fn($a, $b) => $a['price'] <=> $b['price']); // Crescente: baixo->alto
+
+            // Usar os grid_level que já estão corretos no banco
+            // BUY: Level 1 = preço alto, Level 3 = preço baixo
+            // SELL: Level 1 = preço baixo, Level 3 = preço alto
+            // Não precisa renumerar, pois os níveis já estão corretos no banco!
+
+            // Contar ordens abertas deste grid
+            $gridOpenOrders = array_filter($openOrders, fn($o) => ($o['grids_id'] ?? 0) == $gridId);
+            $grid['open_orders'] = count($gridOpenOrders);
+
+            $gridsWithLevels[] = [
+                'grid' => $grid,
+                'buy_levels' => $buyLevels,
+                'sell_levels' => $sellLevels
+            ];
+        }
+        unset($grid); // Limpar referência
+
+        // Ordenar ordens abertas por grid_level (ordem crescente: 1, 2, 3)
+        usort($openOrders, fn($a, $b) => ($a['grid_level'] ?? 0) <=> ($b['grid_level'] ?? 0));
+
+        // === PREPARAR DADOS PARA A VIEW ===
+        $binanceConfig = BinanceConfig::getActiveCredentials();
+
+        $gridDashboardData = [
+            'stats' => [
+                'grids' => [
+                    'active_grids' => count($activeGrids),
+                    'total_grids' => count($allGrids)
+                ],
+                'orders' => [
+                    'open_orders' => count($openOrders),
+                    'closed_orders' => count($closedOrders),
+                    'total_orders' => count($allGridOrders)
+                ],
+                'profit' => [
+                    'total_profit' => $totalProfit,
+                    'profitable_orders' => $profitableOrders
+                ],
+                'capital' => [
+                    'total_allocated' => $totalCapitalAllocated
+                ],
+                'performance' => [
+                    'success_rate' => $successRate,
+                    'avg_profit_per_order' => $avgProfitPerOrder,
+                    'roi_percent' => $roiPercent
+                ]
+            ],
+            'grids' => $allGrids,
+            'grids_with_levels' => $gridsWithLevels,
+            'open_orders' => array_values($openOrders),
+            'symbols_stats' => $symbolsStats,
+            'logs' => $gridLogs,
+            'binance_env' => $binanceConfig['mode'] ?? 'dev'
+        ];
+
+        // Renderizar view
+        $alpineControllers = ['dashboard'];
+        include(constant("cRootServer") . "ui/common/head.php");
+        include(constant("cRootServer") . "ui/common/header.php");
+        include(constant("cRootServer") . "ui/page/dashboard.php");
+        include(constant("cRootServer") . "ui/common/footer.php");
+        include(constant("cRootServer") . "ui/common/foot.php");
+    }
+
     /**
      * Dashboard principal (home logada)
      */
-    public function dashboard($info)
+    public function dashboard_Old($info)
     {
         // Verificar login
         if (!auth_controller::check_login()) {
@@ -142,7 +388,7 @@ class site_controller
                                 $symbol = $asset . "USDC";
                                 $priceResponse = $api->tickerPrice($symbol);
                                 $priceData = $priceResponse->getData();
-                                
+
                                 // A API retorna um objeto TickerPriceResponse
                                 if ($priceData && method_exists($priceData, 'getTickerPriceResponse1')) {
                                     $tickerData = $priceData->getTickerPriceResponse1();
@@ -152,7 +398,7 @@ class site_controller
                                 } else {
                                     $price = 0;
                                 }
-                                
+
                                 if ($price > 0) {
                                     $valueInUsdc = $total * $price;
                                 } else {

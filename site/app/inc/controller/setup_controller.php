@@ -6,35 +6,43 @@ use Binance\Client\Spot\Model\NewOrderRequest;
 use Binance\Client\Spot\Model\Side;
 use Binance\Client\Spot\Model\OrderType;
 
+/**
+ * Grid Trading Strategy Controller
+ * 
+ * Implementa a estratégia de Grid Trading para BTC/USDC e ETH/USDC
+ * Controller independente que não depende do setup_controller
+ * 
+ * Execução: CRON a cada 5 minutos
+ */
 class setup_controller
 {
-    private const TIMEFRAME = "15m"; // 15 minutos
-    private const QTD_CANDLES = 1000;
-    private const BOLLINGER_PERIOD = 20;
-    private const BOLLINGER_DEVIATION = 2;
+    // Configuração de símbolos e grid
+    private const SYMBOLS = ['BTCUSDC'];
+    private const GRID_LEVELS = 6;              // 5 níveis por grid
+    private const GRID_RANGE_PERCENT = 0.05;     // ±5% do preço atual
+    private const GRID_SPACING_PERCENT = 0.01;   // 1% entre níveis
+    private const REBALANCE_THRESHOLD = 0.05;    // Rebalancear se sair 5% do range
+    private const CAPITAL_ALLOCATION = 0.95;     // 70% do capital USDC disponível
+    private const MIN_TRADE_USDC = 11;           // Mínimo por trade
+    private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
 
+    // Logs
     private const ERROR_LOG = 'error.log';
     private const API_LOG = 'binance_api.log';
     private const TRADE_LOG = 'trading.log';
 
-    private const CACHE_TTL_EXCHANGE_INFO = 60;
-    private const CACHE_TTL_ACCOUNT_INFO = 2;
-
-    private $client;
-    private $curlHandle;
-    private $restBaseUrl = 'https://api.binance.com';
-    private $exchangeInfoCache = [];
-    private $accountInfoCache = null;
-    private $accountInfoCacheTime = 0;
-    private $logBuffer = [];
-    private $logBufferSize = 100;
-    private $logPath;
+    private array $activeGrids = [];             // Cache de grids ativos em memória
+    private array $symbolPrices = [];            // Cache de preços atuais
+    private float $totalCapital = 0.0;           // Capital USDC total disponível
+    private $client = null;                      // Cliente Binance API
+    private array $logBuffer = [];
+    private int $logBufferSize = 100;
+    private string $logPath;
 
     public function __construct()
     {
         $this->initializeBinanceClient();
         $this->initializeLogger();
-        $this->initializeCurlHandle();
         register_shutdown_function([$this, 'flushLogs']);
     }
 
@@ -43,60 +51,40 @@ class setup_controller
         $this->flushLogs();
     }
 
+    /**
+     * Inicializa cliente Binance API
+     */
     private function initializeBinanceClient(): void
     {
         $binanceConfig = BinanceConfig::getActiveCredentials();
-        $this->restBaseUrl = $binanceConfig['restBaseUrl'] ?? $this->restBaseUrl;
 
-        $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
-        $configurationBuilder->apiKey($binanceConfig['apiKey']);
-        $configurationBuilder->secretKey($binanceConfig['secretKey']);
-        $configurationBuilder->url($binanceConfig['baseUrl']);
-        $this->client = new SpotRestApi($configurationBuilder->build());
+        try {
+            $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+            $configurationBuilder->apiKey($binanceConfig['apiKey'])
+                ->secretKey($binanceConfig['secretKey']);
+            $configurationBuilder->url($binanceConfig['baseUrl']);
+
+            $this->client = new SpotRestApi($configurationBuilder->build());
+        } catch (Exception $e) {
+            throw new Exception("Erro ao inicializar cliente Binance: " . $e->getMessage());
+        }
     }
 
+    /**
+     * Inicializa sistema de logs
+     */
     private function initializeLogger(): void
     {
-        $primary = defined('LOG_DIR') ? rtrim(constant('LOG_DIR'), '/') . '/' : '/var/log/';
-        $fallbacks = ['/var/log/', rtrim(sys_get_temp_dir(), '/') . '/logs/'];
-
-        $candidates = array_unique(array_merge([$primary], $fallbacks));
-
-        foreach ($candidates as $dir) {
-            if (!is_dir($dir)) {
-                if (!@mkdir($dir, 0777, true)) {
-                    continue;
-                }
-            }
-            if (@is_writable($dir)) {
-                $this->logPath = rtrim($dir, '/') . '/';
-                break;
-            }
-        }
-
-        if (empty($this->logPath)) {
-            $this->logPath = rtrim(sys_get_temp_dir(), '/') . '/';
-            error_log('Logger sem diretório gravável; usando sys temp.');
-        }
+        // FORÇAR uso de temp dir para evitar problemas de permissão
+        $this->logPath = rtrim(sys_get_temp_dir(), '/') . '/';
     }
 
-    private function initializeCurlHandle(): void
-    {
-        $this->curlHandle = curl_init();
-        curl_setopt_array($this->curlHandle, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
-            CURLOPT_ENCODING => 'gzip',
-            CURLOPT_TCP_NODELAY => true,
-            CURLOPT_TCP_FASTOPEN => true,
-            CURLOPT_FORBID_REUSE => false,
-            CURLOPT_FRESH_CONNECT => false,
-        ]);
-    }
-
+    /**
+     * Métodos auxiliares para integração com Binance API
+     */
     private function log(string $message, string $level = 'ERROR', string $type = 'SYSTEM'): void
     {
-        $basePath = $this->logPath ?: (defined('LOG_DIR') ? rtrim(constant('LOG_DIR'), '/') . '/' : '/var/log/');
+        $basePath = $this->logPath ?: rtrim(sys_get_temp_dir(), '/') . '/';
         $logFile = match ($type) {
             'API' => $basePath . self::API_LOG,
             'TRADE' => $basePath . self::TRADE_LOG,
@@ -111,10 +99,6 @@ class setup_controller
             $message
         );
 
-        if ($level === 'ERROR') {
-            error_log($message);
-        }
-
         if (count($this->logBuffer[$logFile] ?? []) >= $this->logBufferSize) {
             $this->flushLogFile($logFile);
         }
@@ -127,10 +111,14 @@ class setup_controller
         }
 
         try {
+            $dir = dirname($logFile);
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0777, true);
+            }
             file_put_contents($logFile, implode('', $this->logBuffer[$logFile]), FILE_APPEND | LOCK_EX);
             $this->logBuffer[$logFile] = [];
         } catch (Exception $e) {
-            error_log("Erro ao escrever no log: " . $e->getMessage());
+            // Silenciar erros de log para evitar loops infinitos
         }
     }
 
@@ -141,6 +129,9 @@ class setup_controller
         }
     }
 
+    /**
+     * Métodos auxiliares para integração com Binance API
+     */
     private function logBinanceError(string $method, string $error, array $params = []): void
     {
         $message = "Método: {$method} | Erro: {$error}";
@@ -150,148 +141,22 @@ class setup_controller
         $this->log($message, 'ERROR', 'API');
     }
 
-    private function logTradeOperation(string $symbol, string $operation, array $details): void
-    {
-        $message = "Symbol: {$symbol} | Operação: {$operation} | Detalhes: " . json_encode($details);
-        $this->log($message, 'INFO', 'TRADE');
-    }
-
-    public function display(): void
-    {
-        try {
-            // $topMoedas = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "XRPUSDC", "ADAUSDC", "DOTUSDC", "AVAXUSDC", "LTCUSDC", "LINKUSDC", "UNIUSDC"];
-            $topMoedas = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "XRPUSDC", "ADAUSDC", "LTCUSDC", "LINKUSDC", "AVAXUSDC", "AAVEUSDC"];
-            $this->processSymbols($topMoedas);
-        } catch (Exception $e) {
-            $this->log("Erro no método display: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-        }
-    }
-
     private function getAccountInfo(bool $forceRefresh = false): array
     {
-        $now = time();
-        if (!$forceRefresh && $this->accountInfoCache && ($now - $this->accountInfoCacheTime) < self::CACHE_TTL_ACCOUNT_INFO) {
-            return $this->accountInfoCache;
-        }
-
         try {
             $resp = $this->client->getAccount();
             $accountData = $resp->getData();
-            $this->accountInfoCache = json_decode(json_encode($accountData), true);
-            $this->accountInfoCacheTime = $now;
-            return $this->accountInfoCache;
+            return json_decode(json_encode($accountData), true);
         } catch (Exception $e) {
             throw new Exception("Erro ao obter informações da conta: " . $e->getMessage());
         }
     }
 
-    private function processSymbols(array $symbols): void
-    {
-        $this->preloadExchangeInfo($symbols);
-
-        foreach ($symbols as $symbol) {
-            try {
-                $openOrdersResp = $this->client->getOpenOrders($symbol);
-                $openOrders = $openOrdersResp->getData()->getItems();
-
-                if (count($openOrders) >= 5) {
-                    continue;
-                }
-
-                $precos = $this->getBinanceData($symbol, self::TIMEFRAME, self::QTD_CANDLES);
-                if (empty($precos)) {
-                    continue;
-                }
-
-                $bollinger = $this->calcularBandasBollinger($precos);
-                $this->estrategiaFechouForaFechouDentro($precos, $bollinger, $symbol);
-            } catch (Exception $e) {
-                $this->log("Erro ao processar $symbol: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-                continue;
-            }
-        }
-    }
-
-    private function preloadExchangeInfo(array $symbols): void
-    {
-        try {
-            $symbolsParam = implode(',', array_map(fn($s) => '"' . $s . '"', $symbols));
-            $url = "{$this->restBaseUrl}/api/v3/exchangeInfo?symbols=[{$symbolsParam}]";
-            $response = $this->fetchApiData($url);
-            $data = json_decode($response, true);
-
-            if (isset($data['symbols'])) {
-                foreach ($data['symbols'] as $symbolData) {
-                    $this->exchangeInfoCache[$symbolData['symbol']] = $symbolData;
-                }
-            }
-        } catch (Exception $e) {
-        }
-    }
-
-    private function fetchApiData(string $url): string
-    {
-        curl_setopt($this->curlHandle, CURLOPT_URL, $url);
-        $response = curl_exec($this->curlHandle);
-
-        if (curl_errno($this->curlHandle)) {
-            throw new Exception("Erro ao acessar API: " . curl_error($this->curlHandle));
-        }
-
-        return $response;
-    }
-
-    private function getBinanceData(string $symbol, string $interval, int $limit): array
-    {
-        try {
-            $url = "{$this->restBaseUrl}/api/v3/klines?symbol={$symbol}&interval={$interval}&limit={$limit}";
-            $response = $this->fetchApiData($url);
-
-            if ($response === false) {
-                $this->logBinanceError('getBinanceData', 'API retornou false', [
-                    'symbol' => $symbol,
-                    'interval' => $interval,
-                    'limit' => $limit
-                ]);
-                return [];
-            }
-
-            $data = json_decode($response, true);
-            if (!is_array($data)) {
-                return [];
-            }
-
-            $result = [];
-            foreach ($data as $candle) {
-                $result[] = [
-                    'timestamp' => $candle[0],
-                    'abertura'  => (float)$candle[1],
-                    'preco'     => (float)$candle[4],
-                    'high'      => (float)$candle[2],
-                    'low'       => (float)$candle[3]
-                ];
-            }
-
-            return $result;
-        } catch (Exception $e) {
-            $this->logBinanceError('getBinanceData', $e->getMessage(), [
-                'symbol' => $symbol,
-                'interval' => $interval,
-                'limit' => $limit
-            ]);
-            return [];
-        }
-    }
-
     public function getExchangeInfo($symbol): array
     {
-        if (isset($this->exchangeInfoCache[$symbol])) {
-            return $this->exchangeInfoCache[$symbol];
-        }
-
         try {
-            $url = "{$this->restBaseUrl}/api/v3/exchangeInfo?symbol={$symbol}";
-            $response = $this->fetchApiData($url);
+            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
+            $response = file_get_contents($url);
 
             if ($response === false) {
                 throw new Exception("Erro ao acessar a API da Binance (exchangeInfo).");
@@ -302,678 +167,9 @@ class setup_controller
                 throw new Exception("Símbolo {$symbol} não encontrado na API da Binance.");
             }
 
-            $this->exchangeInfoCache[$symbol] = $exchangeData['symbols'][0];
-            return $this->exchangeInfoCache[$symbol];
+            return $exchangeData['symbols'][0];
         } catch (Exception $e) {
             throw new Exception("Erro ao obter exchange info: " . $e->getMessage());
-        }
-    }
-
-    private function calcularBandasBollinger(array $dados, int $periodo = self::BOLLINGER_PERIOD, int $desvio = self::BOLLINGER_DEVIATION): array
-    {
-        $count = count($dados);
-        if ($count < $periodo) {
-            return [];
-        }
-
-        $precos = [];
-        foreach ($dados as $d) {
-            $precos[] = $d['preco'];
-        }
-
-        $bollinger = [];
-        $soma = 0;
-        $somaQuadrados = 0;
-
-        for ($j = 0; $j < $periodo; $j++) {
-            $p = $precos[$j];
-            $soma += $p;
-            $somaQuadrados += $p * $p;
-        }
-
-        for ($i = $periodo; $i <= $count; $i++) {
-            $media = $soma / $periodo;
-            $variancia = ($somaQuadrados / $periodo) - ($media * $media);
-            $desvioPadrao = sqrt(max(0, $variancia));
-
-            $bollinger[] = [
-                'media'          => $media,
-                'banda_superior' => $media + ($desvio * $desvioPadrao),
-                'banda_inferior' => $media - ($desvio * $desvioPadrao),
-                'desvioPadrao'   => $desvioPadrao
-            ];
-
-            if ($i < $count) {
-                $precoNovo = $precos[$i];
-                $precoVelho = $precos[$i - $periodo];
-                $soma += $precoNovo - $precoVelho;
-                $somaQuadrados += ($precoNovo * $precoNovo) - ($precoVelho * $precoVelho);
-            }
-        }
-
-        return $bollinger;
-    }
-
-    private function estrategiaFechouForaFechouDentro(array $dados, array $bollinger, string $symbol): void
-    {
-        if (count($dados) < 3 || count($bollinger) < 3) {
-            return;
-        }
-
-        $ultimo = count($dados) - 1;
-        $candle1 = $dados[$ultimo];
-        $candle2 = $dados[$ultimo - 1];
-        $candle3 = $dados[$ultimo - 2];
-
-        $bbReferencia3 = $bollinger[$ultimo - 21];
-        $bbReferencia2 = $bollinger[$ultimo - 20];
-        $bbReferencia1 = $bollinger[$ultimo - 19];
-
-        if (!isset($candle3['preco'], $candle2['preco'], $bbReferencia3['banda_inferior'], $bbReferencia2['banda_inferior'])) {
-            return;
-        }
-
-        if (
-            $candle3['preco'] < $bbReferencia3['banda_inferior'] &&
-            $candle2['preco'] > $bbReferencia2['banda_inferior'] &&
-            $candle2["preco"] > $candle2["abertura"]
-        ) {
-            $this->processarEntrada($symbol, $candle1, $bbReferencia1);
-        }
-    }
-
-    private function processarEntrada(string $symbol, array $candle1, array $bbReferencia1): void
-    {
-        try {
-            $accountInfo = $this->getAccountInfo();
-
-            $usdcBalance = null;
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === 'USDC') {
-                    $usdcBalance = $balance;
-                    break;
-                }
-            }
-
-            if (!$usdcBalance || (float)$usdcBalance['free'] <= 0) {
-                return;
-            }
-
-            $walletTotalUsdc = (float)$usdcBalance['free'] + (float)$usdcBalance['locked'];
-
-            $capitalDisponivel = (float)$usdcBalance['free'];
-            $investimento = $this->calcularInvestimento($symbol, $capitalDisponivel);
-
-            if ($investimento == 0) {
-                return;
-            }
-
-            $precoEntrada = $candle1['preco'];
-
-            // TP1: mesmo racional original (mean - 0.5*desvio)
-            $takeProfit1 = $bbReferencia1['media'] - (0.5 * $bbReferencia1['desvioPadrao']);
-
-            // TP2: alvo mais distante (mean + 0.5*desvio)
-            $takeProfit2 = $bbReferencia1['media'] + (0.5 * $bbReferencia1['desvioPadrao']);
-
-            // Filtro mínimo continua baseado em TP1 (mais conservador)
-            $lucroPercentual1 = (($takeProfit1 - $precoEntrada) / $precoEntrada) * 100;
-            if ($lucroPercentual1 < 0.30) {
-                return;
-            }
-
-            $orderConfigs = $this->getOrderDetailsForSymbol($symbol, $precoEntrada, $takeProfit1, $takeProfit2, $investimento);
-
-            if ((float)$orderConfigs['quantity_total'] <= 0) {
-                $this->log("Quantidade calculada zero ou abaixo do minNotional para {$symbol}; trade ignorado", 'INFO', 'TRADE');
-                return;
-            }
-
-            // Pré-checagem: garantir que ao menos 1 TP atenderá minNotional considerando fee (0.1%)
-            $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSizePre, $tickSizePre, $minNotionalPre) = $this->extractFilters($symbolData);
-            $stepSizePreFloat = (float)$stepSizePre;
-            $minNotionalPreFloat = $minNotionalPre !== null ? (float)$minNotionalPre : 0.0;
-
-            $qtyTotalPre = (float)$orderConfigs['quantity_total'];
-            $tp1PricePre = (float)$orderConfigs['tp1_price'];
-            $projectedSellable = floor(($qtyTotalPre * 0.999) / $stepSizePreFloat) * $stepSizePreFloat;
-            $projectedNotional = $projectedSellable * $tp1PricePre;
-
-            if ($projectedSellable <= 0 || ($minNotionalPreFloat > 0 && $projectedNotional < $minNotionalPreFloat)) {
-                $this->log(
-                    "Pré-check falhou: TP não atinge minNotional para {$symbol}; trade ignorado",
-                    'INFO',
-                    'TRADE'
-                );
-                return;
-            }
-
-            // VALIDAÇÃO CRÍTICA: Verificar se há espaço para TPs ANTES de comprar
-            $maxAlgoOrders = 5;
-            $openAlgoOrders = $this->getOpenAlgoOrdersCount();
-            $availableAlgoSlots = $maxAlgoOrders - $openAlgoOrders;
-
-            // Determina qual TP será efetivamente criado baseado no orderConfigs
-            $numTps = $orderConfigs['num_take_profits'] ?? 2;
-            $hasTp2 = $numTps >= 2 && (float)$orderConfigs['quantity_tp2'] > 0;
-            $tpsNecessarios = $hasTp2 ? 2 : 1;
-
-            // Se não há espaço nem para 1 TP, cancelar o trade
-            if ($availableAlgoSlots < 1) {
-                $this->log(
-                    "Limite de ordens algorítmicas atingido ({$openAlgoOrders}/{$maxAlgoOrders}). "
-                    . "Necessários {$tpsNecessarios} slots. Trade ignorado para {$symbol}",
-                    'WARNING',
-                    'TRADE'
-                );
-                return;
-            }
-
-            // Se há espaço mas não suficiente para 2 TPs, reduzir para 1 TP
-            if ($hasTp2 && $availableAlgoSlots < 2) {
-                $this->log(
-                    "Espaço reduzido para TPs em {$symbol}. Disponível: {$availableAlgoSlots}/2. "
-                    . "Será criado apenas TP1",
-                    'INFO',
-                    'TRADE'
-                );
-                // Forçar para 1 TP apenas
-                $hasTp2 = false;
-                $numTps = 1;
-            }
-
-            $tradesData = [
-                'symbol' => $symbol,
-                'status' => 'open',
-                'timeframe' => '15m',
-                'entry_price' => $precoEntrada,
-                'quantity' => $orderConfigs["quantity_total"],
-                'investment' => $investimento,
-                'take_profit_price' => $takeProfit1, // TP principal (deprecated, mantido para compatibilidade)
-                'take_profit_1_price' => $takeProfit1, // Alvo conservador
-                'tp1_status' => 'pending',
-                'tp1_executed_qty' => 0,
-                'opened_at' => date('Y-m-d H:i:s')
-            ];
-
-            // Salva TP2 apenas se for efetivamente criado
-            if ($hasTp2) {
-                $tradesData['take_profit_2_price'] = $takeProfit2;
-                $tradesData['tp2_status'] = 'pending';
-                $tradesData['tp2_executed_qty'] = 0;
-            }
-
-            $tradesModel = new trades_model();
-            $tradesModel->populate($tradesData);
-            $tradeIdx = $tradesModel->save();
-
-            try {
-                $snapshotId = WalletBalanceHelper::snapshotBeforeTrade($tradeIdx, $walletTotalUsdc);
-                if ($snapshotId) {
-                    $this->log("Snapshot criado antes do trade #{$tradeIdx}: Saldo USDC = {$walletTotalUsdc}", 'INFO', 'TRADE');
-                }
-            } catch (Exception $e) {
-                $this->log("Erro ao criar snapshot before_trade: " . $e->getMessage(), 'ERROR', 'TRADE');
-            }
-
-            $tradeLogsModel = new tradelogs_model();
-            $tradeLogsModel->populate([
-                'trades_id' => $tradeIdx,
-                'log_type' => 'info',
-                'event' => 'setup_detected',
-                'message' => "Setup de Bollinger (multi-TP) detectado para {$symbol}",
-                'data' => json_encode([
-                    'entry_price' => $precoEntrada,
-                    'take_profit_1' => $takeProfit1,
-                    'take_profit_2' => $takeProfit2,
-                    'profit_percent_tp1' => $lucroPercentual1,
-                    'investment' => $investimento,
-                    'wallet_balance_usdc' => $walletTotalUsdc
-                ])
-            ]);
-            $tradeLogsModel->save();
-
-            $this->executarOrdens($symbol, $orderConfigs, $precoEntrada, $tradeIdx);
-        } catch (Exception $e) {
-            $this->log("Erro ao processar entrada para $symbol: " . $e->getMessage(), 'ERROR', 'TRADE');
-
-            if (isset($tradeIdx) && $tradeIdx > 0) {
-                $tradeLogsModel = new tradelogs_model();
-                $tradeLogsModel->populate([
-                    'trades_id' => $tradeIdx,
-                    'log_type' => 'error',
-                    'event' => 'processing_error',
-                    'message' => "Erro ao processar entrada: " . $e->getMessage()
-                ]);
-                $tradeLogsModel->save();
-            }
-        }
-    }
-
-    private function calcularInvestimento(string $symbol, float $capitalDisponivel): float
-    {
-        $percentuais = [
-            'BTC' => 0.30,
-            'ETH' => 0.20
-        ];
-
-        $asset = str_replace('USDC', '', $symbol);
-        $percentual = $percentuais[$asset] ?? 0.10;
-        $investimento = $capitalDisponivel * $percentual;
-
-        if ($investimento < 11) {
-            if ($capitalDisponivel >= 11) {
-                return 11;
-            } else {
-                return 0;
-            }
-        }
-
-        return $investimento;
-    }
-
-    private function executarOrdens(string $symbol, array $orderConfigs, float $precoEntrada, int $tradeIdx): void
-    {
-        try {
-            $tradesLogModel = new tradelogs_model();
-            $ordersModel = new orders_model();
-
-            // Ordem de Compra (MARKET) – mesma lógica, mas usando quantidade total
-            $newOrderReq = new NewOrderRequest();
-            $newOrderReq->setSymbol($symbol);
-            $newOrderReq->setSide(Side::BUY);
-            $newOrderReq->setType(OrderType::MARKET);
-            $newOrderReq->setQuantity((float)$orderConfigs["quantity_total"]);
-
-            $orderMarketResp = $this->client->newOrder($newOrderReq);
-            $orderMarket = $orderMarketResp->getData();
-
-            $orderId = method_exists($orderMarket, 'getOrderId') ? $orderMarket->getOrderId() : ($orderMarket["orderId"] ?? null);
-            $executedQty = method_exists($orderMarket, 'getExecutedQty') ? $orderMarket->getExecutedQty() : ($orderMarket["executedQty"] ?? 0);
-            $status = method_exists($orderMarket, 'getStatus') ? $orderMarket->getStatus() : ($orderMarket["status"] ?? 'UNKNOWN');
-            $clientOrderId = method_exists($orderMarket, 'getClientOrderId') ? $orderMarket->getClientOrderId() : ($orderMarket["clientOrderId"] ?? null);
-
-            $ordersModel->populate([
-                'binance_order_id' => $orderId,
-                'binance_client_order_id' => $clientOrderId,
-                'symbol' => $symbol,
-                'side' => 'BUY',
-                'type' => 'MARKET',
-                'order_type' => 'entry',
-                'price' => $precoEntrada,
-                'quantity' => $orderConfigs["quantity_total"],
-                'executed_qty' => $executedQty,
-                'status' => $status,
-                'order_created_at' => round(microtime(true) * 1000),
-                'api_response' => json_encode(is_object($orderMarket) ? json_decode(json_encode($orderMarket), true) : $orderMarket)
-            ]);
-            $buyOrderIdx = $ordersModel->save();
-
-            $ordersModel->save_attach(['idx' => $buyOrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
-
-            $this->logTradeOperation($symbol, 'MARKET_BUY_SUCCESS', [
-                'orderId' => $orderId,
-                'quantity' => $executedQty,
-                'status' => $status,
-                'price' => $precoEntrada
-            ]);
-
-            $tradesLogModel->populate([
-                'trades_id' => $tradeIdx,
-                'log_type' => 'success',
-                'event' => 'order_executed',
-                'message' => "Ordem de compra executada: $orderId",
-                'data' => json_encode([
-                    'order_id' => $orderId,
-                    'quantity' => $executedQty,
-                    'status' => $status
-                ])
-            ]);
-            $tradesLogModel->save();
-
-            $statusFilled = $status === 'FILLED';
-            if ($orderId && $statusFilled) {
-                // Recalcula o que é vendável considerando fee já debitada do ativo comprado
-                $symbolData = $this->getExchangeInfo($symbol);
-                list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
-                $stepSizeFloat = (float)$stepSize;
-                $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
-                $minNotionalFloat = $minNotional !== null ? (float)$minNotional : 0.0;
-
-                // Pega saldo livre atual do ativo, forçando refresh para refletir o fill recém-executado
-                $freeAsset = (float)$this->getAvailableBalance($symbol, true);
-                $executedQtyFloat = (float)$executedQty;
-
-                // Usa todo o saldo livre do ativo (incluindo sobras de trades anteriores), com margem de segurança
-                $sellableRaw = $freeAsset * 0.999; // margem para fee/arredondamento
-                $sellable = floor($sellableRaw / $stepSizeFloat) * $stepSizeFloat;
-
-                if ($sellable <= 0) {
-                    $this->logTradeOperation($symbol, 'NO_SELLABLE_QTY', [
-                        'executedQty' => $executedQtyFloat,
-                        'freeAsset' => $freeAsset
-                    ]);
-                    // Tenta saída de emergência se possível
-                    $this->attemptEmergencyExit($symbol, max(0.0, $freeAsset * 0.995));
-                    return;
-                }
-
-                // Split 40/60 e garante minNotional; se não der, colapsa para 1 TP
-                $qtdTp1Float = floor(($sellable * 0.4) / $stepSizeFloat) * $stepSizeFloat;
-                $qtdTp2Float = $sellable - $qtdTp1Float;
-
-                $tp1Price = (float)$orderConfigs["tp1_price"];
-                $tp2StopPrice = (float)$orderConfigs["tp2_stop_price"];
-
-                $tp1Ok = $qtdTp1Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp1Float * $tp1Price) >= $minNotionalFloat);
-                $tp2Ok = $qtdTp2Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp2Float * $tp2StopPrice) >= $minNotionalFloat);
-
-                // Se TP2 não atinge minNotional, colapsa em 1 TP
-                if (!$tp2Ok) {
-                    $qtdTp1Float = $sellable;
-                    $qtdTp2Float = 0.0;
-                    $tp2StopPrice = 0.0;
-                    $tp2Ok = false;
-                    $tp1Ok = $qtdTp1Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp1Float * $tp1Price) >= $minNotionalFloat);
-                }
-
-                // Se TP1 original não atinge minNotional, tente colapsar tudo em 1 TP com a quantidade total
-                if (!$tp1Ok) {
-                    $qtdTp1Float = $sellable;
-                    $qtdTp2Float = 0.0;
-                    $tp2StopPrice = 0.0;
-                    $tp1Ok = $qtdTp1Float > 0 && ($minNotionalFloat <= 0 || ($qtdTp1Float * $tp1Price) >= $minNotionalFloat);
-                    if (!$tp1Ok) {
-                        $this->logTradeOperation($symbol, 'NO_TP_MIN_NOTIONAL', [
-                            'sellable' => $sellable,
-                            'tp1Price' => $tp1Price,
-                            'minNotional' => $minNotionalFloat
-                        ]);
-                        $this->attemptEmergencyExit($symbol, $sellable * 0.995);
-                        return;
-                    }
-                }
-
-                $qtdTp1 = number_format($qtdTp1Float, $decimalPlacesQty, '.', '');
-                $qtdTp2 = number_format($qtdTp2Float, $decimalPlacesQty, '.', '');
-                $qtdTotal = $qtdTp1Float + $qtdTp2Float;
-
-                // Verificação final de slots (já foi verificado antes, mas double-check por segurança)
-                $maxAlgoOrders = 5;
-                $openAlgoOrders = $this->getOpenAlgoOrdersCount();
-                $availableAlgoSlots = $maxAlgoOrders - $openAlgoOrders;
-
-                // Se não há slots, algo deu muito errado - logar mas não impedir TP1
-                if ($availableAlgoSlots <= 0) {
-                    $this->logTradeOperation($symbol, 'ALGO_LIMIT_REACHED_UNEXPECTED', [
-                        'maxAlgo' => $maxAlgoOrders,
-                        'openAlgo' => $openAlgoOrders,
-                        'detail' => 'Esta condição deveria ter sido verificada ANTES da ordem MARKET'
-                    ]);
-
-                    // Log crítico para investigação
-                    $this->log(
-                        "CRÍTICO: Limite de ordens algorítmicas atingido APÓS compra para {$symbol}. "
-                        . "Verificação pré-compra falhou. OpenAlgo: {$openAlgoOrders}/{$maxAlgoOrders}",
-                        'ERROR',
-                        'TRADE'
-                    );
-                    
-                    return; // Não criar TPs nesta situação crítica
-                }
-
-                $placeTp1 = $availableAlgoSlots >= 1 && (float)$qtdTp1 > 0;
-                $placeTp2 = $availableAlgoSlots >= 2 && (float)$qtdTp2 > 0;
-
-                // TP1 – TAKE_PROFIT (market quando stopPrice for atingido)
-                if ($placeTp1) {
-                    $tp1Req = new NewOrderRequest();
-                    $tp1Req->setSymbol($symbol);
-                    $tp1Req->setSide(Side::SELL);
-                    $tp1Req->setType(OrderType::TAKE_PROFIT);
-                    $tp1Req->setQuantity($qtdTp1);
-                    $tp1Req->setStopPrice((float)$orderConfigs["tp1_price"]);
-
-                    $tp1Resp = $this->client->newOrder($tp1Req);
-                    $tp1Order = $tp1Resp->getData();
-
-                    $tp1OrderId = method_exists($tp1Order, 'getOrderId') ? $tp1Order->getOrderId() : ($tp1Order["orderId"] ?? null);
-                    $tp1ClientOrderId = method_exists($tp1Order, 'getClientOrderId') ? $tp1Order->getClientOrderId() : ($tp1Order["clientOrderId"] ?? null);
-                    $tp1Status = method_exists($tp1Order, 'getStatus') ? $tp1Order->getStatus() : ($tp1Order["status"] ?? 'UNKNOWN');
-
-                    $ordersModelTp1 = new orders_model();
-                    $ordersModelTp1->populate([
-                        'binance_order_id' => $tp1OrderId,
-                        'binance_client_order_id' => $tp1ClientOrderId,
-                        'symbol' => $symbol,
-                        'side' => 'SELL',
-                        'type' => 'TAKE_PROFIT',
-                        'order_type' => 'take_profit',
-                        'tp_target' => 'tp1',
-                        'stop_price' => $orderConfigs["tp1_price"],
-                        'quantity' => $qtdTp1,
-                        'status' => $tp1Status,
-                        'order_created_at' => round(microtime(true) * 1000),
-                        'api_response' => json_encode(is_object($tp1Order) ? json_decode(json_encode($tp1Order), true) : $tp1Order)
-                    ]);
-                    $tp1OrderIdx = $ordersModelTp1->save();
-                    $ordersModelTp1->save_attach(['idx' => $tp1OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
-
-                    $this->logTradeOperation($symbol, 'TAKE_PROFIT_1_CREATED', [
-                        'orderId' => $tp1OrderId,
-                        'quantity' => $qtdTp1,
-                        'stopPrice' => $orderConfigs["tp1_price"]
-                    ]);
-
-                    $tradesLogModelTp1 = new tradelogs_model();
-                    $tradesLogModelTp1->populate([
-                        'trades_id' => $tradeIdx,
-                        'log_type' => 'success',
-                        'event' => 'tp1_created',
-                        'message' => "Ordem de TP1 criada: $tp1OrderId",
-                        'data' => json_encode([
-                            'order_id' => $tp1OrderId,
-                            'stop_price' => $orderConfigs["tp1_price"],
-                            'quantity' => $qtdTp1
-                        ])
-                    ]);
-                    $tradesLogModelTp1->save();
-                }
-
-                // TP2 – TAKE_PROFIT (market quando stopPrice for atingido) - Não exige margem
-                if ($placeTp2) {
-                    $tp2Req = new NewOrderRequest();
-                    $tp2Req->setSymbol($symbol);
-                    $tp2Req->setSide(Side::SELL);
-                    $tp2Req->setType(OrderType::TAKE_PROFIT);
-                    $tp2Req->setQuantity($qtdTp2);
-                    $tp2Req->setStopPrice((float)$orderConfigs["tp2_stop_price"]);
-
-                    $tp2Resp = $this->client->newOrder($tp2Req);
-                    $tp2Order = $tp2Resp->getData();
-
-                    $tp2OrderId = method_exists($tp2Order, 'getOrderId') ? $tp2Order->getOrderId() : ($tp2Order["orderId"] ?? null);
-                    $tp2ClientOrderId = method_exists($tp2Order, 'getClientOrderId') ? $tp2Order->getClientOrderId() : ($tp2Order["clientOrderId"] ?? null);
-                    $tp2Status = method_exists($tp2Order, 'getStatus') ? $tp2Order->getStatus() : ($tp2Order["status"] ?? 'UNKNOWN');
-
-                    $ordersModelTp2 = new orders_model();
-                    $ordersModelTp2->populate([
-                        'binance_order_id' => $tp2OrderId,
-                        'binance_client_order_id' => $tp2ClientOrderId,
-                        'symbol' => $symbol,
-                        'side' => 'SELL',
-                        'type' => 'TAKE_PROFIT',
-                        'order_type' => 'take_profit',
-                        'tp_target' => 'tp2',
-                        'stop_price' => $orderConfigs["tp2_stop_price"],
-                        'price' => $orderConfigs["tp2_stop_price"],
-                        'quantity' => $qtdTp2,
-                        'status' => $tp2Status,
-                        'order_created_at' => round(microtime(true) * 1000),
-                        'api_response' => json_encode(is_object($tp2Order) ? json_decode(json_encode($tp2Order), true) : $tp2Order)
-                    ]);
-                    $tp2OrderIdx = $ordersModelTp2->save();
-                    $ordersModelTp2->save_attach(['idx' => $tp2OrderIdx, 'post' => ['trades_id' => $tradeIdx]], ['trades']);
-
-                    $this->logTradeOperation($symbol, 'TAKE_PROFIT_2_CREATED', [
-                        'orderId' => $tp2OrderId,
-                        'quantity' => $qtdTp2,
-                        'stopPrice' => $orderConfigs["tp2_stop_price"]
-                    ]);
-
-                    $tradesLogModelTp2 = new tradelogs_model();
-                    $tradesLogModelTp2->populate([
-                        'trades_id' => $tradeIdx,
-                        'log_type' => 'success',
-                        'event' => 'tp2_created',
-                        'message' => "Ordem de TP2 criada: $tp2OrderId",
-                        'data' => json_encode([
-                            'order_id' => $tp2OrderId,
-                            'stop_price' => $orderConfigs["tp2_stop_price"],
-                            'limit_price' => $orderConfigs["tp2_limit_price"],
-                            'quantity' => $qtdTp2
-                        ])
-                    ]);
-                    $tradesLogModelTp2->save();
-                } elseif ($placeTp1 && !$placeTp2) {
-                    // Só TP1 coube; registrar que TP2 ficou de fora pelo limite
-                    $tradesLogModelTp2Skip = new tradelogs_model();
-                    $tradesLogModelTp2Skip->populate([
-                        'trades_id' => $tradeIdx,
-                        'log_type' => 'warning',
-                        'event' => 'tp2_skipped_algo_limit',
-                        'message' => "TP2 não criado: faltou slot de ordem algorítmica (" . $openAlgoOrders . "/" . $maxAlgoOrders . ")"
-                    ]);
-                    $tradesLogModelTp2Skip->save();
-                }
-            }
-        } catch (Exception $e) {
-            $this->logBinanceError('executarOrdens', $e->getMessage(), [
-                'symbol' => $symbol,
-                'orderConfigs' => $orderConfigs
-            ]);
-
-            if (isset($tradeIdx)) {
-                $tradesLogModel = new tradelogs_model();
-                $tradesLogModel->populate([
-                    'trades_id' => $tradeIdx,
-                    'log_type' => 'error',
-                    'event' => 'execution_error',
-                    'message' => "Erro ao executar ordens: " . $e->getMessage()
-                ]);
-                $tradesLogModel->save();
-            }
-
-            throw new Exception("Erro ao executar ordens: " . $e->getMessage());
-        }
-    }
-
-    public function getOrderDetailsForSymbol(
-        string $symbol,
-        float $currentPrice,
-        float $takeProfit1,
-        float $takeProfit2,
-        float $investimento
-    ): array {
-        try {
-            $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
-
-            $minNotionalFloat = $minNotional !== null ? (float)$minNotional : 0.0;
-
-            $stepSizeFloat = (float)$stepSize;
-
-            // Quantidade total
-            $quantityTotal = $this->calculateAdjustedQuantity($investimento, $currentPrice, $stepSize);
-
-            $quantityTotalFloat = (float)$quantityTotal;
-            if ($quantityTotalFloat <= 0) {
-                return [
-                    'quantity_total' => '0',
-                    'quantity_tp1' => '0',
-                    'quantity_tp2' => '0',
-                    'tp1_price' => '0',
-                    'tp2_stop_price' => '0',
-                    'tp2_limit_price' => '0',
-                ];
-            }
-
-            $totalNotional = $quantityTotalFloat * $currentPrice;
-            if ($minNotionalFloat > 0 && $totalNotional < $minNotionalFloat) {
-                return [
-                    'quantity_total' => '0',
-                    'quantity_tp1' => '0',
-                    'quantity_tp2' => '0',
-                    'tp1_price' => '0',
-                    'tp2_stop_price' => '0',
-                    'tp2_limit_price' => '0',
-                ];
-            }
-
-            // Split: 40% TP1, 60% TP2
-            $qtdTp1Float = floor(($quantityTotalFloat * 0.4) / $stepSizeFloat) * $stepSizeFloat;
-            $qtdTp2Float = $quantityTotalFloat - $qtdTp1Float;
-
-            $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
-            $qtdTp1 = number_format($qtdTp1Float, $decimalPlacesQty, '.', '');
-            $qtdTp2 = number_format($qtdTp2Float, $decimalPlacesQty, '.', '');
-
-            // Ajuste de preços para tickSize [web:12][web:17]
-            $tp1Price = $this->adjustPriceToTickSize($takeProfit1, $tickSize);
-
-            $tp2StopRaw = $takeProfit2;
-            $tp2StopPrice = $this->adjustPriceToTickSize($tp2StopRaw, $tickSize);
-
-            // Para limitar slippage, define-se o limitPrice levemente abaixo do stopPrice (para SELL)
-            $tickSizeFloat = (float)$tickSize;
-            $tp2LimitRaw = ((float)$tp2StopPrice) - $tickSizeFloat;
-            $tp2LimitPrice = $this->adjustPriceToTickSize($tp2LimitRaw, $tickSize);
-
-            // Validação: cada TP precisa atingir o minNotional; senão, colapsa para um único TP
-            $tp1Notional = $qtdTp1Float * (float)$tp1Price;
-            $tp2Notional = $qtdTp2Float * (float)$tp2LimitPrice;
-            $tp1Ok = $minNotionalFloat <= 0 || $tp1Notional >= $minNotionalFloat;
-            $tp2Ok = $minNotionalFloat <= 0 || $tp2Notional >= $minNotionalFloat;
-
-            if (!$tp1Ok || !$tp2Ok) {
-                $singleTpQtyFloat = $quantityTotalFloat;
-                $singleTpNotional = $singleTpQtyFloat * (float)$tp1Price;
-
-                if ($minNotionalFloat > 0 && $singleTpNotional < $minNotionalFloat) {
-                    return [
-                        'quantity_total' => '0',
-                        'quantity_tp1' => '0',
-                        'quantity_tp2' => '0',
-                        'tp1_price' => '0',
-                        'tp2_stop_price' => '0',
-                        'tp2_limit_price' => '0',
-                    ];
-                }
-
-                $qtdTp1Float = $singleTpQtyFloat;
-                $qtdTp2Float = 0.0;
-
-                $qtdTp1 = number_format($qtdTp1Float, $decimalPlacesQty, '.', '');
-                $qtdTp2 = number_format($qtdTp2Float, $decimalPlacesQty, '.', '');
-
-                $tp2StopPrice = '0';
-                $tp2LimitPrice = '0';
-            }
-
-            $numTakeProfit = ($qtdTp1 > 0 ? 1 : 0) + ($qtdTp2 > 0 ? 1 : 0);
-
-            return [
-                'quantity_total' => $quantityTotal,
-                'quantity_tp1' => $qtdTp1,
-                'quantity_tp2' => $qtdTp2,
-                'tp1_price' => $tp1Price,
-                'tp2_stop_price' => $tp2StopPrice,
-                'tp2_limit_price' => $tp2LimitPrice,
-                'num_take_profits' => $numTakeProfit,
-            ];
-        } catch (Exception $e) {
-            throw new Exception("Erro ao calcular detalhes da ordem: " . $e->getMessage());
         }
     }
 
@@ -998,51 +194,6 @@ class setup_controller
         ];
     }
 
-    /**
-     * Saída de emergência: vende a mercado a quantidade indicada para evitar ficar exposto sem TP.
-     */
-    private function attemptEmergencyExit(string $symbol, float $quantity): void
-    {
-        if ($quantity <= 0) {
-            return;
-        }
-
-        try {
-            $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
-            $stepSizeFloat = (float)$stepSize;
-            $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
-
-            $safeQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
-            if ($safeQty <= 0) {
-                return;
-            }
-
-            $sellReq = new NewOrderRequest();
-            $sellReq->setSymbol($symbol);
-            $sellReq->setSide(Side::SELL);
-            $sellReq->setType(OrderType::MARKET);
-            $sellReq->setQuantity((float)number_format($safeQty, $decimalPlacesQty, '.', ''));
-
-            $resp = $this->client->newOrder($sellReq);
-            $data = $resp->getData();
-
-            $orderId = method_exists($data, 'getOrderId') ? $data->getOrderId() : ($data['orderId'] ?? null);
-            $status = method_exists($data, 'getStatus') ? $data->getStatus() : ($data['status'] ?? 'UNKNOWN');
-
-            $this->logTradeOperation($symbol, 'EMERGENCY_SELL', [
-                'quantity' => $safeQty,
-                'orderId' => $orderId,
-                'status' => $status
-            ]);
-        } catch (Exception $e) {
-            $this->logTradeOperation($symbol, 'EMERGENCY_SELL_FAILED', [
-                'quantity' => $quantity,
-                'error' => $e->getMessage()
-            ]);
-        }
-    }
-
     private function calculateAdjustedQuantity(float $investimento, float $currentPrice, string $stepSize): string
     {
         $stepSizeFloat = (float)$stepSize;
@@ -1059,37 +210,6 @@ class setup_controller
         return number_format($price, $decimalPlacesPrice, '.', '');
     }
 
-    public function getAvailableBalance(string $symbol, bool $forceRefresh = false): string
-    {
-        try {
-            $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
-
-            $stepSizeFloat = (float)$stepSize;
-            $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
-
-            $accountInfo = $this->getAccountInfo($forceRefresh);
-            $asset = str_replace('USDC', '', $symbol);
-
-            $wallet = null;
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === $asset && (float)$balance['free'] > 0) {
-                    $wallet = $balance;
-                    break;
-                }
-            }
-
-            if (!$wallet) {
-                return '0';
-            }
-
-            $qtdProfit = floor((float)$wallet["free"] / $stepSizeFloat) * $stepSizeFloat;
-            return number_format($qtdProfit, $decimalPlacesQty, '.', '');
-        } catch (Exception $e) {
-            throw new Exception("Erro ao obter saldo disponível: " . $e->getMessage());
-        }
-    }
-
     private function getDecimalPlaces(string $value): int
     {
         $trimmed = rtrim($value, '0');
@@ -1098,43 +218,1117 @@ class setup_controller
     }
 
     /**
-     * Conta ordens algorítmicas abertas para não estourar MAX_NUM_ALGO_ORDERS (5).
+     * Método principal de execução
+     * Ponto de entrada do bot que é chamado via cron
      */
-    private function getOpenAlgoOrdersCount(): int
+    public function display(): void
     {
         try {
-            $resp = $this->client->getOpenOrders();
-            $orders = $resp->getData();
+            $startTime = microtime(true);
+            $this->log("=== Grid Trading Bot INICIADO ===", 'INFO', 'SYSTEM');
 
-            if (is_object($orders)) {
-                $orders = json_decode(json_encode($orders), true);
+            // 1. Carregar capital USDC disponível
+            $this->loadCapitalInfo();
+
+            if ($this->totalCapital < self::MIN_TRADE_USDC) {
+                $this->log("Capital insuficiente: {$this->totalCapital} USDC", 'WARNING', 'SYSTEM');
+                return;
             }
 
-            if (!is_array($orders)) {
-                return 0;
-            }
-
-            $algoTypes = [
-                'STOP_LOSS',
-                'STOP_LOSS_LIMIT',
-                'TAKE_PROFIT',
-                'TAKE_PROFIT_LIMIT',
-                'STOP',
-                'TAKE_PROFIT_MARKET'
-            ];
-
-            $count = 0;
-            foreach ($orders as $order) {
-                $type = $order['type'] ?? null;
-                if ($type && in_array($type, $algoTypes, true)) {
-                    $count++;
+            // 2. Processar cada símbolo
+            foreach (self::SYMBOLS as $symbol) {
+                try {
+                    $this->log("--- Processando $symbol ---", 'INFO', 'TRADE');
+                    $this->processSymbol($symbol);
+                } catch (Exception $e) {
+                    $this->log("Erro ao processar $symbol: " . $e->getMessage(), 'ERROR', 'TRADE');
+                    continue;
                 }
             }
 
-            return $count;
+            // 3. Estatísticas finais
+            $execTime = round((microtime(true) - $startTime) * 1000, 2);
+            $this->log("=== Grid Trading Bot FINALIZADO em {$execTime}ms ===", 'INFO', 'SYSTEM');
         } catch (Exception $e) {
-            error_log('Erro ao contar ordens algorítmicas: ' . $e->getMessage());
-            return 0;
+            $this->log("ERRO CRÍTICO no display(): " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        } finally {
+            $this->flushLogs();
+        }
+    }
+
+    /**
+     * Processa um símbolo: verifica se grid existe, monitora ou cria novo
+     */
+    private function processSymbol(string $symbol): void
+    {
+        try {
+            // 1. Verificar se já existe grid ativo
+            $activeGrid = $this->getActiveGrid($symbol);
+
+            if ($activeGrid) {
+                // Grid existe → Monitorar e processar ordens
+                $this->monitorGrid($activeGrid);
+            } else {
+                // Grid não existe → Criar novo
+                $this->createNewGrid($symbol);
+            }
+        } catch (Exception $e) {
+            throw new Exception("Erro ao processar $symbol: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Cria um novo grid para o símbolo fornecido
+     */
+    private function createNewGrid(string $symbol): void
+    {
+        try {
+            // 1. OBTER PREÇO ATUAL
+            $currentPrice = $this->getCurrentPrice($symbol);
+            if ($currentPrice <= 0) {
+                $this->log("Preço inválido para $symbol", 'ERROR', 'TRADE');
+                return;
+            }
+
+            // 2. CALCULAR RANGE DO GRID
+            $gridMin = $currentPrice * (1 - self::GRID_RANGE_PERCENT);
+            $gridMax = $currentPrice * (1 + self::GRID_RANGE_PERCENT);
+            $gridRange = $gridMax - $gridMin;
+
+            // 3. CALCULAR CAPITAL ALOCADO PARA ESTE SÍMBOLO
+            $symbolAllocation = $this->getSymbolAllocation($symbol);
+            $capitalForSymbol = $this->totalCapital * self::CAPITAL_ALLOCATION * $symbolAllocation;
+
+            if ($capitalForSymbol < self::MIN_TRADE_USDC) {
+                $this->log("Capital insuficiente para criar grid em $symbol: {$capitalForSymbol} USDC", 'WARNING', 'TRADE');
+                return;
+            }
+
+            // 4. DEFINIR NÍVEIS DE PREÇO
+            $priceStep = $gridRange / self::GRID_LEVELS;
+            $buyLevels = [];
+            $sellLevels = [];
+
+            for ($i = 0; $i <= self::GRID_LEVELS; $i++) {
+                $levelPrice = $gridMin + ($i * $priceStep);
+
+                if ($levelPrice < $currentPrice) {
+                    $buyLevels[] = [
+                        'level' => $i + 1,
+                        'price' => $levelPrice
+                    ];
+                } elseif ($levelPrice > $currentPrice) {
+                    $sellLevels[] = [
+                        'level' => $i + 1,
+                        'price' => $levelPrice
+                    ];
+                }
+            }
+
+            // 5. CALCULAR CAPITAL POR NÍVEL DE COMPRA
+            $numBuyLevels = count($buyLevels);
+            if ($numBuyLevels === 0) {
+                $this->log("Nenhum nível de compra disponível para $symbol", 'WARNING', 'TRADE');
+                return;
+            }
+
+            $capitalPerLevel = $capitalForSymbol / $numBuyLevels;
+
+            // 6. SALVAR CONFIGURAÇÃO DO GRID NO BANCO
+            $gridId = $this->saveGridConfig(
+                $symbol,
+                $gridMin,
+                $gridMax,
+                $currentPrice,
+                $capitalForSymbol,
+                $capitalPerLevel
+            );
+
+            // 7. CRIAR ORDENS LIMIT DE COMPRA
+            $successCount = 0;
+            foreach ($buyLevels as $level) {
+                $orderDbId = $this->placeBuyOrder(
+                    $gridId,
+                    $symbol,
+                    $level['level'],
+                    $level['price'],
+                    $capitalPerLevel
+                );
+                if ($orderDbId) {
+                    $successCount++;
+                }
+            }
+
+            $this->log(
+                "Grid criado para $symbol com $numBuyLevels níveis de compra ($successCount ordens criadas)",
+                'SUCCESS',
+                'TRADE'
+            );
+
+            // Salvar log
+            $this->saveGridLog($gridId, 'grid_created', 'success', "Grid criado com sucesso para $symbol", [
+                'grid_min' => $gridMin,
+                'grid_max' => $gridMax,
+                'center_price' => $currentPrice,
+                'buy_levels' => $numBuyLevels,
+                'capital_allocated' => $capitalForSymbol
+            ]);
+        } catch (Exception $e) {
+            throw new Exception("Erro ao criar grid para $symbol: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Monitora um grid existente: processa ordens executadas e rebalanceia se necessário
+     */
+    private function monitorGrid(array $gridData): void
+    {
+        try {
+            $symbol = $gridData['symbol'];
+            $gridId = $gridData['idx'];
+
+            // 1. BUSCAR ORDENS EXECUTADAS MAS NÃO PROCESSADAS
+            $executedOrders = $this->getExecutedUnprocessedOrders($gridId);
+
+            if (count($executedOrders) > 0) {
+                $this->log("Processando " . count($executedOrders) . " ordens executadas no grid $gridId", 'INFO', 'TRADE');
+            }
+
+            foreach ($executedOrders as $order) {
+                try {
+                    if ($order['side'] === 'BUY') {
+                        // COMPRA EXECUTADA → Criar ordem de VENDA acima
+                        $this->handleBuyOrderFilled($gridId, $order);
+                    } elseif ($order['side'] === 'SELL') {
+                        // VENDA EXECUTADA → Criar ordem de COMPRA abaixo + calcular lucro
+                        $this->handleSellOrderFilled($gridId, $order);
+                    }
+                } catch (Exception $e) {
+                    $this->log("Erro ao processar ordem {$order['idx']}: " . $e->getMessage(), 'ERROR', 'TRADE');
+                    $this->saveGridLog(
+                        $gridId,
+                        'order_processing_error',
+                        'error',
+                        "Erro ao processar ordem: " . $e->getMessage()
+                    );
+                }
+            }
+
+            // 2. VERIFICAR SE PREÇO SAIU DO RANGE (REBALANCE)
+            $currentPrice = $this->getCurrentPrice($symbol);
+            $needsRebalance = $this->checkRebalanceNeeded($gridData, $currentPrice);
+
+            if ($needsRebalance) {
+                $this->log("Iniciando rebalanceamento de grid para $symbol", 'WARNING', 'TRADE');
+                $this->rebalanceGrid($gridId, $symbol, $currentPrice);
+            }
+
+            // 3. ATUALIZAR ESTATÍSTICAS DO GRID
+            $this->updateGridStats($gridId);
+        } catch (Exception $e) {
+            throw new Exception("Erro ao monitorar grid: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Processa a execução de uma ordem de compra
+     * Cria automaticamente uma ordem de venda acima do preço de compra
+     */
+    private function handleBuyOrderFilled(int $gridId, array $buyOrder): void
+    {
+        try {
+            $symbol = $buyOrder['symbol'];
+            $buyPrice = (float)$buyOrder['price'];
+            $executedQty = (float)$buyOrder['executed_qty'];
+
+            // Calcular preço de venda (1% acima da compra)
+            $sellPrice = $buyPrice * (1 + self::GRID_SPACING_PERCENT);
+
+            // Criar ordem LIMIT de venda
+            $sellOrderId = $this->placeSellOrder(
+                $gridId,
+                $symbol,
+                $buyOrder['grid_level'],
+                $sellPrice,
+                $executedQty,
+                $buyOrder['idx'] // paired_order_id
+            );
+
+            if ($sellOrderId) {
+                $this->log(
+                    "Compra executada em $symbol @ $buyPrice (Qty: $executedQty). Venda criada @ $sellPrice",
+                    'SUCCESS',
+                    'TRADE'
+                );
+                $this->saveGridLog(
+                    $gridId,
+                    'buy_order_filled',
+                    'success',
+                    "Compra executada e venda criada",
+                    [
+                        'buy_price' => $buyPrice,
+                        'sell_price' => $sellPrice,
+                        'quantity' => $executedQty
+                    ]
+                );
+            }
+        } catch (Exception $e) {
+            throw new Exception("Erro ao processar compra preenchida: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Processa a execução de uma ordem de venda
+     * Calcula o lucro e recria a ordem de compra no mesmo nível
+     */
+    private function handleSellOrderFilled(int $gridId, array $sellOrder): void
+    {
+        try {
+            $symbol = $sellOrder['symbol'];
+            $sellPrice = (float)$sellOrder['price'];
+            $executedQty = (float)$sellOrder['executed_qty'];
+
+            // Buscar ordem de compra pareada
+            $buyOrder = null;
+            if ($sellOrder['paired_order_id']) {
+                $gridsOrdersModel = new grids_orders_model();
+                $gridsOrdersModel->set_filter(["idx='" . $sellOrder['paired_order_id'] . "'"]);
+                $results = $gridsOrdersModel->load_data();
+                if (!empty($results)) {
+                    $buyOrder = $results[0];
+                }
+            }
+
+            $profit = 0.0;
+
+            if ($buyOrder) {
+                $buyPrice = (float)$buyOrder['price'];
+
+                // Calcular lucro (desconta fee de 0.1% em cada lado)
+                $buyValue = $executedQty * $buyPrice;
+                $sellValue = $executedQty * $sellPrice;
+                $buyFee = $buyValue * 0.001;
+                $sellFee = $sellValue * 0.001;
+                $profit = $sellValue - $buyValue - $buyFee - $sellFee;
+
+                // Salvar lucro na ordem de venda
+                $this->updateOrderProfit($sellOrder['idx'], $profit);
+
+                // Atualizar lucro acumulado do grid
+                $this->incrementGridProfit($gridId, $profit);
+
+                $this->log(
+                    "PAR COMPLETO em $symbol: Lucro = $$profit (Compra: $buyPrice | Venda: $sellPrice)",
+                    'SUCCESS',
+                    'TRADE'
+                );
+
+                $this->saveGridLog(
+                    $gridId,
+                    'sell_order_filled',
+                    'success',
+                    "Par completo com lucro",
+                    [
+                        'buy_price' => $buyPrice,
+                        'sell_price' => $sellPrice,
+                        'quantity' => $executedQty,
+                        'profit' => $profit
+                    ]
+                );
+            }
+
+            // Recriar ordem de COMPRA no mesmo nível
+            $gridData = $this->getGridById($gridId);
+            $buyPrice = $sellPrice * (1 - self::GRID_SPACING_PERCENT);
+
+            $newBuyOrderId = $this->placeBuyOrder(
+                $gridId,
+                $symbol,
+                $sellOrder['grid_level'],
+                $buyPrice,
+                $gridData['capital_per_level']
+            );
+
+            if ($newBuyOrderId) {
+                $this->log("Nova ordem de compra criada para nível {$sellOrder['grid_level']}", 'INFO', 'TRADE');
+            }
+        } catch (Exception $e) {
+            throw new Exception("Erro ao processar venda preenchida: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Verifica se o preço saiu do range do grid e rebalanceamento é necessário
+     */
+    private function checkRebalanceNeeded(array $gridData, float $currentPrice): bool
+    {
+        $gridMin = (float)$gridData['grid_min_price'];
+        $gridMax = (float)$gridData['grid_max_price'];
+
+        if ($currentPrice < $gridMin) {
+            $deviation = ($gridMin - $currentPrice) / $gridMin;
+            return $deviation > self::REBALANCE_THRESHOLD;
+        }
+
+        if ($currentPrice > $gridMax) {
+            $deviation = ($currentPrice - $gridMax) / $gridMax;
+            return $deviation > self::REBALANCE_THRESHOLD;
+        }
+
+        return false;
+    }
+
+    /**
+     * Rebalanceia o grid: cancela ordens, vende ativos e cria novo grid
+     */
+    private function rebalanceGrid(int $gridId, string $symbol, float $newCenterPrice): void
+    {
+        try {
+            $this->log("REBALANCEAMENTO iniciado para $symbol (novo centro: $newCenterPrice)", 'WARNING', 'TRADE');
+
+            // 1. CANCELAR TODAS ORDENS ABERTAS DO GRID
+            $this->cancelAllGridOrders($gridId);
+
+            // 2. VENDER TODO ATIVO ACUMULADO A MERCADO
+            $accumulatedAsset = $this->getAccumulatedAsset($gridId, $symbol);
+            if ($accumulatedAsset > 0) {
+                $this->sellAssetAtMarket($symbol, $accumulatedAsset, $gridId);
+            }
+
+            // 3. MARCAR GRID COMO REBALANCEADO
+            $this->updateGridStatus($gridId, 'rebalanced');
+
+            // 4. CRIAR NOVO GRID COM NOVO PREÇO CENTRAL
+            $this->createNewGrid($symbol);
+
+            $this->log("REBALANCEAMENTO concluído para $symbol", 'SUCCESS', 'TRADE');
+
+            $this->saveGridLog(
+                $gridId,
+                'rebalance_completed',
+                'success',
+                "Grid rebalanceado com sucesso",
+                [
+                    'old_center_price' => (float)$this->getGridById($gridId)['grid_center_price'],
+                    'new_center_price' => $newCenterPrice
+                ]
+            );
+        } catch (Exception $e) {
+            $this->log("Erro ao rebalancear grid: " . $e->getMessage(), 'ERROR', 'TRADE');
+            $this->saveGridLog(
+                $gridId,
+                'rebalance_error',
+                'error',
+                "Erro ao rebalancear: " . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Coloca uma ordem de compra LIMIT na Binance
+     */
+    private function placeBuyOrder(
+        int $gridId,
+        string $symbol,
+        int $gridLevel,
+        float $price,
+        float $capitalUsdc
+    ): ?int {
+        try {
+            // 1. Obter filtros do símbolo
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+
+            // 2. Ajustar preço ao tickSize
+            $adjustedPrice = $this->adjustPriceToTickSize($price, $tickSize);
+
+            // 3. Calcular quantidade
+            $quantity = $this->calculateAdjustedQuantity($capitalUsdc, (float)$adjustedPrice, $stepSize);
+
+            if ((float)$quantity <= 0) {
+                $this->log("Quantidade inválida para ordem de compra em $symbol", 'ERROR', 'TRADE');
+                return null;
+            }
+
+            // 4. Criar ordem LIMIT na Binance
+            $orderReq = new NewOrderRequest();
+            $orderReq->setSymbol($symbol);
+            $orderReq->setSide(Side::BUY);
+            $orderReq->setType(OrderType::LIMIT);
+            $orderReq->setTimeInForce('GTC'); // Good Till Cancel
+            $orderReq->setPrice((float)$adjustedPrice);
+            $orderReq->setQuantity((float)$quantity);
+
+            $response = $this->client->newOrder($orderReq);
+            $orderData = $response->getData();
+
+            $binanceOrderId = method_exists($orderData, 'getOrderId')
+                ? $orderData->getOrderId()
+                : ($orderData['orderId'] ?? null);
+
+            $binanceClientOrderId = method_exists($orderData, 'getClientOrderId')
+                ? $orderData->getClientOrderId()
+                : ($orderData['clientOrderId'] ?? null);
+
+            $status = method_exists($orderData, 'getStatus')
+                ? $orderData->getStatus()
+                : ($orderData['status'] ?? 'UNKNOWN');
+
+            // 5. Salvar ordem no banco
+            $orderDbId = $this->saveGridOrder([
+                'grids_id' => $gridId,  // CORRIGIDO: era 'grid_id', agora é 'grids_id'
+                'binance_order_id' => $binanceOrderId,
+                'binance_client_order_id' => $binanceClientOrderId,
+                'symbol' => $symbol,
+                'side' => 'BUY',
+                'type' => 'LIMIT',
+                'grid_level' => $gridLevel,
+                'price' => $adjustedPrice,
+                'quantity' => $quantity,
+                'status' => $status,
+                'order_created_at' => round(microtime(true) * 1000)
+            ]);
+
+            $this->log("Ordem BUY criada: $symbol @ $adjustedPrice (Qty: $quantity, Nível: $gridLevel)", 'INFO', 'TRADE');
+
+            return $orderDbId;
+        } catch (Exception $e) {
+            $this->logBinanceError('placeBuyOrder', $e->getMessage(), [
+                'symbol' => $symbol,
+                'price' => $price,
+                'capital' => $capitalUsdc,
+                'grid_level' => $gridLevel
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Coloca uma ordem de venda LIMIT na Binance
+     */
+    private function placeSellOrder(
+        int $gridId,
+        string $symbol,
+        int $gridLevel,
+        float $price,
+        float $quantity,
+        ?int $pairedBuyOrderId = null
+    ): ?int {
+        try {
+            // 1. Obter filtros do símbolo
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+
+            // 2. Ajustar preço ao tickSize
+            $adjustedPrice = $this->adjustPriceToTickSize($price, $tickSize);
+
+            // 3. Ajustar quantidade ao stepSize
+            $stepSizeFloat = (float)$stepSize;
+            $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+            $adjustedQty = floor((float)$quantity / $stepSizeFloat) * $stepSizeFloat;
+            $adjustedQty = number_format($adjustedQty, $decimalPlacesQty, '.', '');
+
+            if ((float)$adjustedQty <= 0) {
+                $this->log("Quantidade inválida para ordem de venda em $symbol", 'ERROR', 'TRADE');
+                return null;
+            }
+
+            // 4. Criar ordem LIMIT na Binance
+            $orderReq = new NewOrderRequest();
+            $orderReq->setSymbol($symbol);
+            $orderReq->setSide(Side::SELL);
+            $orderReq->setType(OrderType::LIMIT);
+            $orderReq->setTimeInForce('GTC'); // Good Till Cancel
+            $orderReq->setPrice((float)$adjustedPrice);
+            $orderReq->setQuantity((float)$adjustedQty);
+
+            $response = $this->client->newOrder($orderReq);
+            $orderData = $response->getData();
+
+            $binanceOrderId = method_exists($orderData, 'getOrderId')
+                ? $orderData->getOrderId()
+                : ($orderData['orderId'] ?? null);
+
+            $binanceClientOrderId = method_exists($orderData, 'getClientOrderId')
+                ? $orderData->getClientOrderId()
+                : ($orderData['clientOrderId'] ?? null);
+
+            $status = method_exists($orderData, 'getStatus')
+                ? $orderData->getStatus()
+                : ($orderData['status'] ?? 'UNKNOWN');
+
+            // 5. Salvar ordem no banco
+            $orderDbId = $this->saveGridOrder([
+                'grids_id' => $gridId,  // CORRIGIDO: era 'grid_id', agora é 'grids_id'
+                'binance_order_id' => $binanceOrderId,
+                'binance_client_order_id' => $binanceClientOrderId,
+                'symbol' => $symbol,
+                'side' => 'SELL',
+                'type' => 'LIMIT',
+                'grid_level' => $gridLevel,
+                'price' => $adjustedPrice,
+                'quantity' => $adjustedQty,
+                'status' => $status,
+                'order_created_at' => round(microtime(true) * 1000),
+                'paired_order_id' => $pairedBuyOrderId
+            ]);
+
+            $this->log("Ordem SELL criada: $symbol @ $adjustedPrice (Qty: $adjustedQty, Nível: $gridLevel)", 'INFO', 'TRADE');
+
+            return $orderDbId;
+        } catch (Exception $e) {
+            $this->logBinanceError('placeSellOrder', $e->getMessage(), [
+                'symbol' => $symbol,
+                'price' => $price,
+                'quantity' => $quantity
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Vende um ativo a mercado para desfazer posição durante rebalanceamento
+     */
+    private function sellAssetAtMarket(string $symbol, float $quantity, int $gridId): void
+    {
+        try {
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+            $stepSizeFloat = (float)$stepSize;
+            $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+
+            $safeQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
+            if ($safeQty <= 0) {
+                $this->log("Quantidade de venda insuficiente para $symbol", 'WARNING', 'TRADE');
+                return;
+            }
+
+            $sellReq = new NewOrderRequest();
+            $sellReq->setSymbol($symbol);
+            $sellReq->setSide(Side::SELL);
+            $sellReq->setType(OrderType::MARKET);
+            $sellReq->setQuantity((float)number_format($safeQty, $decimalPlacesQty, '.', ''));
+
+            $resp = $this->client->newOrder($sellReq);
+            $data = $resp->getData();
+
+            $orderId = method_exists($data, 'getOrderId') ? $data->getOrderId() : ($data['orderId'] ?? null);
+            $status = method_exists($data, 'getStatus') ? $data->getStatus() : ($data['status'] ?? 'UNKNOWN');
+
+            $this->log("Venda de emergência executada: $symbol (Qty: $safeQty, Status: $status)", 'SUCCESS', 'TRADE');
+
+            $this->saveGridLog(
+                $gridId,
+                'emergency_sell',
+                'success',
+                "Venda a mercado durante rebalanceamento",
+                [
+                    'quantity' => $safeQty,
+                    'order_id' => $orderId,
+                    'status' => $status
+                ]
+            );
+        } catch (Exception $e) {
+            $this->log("Erro ao executar venda a mercado: " . $e->getMessage(), 'ERROR', 'TRADE');
+            $this->saveGridLog(
+                $gridId,
+                'emergency_sell_error',
+                'error',
+                "Erro ao vender: " . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Obtém o preço atual de um símbolo via API Binance
+     */
+    private function getCurrentPrice(string $symbol): float
+    {
+        try {
+            $response = $this->client->tickerPrice($symbol);
+            $data = $response->getData();
+
+            // A API retorna objeto com estrutura aninhada
+            if ($data && method_exists($data, 'getTickerPriceResponse1')) {
+                $priceData = $data->getTickerPriceResponse1();
+                if ($priceData && method_exists($priceData, 'getPrice')) {
+                    $price = (float)$priceData->getPrice();
+                    $this->symbolPrices[$symbol] = $price;
+                    return $price;
+                }
+            }
+
+            // Fallback: tentar acessar diretamente
+            if ($data && method_exists($data, 'getPrice')) {
+                $price = (float)$data->getPrice();
+                $this->symbolPrices[$symbol] = $price;
+                return $price;
+            }
+
+            // Fallback para array
+            $price = (float)($data['price'] ?? 0);
+            $this->symbolPrices[$symbol] = $price;
+            return $price;
+        } catch (Exception $e) {
+            $this->log("Erro ao obter preço de $symbol: " . $e->getMessage(), 'ERROR', 'API');
+            return 0.0;
+        }
+    }
+
+    /**
+     * Carrega informações de capital disponível (USDC)
+     */
+    private function loadCapitalInfo(): void
+    {
+        try {
+            $accountInfo = $this->getAccountInfo(true); // Force refresh
+
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === 'USDC') {
+                    $this->totalCapital = (float)$balance['free'];
+                    $this->log("Capital USDC disponível: {$this->totalCapital}", 'INFO', 'SYSTEM');
+                    return;
+                }
+            }
+
+            $this->totalCapital = 0.0;
+            $this->log("AVISO: Nenhum saldo USDC encontrado", 'WARNING', 'SYSTEM');
+        } catch (Exception $e) {
+            $this->log("Erro ao carregar capital: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            $this->totalCapital = 0.0;
+        }
+    }
+
+    /**
+     * Retorna a alocação de capital para cada símbolo (50% BTC, 50% ETH)
+     */
+    private function getSymbolAllocation(string $symbol): float
+    {
+        $allocations = [
+            'BTCUSDC' => 0.50,  // 50%
+            'ETHUSDC' => 0.50   // 50%
+        ];
+
+        return $allocations[$symbol] ?? 0.0;
+    }
+
+    // ========== MÉTODOS DE BANCO DE DADOS ==========
+
+    /**
+     * Obtém um grid ativo (em cache ou do banco)
+     */
+    private function getActiveGrid(string $symbol): ?array
+    {
+        // Se já está em cache, retornar
+        if (isset($this->activeGrids[$symbol])) {
+            return $this->activeGrids[$symbol];
+        }
+
+        try {
+            // Buscar do banco usando model
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter([
+                "active = 'yes'",
+                "symbol = '{$symbol}'",
+                "status = 'active'"
+            ]);
+            $gridsModel->load_data();
+
+            if (!empty($gridsModel->data)) {
+                $result = $gridsModel->data[0];
+                $this->activeGrids[$symbol] = $result;
+                return $result;
+            }
+
+            return null;
+        } catch (Exception $e) {
+            $this->log("Erro ao buscar grid ativo: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return null;
+        }
+    }
+
+    /**
+     * Obtém um grid por ID
+     */
+    private function getGridById(int $gridId): ?array
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter([
+                "active = 'yes'",
+                "idx = '{$gridId}'"
+            ]);
+            $gridsModel->load_data();
+
+            return !empty($gridsModel->data) ? $gridsModel->data[0] : null;
+        } catch (Exception $e) {
+            $this->log("Erro ao buscar grid por ID: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return null;
+        }
+    }
+
+    /**
+     * Salva a configuração de um novo grid no banco
+     */
+    private function saveGridConfig(
+        string $symbol,
+        float $gridMin,
+        float $gridMax,
+        float $centerPrice,
+        float $capitalAllocated,
+        float $capitalPerLevel
+    ): int {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->populate([
+                'symbol' => $symbol,
+                'status' => 'active',
+                'active' => 'yes',  // ADICIONADO: campo obrigatório
+                'grid_min_price' => $gridMin,
+                'grid_max_price' => $gridMax,
+                'grid_center_price' => $centerPrice,
+                'total_levels' => self::GRID_LEVELS,
+                'spacing_percent' => self::GRID_SPACING_PERCENT,
+                'capital_allocated_usdc' => $capitalAllocated,
+                'capital_per_level' => $capitalPerLevel,
+                'accumulated_profit_usdc' => 0.0,
+                'total_trades_completed' => 0
+            ]);
+
+            $gridId = $gridsModel->save();
+
+            if (!$gridId) {
+                throw new Exception("Falha ao salvar grid config: save() retornou vazio");
+            }
+
+            return $gridId;
+        } catch (Exception $e) {
+            $this->log("Erro ao salvar config de grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            throw $e;
+        }
+    }
+
+    /**
+     * Salva uma ordem de grid no banco com relacionamento many-to-many
+     * Padrão: Salvar order na tabela orders, depois criar relacionamento em grids_orders
+     */
+    private function saveGridOrder(array $orderData): int
+    {
+        try {
+            // Separar dados da order e dados específicos do grid
+            $ordersData = [
+                'binance_order_id' => $orderData['binance_order_id'],
+                'binance_client_order_id' => $orderData['binance_client_order_id'],
+                'symbol' => $orderData['symbol'],
+                'side' => $orderData['side'],
+                'type' => $orderData['type'],
+                'order_type' => 'entry',  // Grid orders são sempre de entrada/grid
+                'tp_target' => 'entry',
+                'price' => $orderData['price'],
+                'quantity' => $orderData['quantity'],
+                'executed_qty' => $orderData['executed_qty'] ?? 0,
+                'status' => $orderData['status'],
+                'cumulative_quote_qty' => 0,
+                'order_created_at' => $orderData['order_created_at']
+            ];
+
+            // Salvar order na tabela orders
+            $ordersModel = new orders_model();
+            $ordersModel->populate($ordersData);
+            $orderIdx = $ordersModel->save();
+
+            // Salvar relacionamento em grids_orders (junction table)
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->populate([
+                'grids_id' => $orderData['grids_id'],
+                'orders_id' => $orderIdx,
+                'grid_level' => $orderData['grid_level'],
+                'paired_order_id' => $orderData['paired_order_id'] ?? null,
+                'profit_usdc' => $orderData['profit_usdc'] ?? null,
+                'created_at' => date('Y-m-d H:i:s'),
+                'created_by' => 1
+            ]);
+            $gridsOrdersModel->save();
+
+            return $orderIdx;
+        } catch (Exception $e) {
+            $this->log("Erro ao salvar ordem de grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            throw $e;
+        }
+    }
+
+    /**
+     * Obtém ordens executadas mas ainda não processadas
+     */
+    private function getExecutedUnprocessedOrders(int $gridId): array
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'"
+            ]);
+            $gridsOrdersModel->attach(['orders']);
+            $gridsOrdersModel->load_data();
+
+            // Filtrar orders que foram FILLED mas não processadas
+            $result = [];
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders'][0] ?? null;
+                if ($order && in_array($order['status'], ['FILLED', 'PARTIALLY_FILLED'])) {
+                    $result[] = array_merge($gridOrder, ['order_data' => $order]);
+                }
+            }
+
+            return $result;
+        } catch (Exception $e) {
+            $this->log("Erro ao buscar ordens executadas: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return [];
+        }
+    }
+
+    /**
+     * Busca TODAS as ordens de um grid (independente do status)
+     */
+    private function getAllGridOrders(int $gridId): array
+    {
+        try {
+            // 1. Buscar grids_orders
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'"
+            ]);
+            $gridsOrdersModel->load_data();
+
+            if (empty($gridsOrdersModel->data)) {
+                return [];
+            }
+
+            // 2. Pegar IDs das ordens
+            $orderIds = array_column($gridsOrdersModel->data, 'orders_id');
+
+            if (empty($orderIds)) {
+                return [];
+            }
+
+            // 3. Carregar ordens diretamente
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter([
+                "active = 'yes'",
+                "idx IN (" . implode(',', $orderIds) . ")"
+            ]);
+            $ordersModel->load_data();
+
+            // 4. Criar mapa de ordens por ID
+            $ordersMap = [];
+            foreach ($ordersModel->data as $order) {
+                $ordersMap[$order['idx']] = $order;
+            }
+
+            // 5. Combinar dados
+            $result = [];
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $ordersMap[$gridOrder['orders_id']] ?? null;
+                if ($order) {
+                    $result[] = array_merge($gridOrder, ['order_data' => $order]);
+                }
+            }
+
+            return $result;
+        } catch (Exception $e) {
+            $this->log("Erro ao buscar todas as ordens: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return [];
+        }
+    }
+
+    /**
+     * Atualiza o lucro de uma ordem no grid_orders (junction table)
+     */
+    private function updateOrderProfit(int $orderDbId, float $profit): void
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "idx = '{$orderDbId}'"
+            ]);
+            $gridsOrdersModel->populate([
+                'profit_usdc' => $profit
+            ]);
+            $gridsOrdersModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao atualizar lucro da ordem: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Incrementa o lucro acumulado do grid
+     */
+    private function incrementGridProfit(int $gridId, float $profit): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter([
+                "active = 'yes'",
+                "idx = '{$gridId}'"
+            ]);
+            $gridsModel->load_data();
+
+            if (!empty($gridsModel->data)) {
+                $grid = $gridsModel->data[0];
+                $newProfit = (float)($grid['accumulated_profit_usdc'] ?? 0) + $profit;
+                $newTradesCount = ((int)($grid['total_trades_completed'] ?? 0)) + 1;
+
+                $gridsModel->populate([
+                    'accumulated_profit_usdc' => $newProfit,
+                    'total_trades_completed' => $newTradesCount
+                ]);
+                $gridsModel->save();
+            }
+        } catch (Exception $e) {
+            $this->log("Erro ao incrementar lucro do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Cancela todas as ordens abertas de um grid
+     */
+    private function cancelAllGridOrders(int $gridId): void
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'"
+            ]);
+            $gridsOrdersModel->attach(['orders']);
+            $gridsOrdersModel->load_data();
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                try {
+                    $order = $gridOrder['orders'][0] ?? null;
+                    if ($order && in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                        $this->client->cancelOrder($order['symbol'], ['orderId' => $order['binance_order_id']]);
+
+                        // Atualizar status da ordem
+                        $ordersModel = new orders_model();
+                        $ordersModel->set_filter([
+                            "active = 'yes'",
+                            "idx = '{$order['idx']}'"
+                        ]);
+                        $ordersModel->populate([
+                            'status' => 'CANCELED'
+                        ]);
+                        $ordersModel->save();
+                    }
+                } catch (Exception $e) {
+                    $this->log("Erro ao cancelar ordem {$order['binance_order_id']}: " . $e->getMessage(), 'WARNING', 'TRADE');
+                }
+            }
+
+            $this->log("Cancelamento de ordens concluído para grid $gridId", 'INFO', 'TRADE');
+        } catch (Exception $e) {
+            $this->log("Erro ao buscar ordens para cancelamento: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Obtém o ativo acumulado no grid (não vendido)
+     */
+    private function getAccumulatedAsset(int $gridId, string $symbol): float
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'"
+            ]);
+            $gridsOrdersModel->attach(['orders']);
+            $gridsOrdersModel->load_data();
+
+            $totalBought = 0.0;
+            $totalSold = 0.0;
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders'][0] ?? null;
+                if ($order && $order['symbol'] === $symbol && $order['status'] === 'FILLED') {
+                    if ($order['side'] === 'BUY') {
+                        $totalBought += (float)$order['executed_qty'];
+                    } else {
+                        $totalSold += (float)$order['executed_qty'];
+                    }
+                }
+            }
+
+            return max(0, $totalBought - $totalSold);
+        } catch (Exception $e) {
+            $this->log("Erro ao obter ativo acumulado: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return 0.0;
+        }
+    }
+
+    /**
+     * Atualiza o status de um grid
+     */
+    private function updateGridStatus(int $gridId, string $status): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter([
+                "active = 'yes'",
+                "idx = '{$gridId}'"
+            ]);
+            $gridsModel->populate([
+                'status' => $status,
+                'last_rebalance_at' => date('Y-m-d H:i:s')
+            ]);
+            $gridsModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao atualizar status do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Atualiza estatísticas do grid
+     */
+    private function updateGridStats(int $gridId): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter([
+                "active = 'yes'",
+                "idx = '{$gridId}'"
+            ]);
+            $gridsModel->populate([]);  // Update timestamp apenas
+            $gridsModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao atualizar estatísticas do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Salva um log de evento do grid
+     */
+    private function saveGridLog(
+        int $gridId,
+        string $event,
+        string $logType,
+        string $message,
+        ?array $data = null
+    ): void {
+        try {
+            $gridLogsModel = new grid_logs_model();
+            $gridLogsModel->populate([
+                'grids_id' => $gridId,
+                'event' => $event,
+                'log_type' => $logType,
+                'message' => $message,
+                'data' => $data ? json_encode($data) : null
+            ]);
+            $gridLogsModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao salvar log de grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
         }
     }
 }

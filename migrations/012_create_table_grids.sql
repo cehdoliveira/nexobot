@@ -1,0 +1,27 @@
+-- Tabela para registrar os grids de trading
+CREATE TABLE IF NOT EXISTS `grids` (
+    `idx` INT NOT NULL AUTO_INCREMENT,
+    `created_at` DATETIME NOT NULL,
+    `created_by` INT NOT NULL,
+    `modified_at` DATETIME DEFAULT NULL,
+    `modified_by` INT DEFAULT NULL,
+    `removed_at` DATETIME DEFAULT NULL,
+    `removed_by` INT DEFAULT NULL,
+    `active` ENUM('yes','no') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'yes',
+    `users_id` INT NOT NULL COMMENT 'ID do usuário proprietário do grid',
+    `symbol` VARCHAR(20) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Par de trading (ex: BTCUSDC)',
+    `status` ENUM('active','paused','stopped') COLLATE utf8mb4_unicode_ci DEFAULT 'active' COMMENT 'Status atual do grid',
+    `grid_levels` INT DEFAULT 3 COMMENT 'Número de níveis do grid',
+    `lower_price` DECIMAL(20,8) NOT NULL COMMENT 'Preço mínimo do range',
+    `upper_price` DECIMAL(20,8) NOT NULL COMMENT 'Preço máximo do range',
+    `grid_spacing_percent` DECIMAL(5,2) DEFAULT 1.00 COMMENT 'Espaçamento entre níveis em %',
+    `capital_allocated_usdc` DECIMAL(15,2) DEFAULT 0.00 COMMENT 'Capital total alocado',
+    `accumulated_profit_usdc` DECIMAL(15,2) DEFAULT 0.00 COMMENT 'Lucro acumulado',
+    `current_price` DECIMAL(20,8) DEFAULT 0.00 COMMENT 'Preço atual do ativo',
+    PRIMARY KEY (`idx`),
+    FOREIGN KEY (`users_id`) REFERENCES `users`(`idx`),
+    KEY `idx_users_id` (`users_id`),
+    KEY `idx_symbol` (`symbol`),
+    KEY `idx_status` (`status`),
+    KEY `idx_active` (`active`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Grids de trading do sistema';

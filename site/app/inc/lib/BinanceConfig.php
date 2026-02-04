@@ -6,7 +6,7 @@ class BinanceConfig
     private const MODE_DEV = 'dev';
     private const MODE_PROD = 'prod';
 
-    private const DEV_BASE_URL = 'https://testnet.binance.vision';
+    private const DEV_BASE_URL = 'https://demo-api.binance.com';
     private const PROD_BASE_URL = 'https://api.binance.com';
 
     public static function load(): array
