@@ -42,7 +42,7 @@ window.nexoHelpers = {
  * Inicializar tema escuro do dashboard
  */
 function initializeDashboardTheme() {
-  const storageKey = "nexobot-theme";
+  const storageKey = "gridnexobot-theme";
   const body = document.body;
   const toggleButton = document.getElementById("themeToggle");
 

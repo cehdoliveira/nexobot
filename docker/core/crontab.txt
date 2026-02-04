@@ -25,9 +25,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 # m h  dom mon dow   command
 
 # Executar migrations a cada 5 minutos
-# Altere: /var/www/nexobot para /var/www/<NOME_APP>
-#*/5 * * * * php /var/www/nexobot/site/cgi-bin/run_migrations.php >> /var/www/nexobot/_data/logs/migrations.log 2>&1
+# Altere: /var/www/gridnexobot para /var/www/<NOME_APP>
+#*/5 * * * * php /var/www/gridnexobot/site/cgi-bin/run_migrations.php >> /var/www/gridnexobot/_data/logs/migrations.log 2>&1
 
 # Cron existente (a cada 15 minutos)
-# Altere: /var/www/nexobot para /var/www/<NOME_APP>
-*/15 * * * * echo "Cron rodou em $(date)" >> /var/www/html/cron-test.log && php /var/www/nexobot/site/cgi-bin/verify_entry.php
+# Altere: /var/www/gridnexobot para /var/www/<NOME_APP>
+*/5 * * * * php /var/www/gridnexobot/site/cgi-bin/verify_entry.php

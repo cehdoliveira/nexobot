@@ -562,8 +562,8 @@ class setup_controller
      */
     private function checkRebalanceNeeded(array $gridData, float $currentPrice): bool
     {
-        $gridMin = (float)$gridData['grid_min_price'];
-        $gridMax = (float)$gridData['grid_max_price'];
+        $gridMin = (float)$gridData['lower_price'];
+        $gridMax = (float)$gridData['upper_price'];
 
         if ($currentPrice < $gridMin) {
             $deviation = ($gridMin - $currentPrice) / $gridMin;
@@ -609,7 +609,7 @@ class setup_controller
                 'success',
                 "Grid rebalanceado com sucesso",
                 [
-                    'old_center_price' => (float)$this->getGridById($gridId)['grid_center_price'],
+                    'old_center_price' => (float)$this->getGridById($gridId)['current_price'],
                     'new_center_price' => $newCenterPrice
                 ]
             );
@@ -979,20 +979,29 @@ class setup_controller
         float $capitalPerLevel
     ): int {
         try {
+            // Obter o primeiro usuário ativo (para associação do grid)
+            $usersModel = new users_model();
+            $usersModel->set_filter(["active = 'yes'", "enabled = 'yes'"]);
+            $usersModel->load_data();
+            
+            if (empty($usersModel->data)) {
+                throw new Exception("Nenhum usuário ativo encontrado para criar grid");
+            }
+            
+            $userId = (int)$usersModel->data[0]['idx'];
+
             $gridsModel = new grids_model();
             $gridsModel->populate([
+                'users_id' => $userId,
                 'symbol' => $symbol,
                 'status' => 'active',
-                'active' => 'yes',  // ADICIONADO: campo obrigatório
-                'grid_min_price' => $gridMin,
-                'grid_max_price' => $gridMax,
-                'grid_center_price' => $centerPrice,
-                'total_levels' => self::GRID_LEVELS,
-                'spacing_percent' => self::GRID_SPACING_PERCENT,
+                'grid_levels' => self::GRID_LEVELS,
+                'lower_price' => $gridMin,
+                'upper_price' => $gridMax,
+                'grid_spacing_percent' => self::GRID_SPACING_PERCENT,
                 'capital_allocated_usdc' => $capitalAllocated,
-                'capital_per_level' => $capitalPerLevel,
                 'accumulated_profit_usdc' => 0.0,
-                'total_trades_completed' => 0
+                'current_price' => $centerPrice
             ]);
 
             $gridId = $gridsModel->save();
@@ -1178,11 +1187,9 @@ class setup_controller
             if (!empty($gridsModel->data)) {
                 $grid = $gridsModel->data[0];
                 $newProfit = (float)($grid['accumulated_profit_usdc'] ?? 0) + $profit;
-                $newTradesCount = ((int)($grid['total_trades_completed'] ?? 0)) + 1;
 
                 $gridsModel->populate([
                     'accumulated_profit_usdc' => $newProfit,
-                    'total_trades_completed' => $newTradesCount
                 ]);
                 $gridsModel->save();
             }

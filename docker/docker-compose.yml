@@ -8,15 +8,15 @@ services:
       - kafka
     volumes:
       - ../_data/logs/:/var/log/
-      - ../_data/upload/:/var/www/nexobot/site/public_html/assets/upload/
-      - ../site/public_html/:/var/www/nexobot/site/public_html/
-      - ../site/app/:/var/www/nexobot/site/app/
-      - ../site/cgi-bin/:/var/www/nexobot/site/cgi-bin/
-      - ../migrations/:/var/www/nexobot/migrations/
+      - ../_data/upload/:/var/www/gridnexobot/site/public_html/assets/upload/
+      - ../site/public_html/:/var/www/gridnexobot/site/public_html/
+      - ../site/app/:/var/www/gridnexobot/site/app/
+      - ../site/cgi-bin/:/var/www/gridnexobot/site/cgi-bin/
+      - ../migrations/:/var/www/gridnexobot/migrations/
     ports:
       - "80:80"
     networks:
-      nexobot:
+      gridnexobot:
         ipv4_address: 172.29.0.3
   # Data Layer
   mysql:
@@ -36,7 +36,7 @@ services:
     expose:
       - "3306"
     networks:
-      nexobot:
+      gridnexobot:
         ipv4_address: 172.29.0.2
 
   # Cache Layer
@@ -57,7 +57,7 @@ services:
     expose:
       - "6379"
     networks:
-      nexobot:
+      gridnexobot:
         ipv4_address: 172.29.0.4
     healthcheck:
       test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
@@ -94,7 +94,7 @@ services:
       - "9092"
       - "9093"
     networks:
-      nexobot:
+      gridnexobot:
         ipv4_address: 172.29.0.5
     healthcheck:
       test:
@@ -120,10 +120,10 @@ services:
     ports:
       - "8080:8080"
     networks:
-      nexobot:
+      gridnexobot:
         ipv4_address: 172.29.0.6
 networks:
-  nexobot:
+  gridnexobot:
     ipam:
       driver: default
       config:

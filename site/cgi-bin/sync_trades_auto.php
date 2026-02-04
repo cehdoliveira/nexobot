@@ -9,7 +9,7 @@ error_reporting(0);
 date_default_timezone_set("America/Sao_Paulo");
 
 $_SERVER["DOCUMENT_ROOT"] = dirname(__FILE__) . "/../public_html/";
-$_SERVER["HTTP_HOST"] = "nexobot.local";
+$_SERVER["HTTP_HOST"] = "gridnexobot.local";
 putenv('SERVER_PORT=80');
 putenv('SERVER_PROTOCOL=http');
 putenv('SERVER_NAME=' . $_SERVER["HTTP_HOST"]);

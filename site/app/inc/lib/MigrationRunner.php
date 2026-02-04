@@ -24,7 +24,7 @@ class MigrationRunner
             $possiblePaths = [
                 realpath(__DIR__ . '/../../../../migrations'),
                 $baseDir . '/../migrations',
-                '/var/www/nexobot/migrations',
+                '/var/www/gridnexobot/migrations',
                 getenv('APP_ROOT') ? getenv('APP_ROOT') . '/migrations' : null,
             ];
             
@@ -41,7 +41,7 @@ class MigrationRunner
                 if (is_dir($fallback)) {
                     $this->migrations_dir = $fallback;
                 } else {
-                    $this->migrations_dir = '/var/www/nexobot/migrations';
+                    $this->migrations_dir = '/var/www/gridnexobot/migrations';
                 }
             }
         } else {

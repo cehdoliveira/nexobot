@@ -403,19 +403,19 @@
                                                 <div class="row g-3 small">
                                                     <div class="col-6 col-md-3">
                                                         <div class="text-muted">Preço Central</div>
-                                                        <strong>$<?php echo number_format((float)$grid['grid_center_price'], 2, '.', ','); ?></strong>
+                                                        <strong>$<?php echo number_format((float)$grid['current_price'], 2, '.', ','); ?></strong>
                                                     </div>
                                                     <div class="col-6 col-md-3">
                                                         <div class="text-muted">Total de Níveis</div>
-                                                        <strong><?php echo $grid['total_levels'] ?? 0; ?></strong>
+                                                        <strong><?php echo $grid['grid_levels'] ?? 0; ?></strong>
                                                     </div>
                                                     <div class="col-6 col-md-3">
                                                         <div class="text-muted">Espaçamento</div>
-                                                        <strong><?php echo number_format((float)($grid['spacing_percent'] ?? 0) * 100, 2); ?>%</strong>
+                                                        <strong><?php echo number_format((float)($grid['grid_spacing_percent'] ?? 0) * 100, 2); ?>%</strong>
                                                     </div>
                                                     <div class="col-6 col-md-3">
                                                         <div class="text-muted">Capital por Nível</div>
-                                                        <strong>$<?php echo number_format((float)($grid['capital_per_level'] ?? 0), 2, '.', ','); ?></strong>
+                                                        <strong><?php echo ($grid['grid_levels'] ?? 0) > 0 ? number_format((float)($grid['capital_allocated_usdc'] ?? 0) / (float)($grid['grid_levels'] ?? 1), 2, '.', ',') : '0.00'; ?></strong>
                                                     </div>
                                                 </div>
                                             </div>

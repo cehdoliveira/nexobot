@@ -11,7 +11,7 @@ $logMsg = "[" . date('Y-m-d H:i:s') . "] verify_entry.php - INÍCIO DA EXECUÇÃ
 file_put_contents('/var/log/cron.log', $logMsg, FILE_APPEND);
 
 $_SERVER["DOCUMENT_ROOT"] = dirname(__FILE__) . "/../public_html/";
-$_SERVER["HTTP_HOST"] = "nexobot.local";
+$_SERVER["HTTP_HOST"] = "gridnexobot.local";
 putenv('SERVER_PORT=80');
 putenv('SERVER_PROTOCOL=http');
 
