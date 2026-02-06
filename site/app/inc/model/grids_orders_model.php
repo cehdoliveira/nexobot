@@ -6,6 +6,9 @@ class grids_orders_model extends DOLModel
 		"grids_id",
 		"orders_id",
 		"grid_level",
+		"paired_order_id",
+		"is_processed",
+		"profit_usdc",
 		"created_at"
 	];
 	protected $filter = ["active = 'yes'"];

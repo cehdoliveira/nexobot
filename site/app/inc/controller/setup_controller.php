@@ -218,6 +218,21 @@ class setup_controller
     }
 
     /**
+     * Retorna o spacing do grid específico para cada moeda
+     */
+    private function getGridSpacing(string $symbol): float
+    {
+        $spacings = [
+            'BTCUSDC' => self::GRID_SPACING_PERCENT,  // 0.01 (1%)
+            'ETHUSDC' => 0.012,  // 1.2%
+            'XRPUSDC' => 0.008,  // 0.8%
+            'BNBUSDC' => 0.010   // 1.0%
+        ];
+
+        return $spacings[$symbol] ?? self::GRID_SPACING_PERCENT;
+    }
+
+    /**
      * Método principal de execução
      * Ponto de entrada do bot que é chamado via cron
      */
@@ -314,18 +329,18 @@ class setup_controller
 
                 if ($levelPrice < $currentPrice) {
                     $buyLevels[] = [
-                        'level' => null, // Será atribuído depois (inversamente)
+                        'level' => null,
                         'price' => $levelPrice
                     ];
                 } elseif ($levelPrice > $currentPrice) {
                     $sellLevels[] = [
-                        'level' => count($sellLevels) + 1, // Sequencial para venda
+                        'level' => count($sellLevels) + 1,
                         'price' => $levelPrice
                     ];
                 }
             }
 
-            // Inverter numeração dos níveis de compra (Nível 1 = preço mais próximo/alto)
+            // Inverter numeração dos níveis de compra
             $numBuyLevels = count($buyLevels);
             for ($i = 0; $i < $numBuyLevels; $i++) {
                 $buyLevels[$i]['level'] = $numBuyLevels - $i;
@@ -452,7 +467,7 @@ class setup_controller
 
     /**
      * Processa a execução de uma ordem de compra
-     * Cria automaticamente uma ordem de venda acima do preço de compra
+     * Verifica saldo real da carteira e divide entre vendas pendentes
      */
     private function handleBuyOrderFilled(int $gridId, array $buyOrder): void
     {
@@ -461,39 +476,210 @@ class setup_controller
             $buyPrice = (float)$buyOrder['price'];
             $executedQty = (float)$buyOrder['executed_qty'];
 
-            // Calcular preço de venda (1% acima da compra)
-            $sellPrice = $buyPrice * (1 + self::GRID_SPACING_PERCENT);
+            // EXTRAIR ASSET BASE (BTC de BTCUSDC)
+            $baseAsset = str_replace('USDC', '', $symbol);
 
-            // Criar ordem LIMIT de venda
-            $sellOrderId = $this->placeSellOrder(
-                $gridId,
-                $symbol,
-                $buyOrder['grid_level'],
-                $sellPrice,
-                $executedQty,
-                $buyOrder['grids_orders_idx'] // paired_order_id
-            );
+            // BUSCAR TODO O SALDO LIVRE DA MOEDA NA CARTEIRA
+            $accountInfo = $this->getAccountInfo(true);
+            $totalAvailableBalance = 0.0;
 
-            if ($sellOrderId) {
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === $baseAsset) {
+                    $totalAvailableBalance = (float)$balance['free'];
+                    break;
+                }
+            }
+
+            if ($totalAvailableBalance <= 0) {
                 $this->log(
-                    "Compra executada em $symbol @ $buyPrice (Qty: $executedQty). Venda criada @ $sellPrice",
-                    'SUCCESS',
+                    "❌ ERRO: Nenhum saldo disponível de $baseAsset após compra. Ordem ID: {$buyOrder['grids_orders_idx']}",
+                    'ERROR',
                     'TRADE'
                 );
-                $this->saveGridLog(
-                    $gridId,
-                    'buy_order_filled',
-                    'success',
-                    "Compra executada e venda criada",
-                    [
-                        'buy_price' => $buyPrice,
-                        'sell_price' => $sellPrice,
-                        'quantity' => $executedQty
-                    ]
-                );
+                return;
             }
+
+            $this->log(
+                "💰 Saldo livre de $baseAsset na carteira: $totalAvailableBalance",
+                'INFO',
+                'TRADE'
+            );
+
+            // BUSCAR TODAS AS COMPRAS EXECUTADAS E NÃO VENDIDAS DESTE GRID
+            $pendingSellOrders = $this->getPendingSellOrdersForGrid($gridId);
+            $totalPendingSells = count($pendingSellOrders);
+
+            if ($totalPendingSells === 0) {
+                $this->log(
+                    "⚠️ Nenhuma venda pendente encontrada. Criando venda para ordem {$buyOrder['grids_orders_idx']}",
+                    'WARNING',
+                    'TRADE'
+                );
+                $totalPendingSells = 1;
+                $pendingSellOrders = [$buyOrder];
+            }
+
+            // DIVIDIR SALDO IGUALMENTE ENTRE AS VENDAS PENDENTES
+            $qtyPerSell = $totalAvailableBalance / $totalPendingSells;
+
+            $this->log(
+                "📊 Total de vendas pendentes: $totalPendingSells | Quantidade por venda: $qtyPerSell $baseAsset",
+                'INFO',
+                'TRADE'
+            );
+
+            // CRIAR/ATUALIZAR ORDENS DE VENDA PARA CADA COMPRA EXECUTADA
+            foreach ($pendingSellOrders as $pendingOrder) {
+                try {
+                    $orderBuyPrice = (float)$pendingOrder['price'];
+                    $gridLevel = $pendingOrder['grid_level'];
+                    $gridsOrdersIdx = $pendingOrder['grids_orders_idx'];
+
+                    // Calcular preço de venda
+                    $gridSpacing = $this->getGridSpacing($symbol);
+                    $sellPrice = $orderBuyPrice * (1 + $gridSpacing);
+
+                    // Criar ordem LIMIT de venda com quantidade dividida
+                    $sellOrderId = $this->placeSellOrder(
+                        $gridId,
+                        $symbol,
+                        $gridLevel,
+                        $sellPrice,
+                        $qtyPerSell,
+                        $gridsOrdersIdx
+                    );
+
+                    if ($sellOrderId) {
+                        $this->log(
+                            "✅ Venda criada: Nível $gridLevel @ $sellPrice | Qty: $qtyPerSell $baseAsset",
+                            'SUCCESS',
+                            'TRADE'
+                        );
+                    } else {
+                        $this->log(
+                            "❌ Falha ao criar venda para Nível $gridLevel",
+                            'ERROR',
+                            'TRADE'
+                        );
+                    }
+                } catch (Exception $e) {
+                    $this->log(
+                        "❌ Erro ao processar venda pendente (Nível {$pendingOrder['grid_level']}): " . $e->getMessage(),
+                        'ERROR',
+                        'TRADE'
+                    );
+                }
+            }
+
+            // LOG CONSOLIDADO
+            $this->saveGridLog(
+                $gridId,
+                'buy_order_filled_batch',
+                'success',
+                "Compras executadas e vendas criadas",
+                [
+                    'total_balance' => $totalAvailableBalance,
+                    'pending_sells' => $totalPendingSells,
+                    'qty_per_sell' => $qtyPerSell,
+                    'symbol' => $symbol,
+                    'asset' => $baseAsset
+                ]
+            );
         } catch (Exception $e) {
             throw new Exception("Erro ao processar compra preenchida: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Retorna todas as ordens de COMPRA executadas que ainda não têm venda pareada
+     */
+    private function getPendingSellOrdersForGrid(int $gridId): array
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'"
+            ]);
+            $gridsOrdersModel->attach(['orders']);
+            $gridsOrdersModel->load_data();
+
+            $pendingSells = [];
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders'][0] ?? null;
+
+                if (!$order) {
+                    continue;
+                }
+
+                // VERIFICAR SE É UMA COMPRA EXECUTADA
+                $isBuyOrder = $order['side'] === 'BUY';
+                $isExecuted = $order['status'] === 'FILLED';
+
+                if (!$isBuyOrder || !$isExecuted) {
+                    continue;
+                }
+
+                // VERIFICAR SE JÁ EXISTE VENDA PAREADA ATIVA
+                $hasSellOrder = $this->hasPairedSellOrder($gridOrder['idx']);
+
+                if (!$hasSellOrder) {
+                    // Esta compra NÃO tem venda → adicionar à lista
+                    $pendingSells[] = [
+                        'symbol' => $order['symbol'],
+                        'price' => $order['price'],
+                        'executed_qty' => $order['executed_qty'],
+                        'grid_level' => $gridOrder['grid_level'],
+                        'grids_orders_idx' => $gridOrder['idx'],
+                        'order_idx' => $order['idx']
+                    ];
+                }
+            }
+
+            $this->log(
+                "🔍 Compras pendentes de venda no grid $gridId: " . count($pendingSells),
+                'INFO',
+                'TRADE'
+            );
+
+            return $pendingSells;
+        } catch (Exception $e) {
+            $this->log("Erro ao buscar compras pendentes: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return [];
+        }
+    }
+
+    /**
+     * Verifica se uma ordem de compra já tem uma venda pareada ativa
+     */
+    private function hasPairedSellOrder(int $buyGridOrderIdx): bool
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "paired_order_id = '{$buyGridOrderIdx}'"
+            ]);
+            $gridsOrdersModel->attach(['orders']);
+            $gridsOrdersModel->load_data();
+
+            // Se encontrou alguma venda pareada ATIVA ou PENDENTE
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders'][0] ?? null;
+
+                if ($order && $order['side'] === 'SELL') {
+                    // Verificar se a venda está ativa (não cancelada)
+                    if (in_array($order['status'], ['NEW', 'PARTIALLY_FILLED', 'FILLED'])) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        } catch (Exception $e) {
+            $this->log("Erro ao verificar venda pareada: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return false;
         }
     }
 
@@ -563,7 +749,8 @@ class setup_controller
 
             // Recriar ordem de COMPRA no mesmo nível
             $gridData = $this->getGridById($gridId);
-            $buyPrice = $sellPrice * (1 - self::GRID_SPACING_PERCENT);
+            $gridSpacing = $this->getGridSpacing($symbol);
+            $buyPrice = $sellPrice * (1 - $gridSpacing);
 
             $newBuyOrderId = $this->placeBuyOrder(
                 $gridId,
@@ -686,7 +873,7 @@ class setup_controller
             $orderReq->setSymbol($symbol);
             $orderReq->setSide(Side::BUY);
             $orderReq->setType(OrderType::LIMIT);
-            $orderReq->setTimeInForce('GTC'); // Good Till Cancel
+            $orderReq->setTimeInForce('GTC');
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$quantity);
 
@@ -776,7 +963,7 @@ class setup_controller
             $orderReq->setSymbol($symbol);
             $orderReq->setSide(Side::SELL);
             $orderReq->setType(OrderType::LIMIT);
-            $orderReq->setTimeInForce('GTC'); // Good Till Cancel
+            $orderReq->setTimeInForce('GTC');
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$adjustedQty);
 
@@ -886,7 +1073,6 @@ class setup_controller
             $response = $this->client->tickerPrice($symbol);
             $data = $response->getData();
 
-            // A API retorna objeto com estrutura aninhada
             if ($data && method_exists($data, 'getTickerPriceResponse1')) {
                 $priceData = $data->getTickerPriceResponse1();
                 if ($priceData && method_exists($priceData, 'getPrice')) {
@@ -896,14 +1082,12 @@ class setup_controller
                 }
             }
 
-            // Fallback: tentar acessar diretamente
             if ($data && method_exists($data, 'getPrice')) {
                 $price = (float)$data->getPrice();
                 $this->symbolPrices[$symbol] = $price;
                 return $price;
             }
 
-            // Fallback para array
             $price = (float)($data['price'] ?? 0);
             $this->symbolPrices[$symbol] = $price;
             return $price;
@@ -919,7 +1103,7 @@ class setup_controller
     private function loadCapitalInfo(): void
     {
         try {
-            $accountInfo = $this->getAccountInfo(true); // Force refresh
+            $accountInfo = $this->getAccountInfo(true);
 
             foreach ($accountInfo['balances'] as $balance) {
                 if ($balance['asset'] === 'USDC') {
@@ -943,7 +1127,7 @@ class setup_controller
     private function getSymbolAllocation(string $symbol): float
     {
         $allocations = [
-            'BTCUSDC' => 1.0,  // 100% para BTC
+            'BTCUSDC' => 1.0,
         ];
 
         return $allocations[$symbol] ?? 0.0;
@@ -956,13 +1140,11 @@ class setup_controller
      */
     private function getActiveGrid(string $symbol): ?array
     {
-        // Se já está em cache, retornar
         if (isset($this->activeGrids[$symbol])) {
             return $this->activeGrids[$symbol];
         }
 
         try {
-            // Buscar do banco usando model
             $gridsModel = new grids_model();
             $gridsModel->set_filter([
                 "active = 'yes'",
@@ -1016,7 +1198,6 @@ class setup_controller
         float $capitalPerLevel
     ): int {
         try {
-            // Obter o primeiro usuário ativo (para associação do grid)
             $usersModel = new users_model();
             $usersModel->set_filter(["active = 'yes'", "enabled = 'yes'"]);
             $usersModel->load_data();
@@ -1057,58 +1238,82 @@ class setup_controller
 
     /**
      * Salva uma ordem de grid no banco com relacionamento many-to-many
-     * Padrão: Salvar order na tabela orders, depois criar relacionamento em grids_orders
      */
-    private function saveGridOrder(array $orderData): int
+    private function saveGridOrder(array $orderData): ?int
     {
         try {
-            // Separar dados da order e dados específicos do grid
-            $ordersData = [
+            // 1. Salvar ordem na tabela orders
+            $ordersModel = new orders_model();
+            $ordersModel->populate([
                 'binance_order_id' => $orderData['binance_order_id'],
                 'binance_client_order_id' => $orderData['binance_client_order_id'],
                 'symbol' => $orderData['symbol'],
                 'side' => $orderData['side'],
                 'type' => $orderData['type'],
-                'order_type' => 'entry',  // Grid orders são sempre de entrada/grid
-                'tp_target' => 'entry',
                 'price' => $orderData['price'],
                 'quantity' => $orderData['quantity'],
-                'executed_qty' => $orderData['executed_qty'] ?? 0,
+                'executed_qty' => 0.0,
                 'status' => $orderData['status'],
-                'cumulative_quote_qty' => 0,
                 'order_created_at' => $orderData['order_created_at']
-            ];
+            ]);
 
-            // Salvar order na tabela orders
-            $ordersModel = new orders_model();
-            $ordersModel->populate($ordersData);
-            $orderIdx = $ordersModel->save();
+            $orderId = $ordersModel->save();
 
-            if (!$orderIdx) {
+            if (!$orderId) {
                 throw new Exception("Falha ao salvar ordem na tabela orders");
             }
 
-            // Salvar relacionamento em grids_orders (junction table)
+            // 2. Criar relacionamento em grids_orders
             $gridsOrdersModel = new grids_orders_model();
             $gridsOrdersModel->populate([
                 'grids_id' => $orderData['grids_id'],
-                'orders_id' => $orderIdx,
+                'orders_id' => $orderId,
                 'grid_level' => $orderData['grid_level'],
                 'paired_order_id' => $orderData['paired_order_id'] ?? null,
-                'profit_usdc' => $orderData['profit_usdc'] ?? null,
-                'is_processed' => 0
+                'is_processed' => 'no'
             ]);
-            $gridsOrdersModel->save();
 
-            return $orderIdx;
+            $gridsOrdersId = $gridsOrdersModel->save();
+
+            if (!$gridsOrdersId) {
+                throw new Exception("Falha ao salvar relacionamento em grids_orders");
+            }
+
+            return $gridsOrdersId;
         } catch (Exception $e) {
             $this->log("Erro ao salvar ordem de grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-            throw $e;
+            return null;
         }
     }
 
     /**
-     * Obtém ordens executadas mas ainda não processadas
+     * Salva log de evento do grid
+     */
+    private function saveGridLog(
+        int $gridId,
+        string $eventType,
+        string $status,
+        string $message,
+        array $metadata = []
+    ): void {
+        try {
+            $gridsLogsModel = new grid_logs_model();
+            $gridsLogsModel->populate([
+                'grids_id' => $gridId,
+                'event' => $eventType,
+                'log_type' => $status,
+                'message' => $message,
+                'data' => json_encode($metadata)
+            ]);
+
+            $gridsLogsModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao salvar log de grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Busca ordens executadas mas ainda não processadas pelo bot
      */
     private function getExecutedUnprocessedOrders(int $gridId): array
     {
@@ -1117,29 +1322,31 @@ class setup_controller
             $gridsOrdersModel->set_filter([
                 "active = 'yes'",
                 "grids_id = '{$gridId}'",
-                "is_processed = 0"
+                "is_processed = 'no'"
             ]);
             $gridsOrdersModel->attach(['orders']);
             $gridsOrdersModel->load_data();
 
-            // Filtrar orders que foram FILLED
-            $result = [];
+            $executedOrders = [];
+
             foreach ($gridsOrdersModel->data as $gridOrder) {
                 $order = $gridOrder['orders'][0] ?? null;
-                if ($order && in_array($order['status'], ['FILLED', 'PARTIALLY_FILLED'])) {
-                    $result[] = array_merge($gridOrder, [
+
+                if ($order && $order['status'] === 'FILLED') {
+                    $executedOrders[] = [
+                        'idx' => $order['idx'],
+                        'grids_orders_idx' => $gridOrder['idx'],
                         'symbol' => $order['symbol'],
                         'side' => $order['side'],
                         'price' => $order['price'],
-                        'quantity' => $order['quantity'],
                         'executed_qty' => $order['executed_qty'],
-                        'status' => $order['status'],
-                        'grids_orders_idx' => $gridOrder['idx']
-                    ]);
+                        'grid_level' => $gridOrder['grid_level'],
+                        'paired_order_id' => $gridOrder['paired_order_id']
+                    ];
                 }
             }
 
-            return $result;
+            return $executedOrders;
         } catch (Exception $e) {
             $this->log("Erro ao buscar ordens executadas: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return [];
@@ -1149,15 +1356,12 @@ class setup_controller
     /**
      * Marca uma ordem como processada
      */
-    private function markOrderAsProcessed(int $gridsOrdersId): void
+    private function markOrderAsProcessed(int $gridsOrdersIdx): void
     {
         try {
             $gridsOrdersModel = new grids_orders_model();
-            $gridsOrdersModel->set_filter([
-                "active = 'yes'",
-                "idx = '{$gridsOrdersId}'"
-            ]);
-            $gridsOrdersModel->populate(['is_processed' => 1]);
+            $gridsOrdersModel->set_filter(["idx = '{$gridsOrdersIdx}'"]);
+            $gridsOrdersModel->populate(['is_processed' => 'yes']);
             $gridsOrdersModel->save();
         } catch (Exception $e) {
             $this->log("Erro ao marcar ordem como processada: " . $e->getMessage(), 'ERROR', 'SYSTEM');
@@ -1165,16 +1369,13 @@ class setup_controller
     }
 
     /**
-     * Atualiza o lucro de uma ordem no grids_orders junction table
+     * Atualiza o lucro de uma ordem específica
      */
-    private function updateOrderProfit(int $gridsOrdersId, float $profit): void
+    private function updateOrderProfit(int $gridsOrdersIdx, float $profit): void
     {
         try {
             $gridsOrdersModel = new grids_orders_model();
-            $gridsOrdersModel->set_filter([
-                "active = 'yes'",
-                "idx = '{$gridsOrdersId}'"
-            ]);
+            $gridsOrdersModel->set_filter(["idx = '{$gridsOrdersIdx}'"]);
             $gridsOrdersModel->populate(['profit_usdc' => $profit]);
             $gridsOrdersModel->save();
         } catch (Exception $e) {
@@ -1183,36 +1384,64 @@ class setup_controller
     }
 
     /**
-     * Incrementa o lucro acumulado do grid
+     * Incrementa lucro acumulado do grid
      */
     private function incrementGridProfit(int $gridId, float $profit): void
     {
         try {
             $gridsModel = new grids_model();
-            $gridsModel->set_filter([
-                "active = 'yes'",
-                "idx = '{$gridId}'"
-            ]);
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
             $gridsModel->load_data();
 
-            if (!empty($gridsModel->data)) {
-                $grid = $gridsModel->data[0];
-                $newProfit = (float)($grid['accumulated_profit_usdc'] ?? 0) + $profit;
-                $newTradesCount = (int)($grid['total_trades_completed'] ?? 0) + 1;
-
-                $gridsModel->populate([
-                    'accumulated_profit_usdc' => $newProfit,
-                    'total_trades_completed' => $newTradesCount
-                ]);
-                $gridsModel->save();
+            if (empty($gridsModel->data)) {
+                throw new Exception("Grid não encontrado: {$gridId}");
             }
+
+            $currentProfit = (float)($gridsModel->data[0]['accumulated_profit_usdc'] ?? 0);
+            $newProfit = $currentProfit + $profit;
+
+            // Resetar o model para fazer UPDATE
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate(['accumulated_profit_usdc' => $newProfit]);
+            $gridsModel->save();
         } catch (Exception $e) {
             $this->log("Erro ao incrementar lucro do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
         }
     }
 
     /**
-     * Cancela todas as ordens abertas de um grid
+     * Atualiza estatísticas do grid
+     */
+    private function updateGridStats(int $gridId): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate(['last_checked_at' => date('Y-m-d H:i:s')]);
+            $gridsModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao atualizar estatísticas: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Atualiza status do grid
+     */
+    private function updateGridStatus(int $gridId, string $status): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate(['status' => $status]);
+            $gridsModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao atualizar status do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Cancela todas ordens abertas de um grid
      */
     private function cancelAllGridOrders(int $gridId): void
     {
@@ -1226,129 +1455,41 @@ class setup_controller
             $gridsOrdersModel->load_data();
 
             foreach ($gridsOrdersModel->data as $gridOrder) {
-                try {
-                    $order = $gridOrder['orders'][0] ?? null;
-                    if ($order && in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
-                        $this->client->cancelOrder($order['symbol'], ['orderId' => $order['binance_order_id']]);
+                $order = $gridOrder['orders'][0] ?? null;
 
-                        // Atualizar status da ordem
-                        $ordersModel = new orders_model();
-                        $ordersModel->set_filter([
-                            "active = 'yes'",
-                            "idx = '{$order['idx']}'"
-                        ]);
-                        $ordersModel->populate(['status' => 'CANCELED']);
-                        $ordersModel->save();
+                if ($order && in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                    try {
+                        $this->client->cancelOrder($order['symbol'], $order['binance_order_id']);
+                        $this->log("Ordem {$order['binance_order_id']} cancelada", 'INFO', 'TRADE');
+                    } catch (Exception $e) {
+                        $this->log("Erro ao cancelar ordem {$order['binance_order_id']}: " . $e->getMessage(), 'WARNING', 'TRADE');
                     }
-                } catch (Exception $e) {
-                    $this->log("Erro ao cancelar ordem {$order['binance_order_id']}: " . $e->getMessage(), 'WARNING', 'TRADE');
                 }
             }
-
-            $this->log("Cancelamento de ordens concluído para grid $gridId", 'INFO', 'TRADE');
         } catch (Exception $e) {
-            $this->log("Erro ao buscar ordens para cancelamento: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            $this->log("Erro ao cancelar ordens do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
         }
     }
 
     /**
-     * Obtém o ativo acumulado no grid (não vendido)
+     * Calcula ativo acumulado de compras executadas
      */
     private function getAccumulatedAsset(int $gridId, string $symbol): float
     {
         try {
-            $gridsOrdersModel = new grids_orders_model();
-            $gridsOrdersModel->set_filter([
-                "active = 'yes'",
-                "grids_id = '{$gridId}'"
-            ]);
-            $gridsOrdersModel->attach(['orders']);
-            $gridsOrdersModel->load_data();
+            $baseAsset = str_replace('USDC', '', $symbol);
+            $accountInfo = $this->getAccountInfo(true);
 
-            $totalBought = 0.0;
-            $totalSold = 0.0;
-
-            foreach ($gridsOrdersModel->data as $gridOrder) {
-                $order = $gridOrder['orders'][0] ?? null;
-                if ($order && $order['symbol'] === $symbol && $order['status'] === 'FILLED') {
-                    if ($order['side'] === 'BUY') {
-                        $totalBought += (float)$order['executed_qty'];
-                    } else {
-                        $totalSold += (float)$order['executed_qty'];
-                    }
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === $baseAsset) {
+                    return (float)$balance['free'];
                 }
             }
 
-            return max(0, $totalBought - $totalSold);
-        } catch (Exception $e) {
-            $this->log("Erro ao obter ativo acumulado: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return 0.0;
-        }
-    }
-
-    /**
-     * Atualiza o status de um grid
-     */
-    private function updateGridStatus(int $gridId, string $status): void
-    {
-        try {
-            $gridsModel = new grids_model();
-            $gridsModel->set_filter([
-                "active = 'yes'",
-                "idx = '{$gridId}'"
-            ]);
-            $gridsModel->populate([
-                'status' => $status,
-                'last_rebalance_at' => date('Y-m-d H:i:s')
-            ]);
-            $gridsModel->save();
         } catch (Exception $e) {
-            $this->log("Erro ao atualizar status do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-        }
-    }
-
-    /**
-     * Atualiza estatísticas do grid
-     */
-    private function updateGridStats(int $gridId): void
-    {
-        try {
-            $gridsModel = new grids_model();
-            $gridsModel->set_filter([
-                "active = 'yes'",
-                "idx = '{$gridId}'"
-            ]);
-            $gridsModel->populate([
-                'last_check_at' => date('Y-m-d H:i:s')
-            ]);
-            $gridsModel->save();
-        } catch (Exception $e) {
-            $this->log("Erro ao atualizar estatísticas do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-        }
-    }
-
-    /**
-     * Salva um log de evento do grid
-     */
-    private function saveGridLog(
-        int $gridId,
-        string $event,
-        string $logType,
-        string $message,
-        ?array $data = null
-    ): void {
-        try {
-            $gridLogsModel = new grid_logs_model();
-            $gridLogsModel->populate([
-                'grids_id' => $gridId,
-                'event' => $event,
-                'log_type' => $logType,
-                'message' => $message,
-                'data' => $data ? json_encode($data) : null
-            ]);
-            $gridLogsModel->save();
-        } catch (Exception $e) {
-            $this->log("Erro ao salvar log de grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            $this->log("Erro ao calcular ativo acumulado: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return 0.0;
         }
     }
 }
