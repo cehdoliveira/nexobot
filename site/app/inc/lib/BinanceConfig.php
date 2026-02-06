@@ -80,9 +80,11 @@ class BinanceConfig
             error_log('BinanceConfig::save DB error: ' . $e->getMessage());
             $ok = false;
         }
-        if (!$ok) {
-            error_log('BinanceConfig::save falling back to file');
+        if ($ok) {
+            return true;
         }
+
+        error_log('BinanceConfig::save falling back to file');
 
         // Fallback para arquivo (se DB indisponível)
         $settingsPath = self::getWritableSettingsPath();
@@ -114,7 +116,7 @@ class BinanceConfig
         }
 
         @chmod($settingsPath, 0644);
-        return $ok;
+        return true;
     }
 
     public static function getActiveCredentials(): array

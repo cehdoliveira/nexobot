@@ -63,7 +63,7 @@ Você vai precisar destes valores (anote antes de começar):
 <NOME_APP>              = Nome do seu projeto/app (ex: meu-app)
 <SEU_DOMINIO>           = Seu domínio principal (ex: seusite.com)
 <SEU_USUARIO_REPO>      = Seu usuário do GitHub
-<SEU_REPO>              = Nome do repositório (ex: gridnexobot)
+<SEU_REPO>              = Nome do repositório (ex: nexobot)
 <SUA_REDE>              = Nome da rede Overlay do Portainer (ex: dotskynet)
 <NOME_BANCO>            = Nome do banco MySQL (ex: meu_app_db)
 <USUARIO_DB>            = Usuário MySQL (ex: app_user)
