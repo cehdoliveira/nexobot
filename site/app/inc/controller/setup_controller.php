@@ -309,24 +309,28 @@ class setup_controller
             $buyLevels = [];
             $sellLevels = [];
 
-            for ($i = 0; $i <= self::GRID_LEVELS; $i++) {
+            for ($i = 0; $i < self::GRID_LEVELS; $i++) {
                 $levelPrice = $gridMin + ($i * $priceStep);
 
                 if ($levelPrice < $currentPrice) {
                     $buyLevels[] = [
-                        'level' => $i + 1,
+                        'level' => null, // Será atribuído depois (inversamente)
                         'price' => $levelPrice
                     ];
                 } elseif ($levelPrice > $currentPrice) {
                     $sellLevels[] = [
-                        'level' => $i + 1,
+                        'level' => count($sellLevels) + 1, // Sequencial para venda
                         'price' => $levelPrice
                     ];
                 }
             }
 
-            // 5. CALCULAR CAPITAL POR NÍVEL DE COMPRA
+            // Inverter numeração dos níveis de compra (Nível 1 = preço mais próximo/alto)
             $numBuyLevels = count($buyLevels);
+            for ($i = 0; $i < $numBuyLevels; $i++) {
+                $buyLevels[$i]['level'] = $numBuyLevels - $i;
+            }
+
             if ($numBuyLevels === 0) {
                 $this->log("Nenhum nível de compra disponível para $symbol", 'WARNING', 'TRADE');
                 return;
@@ -344,33 +348,45 @@ class setup_controller
                 $capitalPerLevel
             );
 
-            // 7. CRIAR ORDENS LIMIT DE COMPRA
+            // 7. CRIAR ORDENS LIMIT DE COMPRA (todas)
             $successCount = 0;
+            $failedOrders = [];
             foreach ($buyLevels as $level) {
-                $orderDbId = $this->placeBuyOrder(
-                    $gridId,
-                    $symbol,
-                    $level['level'],
-                    $level['price'],
-                    $capitalPerLevel
-                );
-                if ($orderDbId) {
-                    $successCount++;
+                try {
+                    $orderDbId = $this->placeBuyOrder(
+                        $gridId,
+                        $symbol,
+                        $level['level'],
+                        $level['price'],
+                        $capitalPerLevel
+                    );
+                    if ($orderDbId) {
+                        $successCount++;
+                        $this->log("Ordem de compra Nível {$level['level']} criada com sucesso na Binance", 'INFO', 'TRADE');
+                    } else {
+                        $failedOrders[] = $level['level'];
+                        $this->log("Falha ao criar ordem de compra Nível {$level['level']}", 'WARNING', 'TRADE');
+                    }
+                } catch (Exception $e) {
+                    $failedOrders[] = $level['level'];
+                    $this->log("Exceção ao criar ordem Nível {$level['level']}: " . $e->getMessage(), 'ERROR', 'TRADE');
                 }
             }
 
             $this->log(
-                "Grid criado para $symbol com $numBuyLevels níveis de compra ($successCount ordens criadas)",
-                'SUCCESS',
+                "Grid criado para $symbol com $numBuyLevels níveis de compra. Sucesso: $successCount ordens. " . (count($failedOrders) > 0 ? "Falhas: Níveis " . implode(', ', $failedOrders) : "Todas as ordens criadas!"),
+                $successCount === $numBuyLevels ? 'SUCCESS' : 'WARNING',
                 'TRADE'
             );
 
             // Salvar log
-            $this->saveGridLog($gridId, 'grid_created', 'success', "Grid criado com sucesso para $symbol", [
+            $this->saveGridLog($gridId, 'grid_created', $successCount === $numBuyLevels ? 'success' : 'warning', "Grid criado para $symbol", [
                 'grid_min' => $gridMin,
                 'grid_max' => $gridMax,
                 'center_price' => $currentPrice,
                 'buy_levels' => $numBuyLevels,
+                'orders_created' => $successCount,
+                'orders_failed' => count($failedOrders),
                 'capital_allocated' => $capitalForSymbol
             ]);
         } catch (Exception $e) {
@@ -1051,11 +1067,7 @@ class setup_controller
             $gridsOrdersModel->populate([
                 'grids_id' => $orderData['grids_id'],
                 'orders_id' => $orderIdx,
-                'grid_level' => $orderData['grid_level'],
-                'paired_order_id' => $orderData['paired_order_id'] ?? null,
-                'profit_usdc' => $orderData['profit_usdc'] ?? null,
-                'created_at' => date('Y-m-d H:i:s'),
-                'created_by' => 1
+                'grid_level' => $orderData['grid_level'] ?? 1
             ]);
             $gridsOrdersModel->save();
 

@@ -5,6 +5,7 @@ class grids_orders_model extends DOLModel
 		"idx",
 		"grids_id",
 		"orders_id",
+		"grid_level",
 		"created_at"
 	];
 	protected $filter = ["active = 'yes'"];
