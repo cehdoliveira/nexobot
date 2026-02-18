@@ -279,7 +279,7 @@ class DOLModel extends rootOBJ
 				}
 			}
 			if (count($flt) > 1 || ! empty($options)) {
-				$r = $this->con->select(isset($field) ? implode(", ", $field) : "*", $table, " WHERE " . implode(" AND ", $flt) . strtr($options, ["#IDX#" => $value["idx"]]));
+				$r = $this->con->select(isset($field) ? implode(", ", $field) : "*", $table, " WHERE " . implode(" AND ", $flt) . strtr($options ?? '', ["#IDX#" => $value["idx"]]));
 				$new_data[$key][$name . "_attach"] = $this->con->results($r);
 			} else {
 				$new_data[$key][$name . "_attach"] = [];
