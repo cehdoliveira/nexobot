@@ -281,7 +281,8 @@ class setup_controller
             $activeGrid = $this->getActiveGrid($symbol);
 
             if ($activeGrid) {
-                // Grid existe → Monitorar e processar ordens
+                // Grid existe → Sincronizar ordens e depois monitorar
+                $this->syncOrdersWithBinance($activeGrid['idx']);
                 $this->monitorGrid($activeGrid);
             } else {
                 // Grid não existe → Criar novo
@@ -289,6 +290,86 @@ class setup_controller
             }
         } catch (Exception $e) {
             throw new Exception("Erro ao processar $symbol: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Sincroniza status das ordens do grid com a Binance
+     * Atualiza status e quantidade executada das ordens pendentes
+     */
+    private function syncOrdersWithBinance(int $gridId): void
+    {
+        try {
+            // Buscar ordens pendentes do grid usando framework DOL
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'",
+                "orders_id IN (SELECT idx FROM orders WHERE status IN ('NEW', 'PARTIALLY_FILLED'))"
+            ]);
+
+            // CRITICAL: load_data() ANTES de join()
+            $gridsOrdersModel->load_data();
+
+            // JOIN para carregar dados da tabela orders
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            if (empty($gridsOrdersModel->data)) {
+                return;
+            }
+
+            $updatedCount = 0;
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                // Acessar ordem via orders_attach
+                $order = $gridOrder['orders_attach'][0] ?? null;
+
+                if (!$order || !in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                    continue;
+                }
+
+                try {
+                    // Consultar status na Binance
+                    $response = $this->client->getOrder($order['symbol'], $order['binance_order_id']);
+                    $binanceOrder = $response->getData();
+
+                    $newStatus = method_exists($binanceOrder, 'getStatus')
+                        ? $binanceOrder->getStatus()
+                        : ($binanceOrder['status'] ?? null);
+
+                    $executedQty = method_exists($binanceOrder, 'getExecutedQty')
+                        ? $binanceOrder->getExecutedQty()
+                        : ($binanceOrder['executedQty'] ?? 0);
+
+                    // Atualizar ordem se status mudou
+                    if ($newStatus && $newStatus !== $order['status']) {
+                        $ordersModel = new orders_model();
+                        $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                        $ordersModel->populate([
+                            'status' => $newStatus,
+                            'executed_qty' => (float)$executedQty
+                        ]);
+                        $ordersModel->save();
+
+                        $updatedCount++;
+
+                        $this->log(
+                            "Ordem {$order['binance_order_id']} atualizada: {$order['status']} → {$newStatus}",
+                            'INFO',
+                            'API'
+                        );
+                    }
+                } catch (Exception $e) {
+                    // Silencioso para evitar spam de logs (ex: timestamp errors)
+                    continue;
+                }
+            }
+
+            if ($updatedCount > 0) {
+                $this->log("$updatedCount ordem(ns) sincronizada(s) com a Binance", 'INFO', 'SYSTEM');
+            }
+        } catch (Exception $e) {
+            $this->log("Erro ao sincronizar ordens: " . $e->getMessage(), 'ERROR', 'SYSTEM');
         }
     }
 
@@ -418,6 +499,9 @@ class setup_controller
         try {
             $symbol = $gridData['symbol'];
             $gridId = $gridData['idx'];
+
+            // 0. SINCRONIZAR STATUS DAS ORDENS COM A BINANCE
+            $this->syncOrdersWithBinance($gridId);
 
             // 1. BUSCAR ORDENS EXECUTADAS MAS NÃO PROCESSADAS
             $executedOrders = $this->getExecutedUnprocessedOrders($gridId);
@@ -1319,20 +1403,25 @@ class setup_controller
     {
         try {
             $gridsOrdersModel = new grids_orders_model();
+
+            // Usar subconsulta no filter para buscar apenas grids_orders deste grid não processadas
             $gridsOrdersModel->set_filter([
                 "active = 'yes'",
-                "grids_id = '{$gridId}'",
-                "is_processed = 'no'"
+                "idx IN (SELECT idx FROM grids_orders WHERE active = 'yes' AND grids_id = '{$gridId}' AND is_processed = 'no')"
             ]);
-            $gridsOrdersModel->attach(['orders']);
+
+            // Carregar dados ANTES do join
             $gridsOrdersModel->load_data();
 
+            // JOIN para carregar os dados da tabela orders relacionada
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
             $executedOrders = [];
-
             foreach ($gridsOrdersModel->data as $gridOrder) {
-                $order = $gridOrder['orders'][0] ?? null;
+                // Verificar se a ordem relacionada está FILLED
+                if (isset($gridOrder['orders_attach'][0]) && $gridOrder['orders_attach'][0]['status'] === 'FILLED') {
+                    $order = $gridOrder['orders_attach'][0];
 
-                if ($order && $order['status'] === 'FILLED') {
                     $executedOrders[] = [
                         'idx' => $order['idx'],
                         'grids_orders_idx' => $gridOrder['idx'],
@@ -1346,6 +1435,7 @@ class setup_controller
                 }
             }
 
+            $this->log("Encontradas " . count($executedOrders) . " ordens FILLED não processadas", 'INFO', 'SYSTEM');
             return $executedOrders;
         } catch (Exception $e) {
             $this->log("Erro ao buscar ordens executadas: " . $e->getMessage(), 'ERROR', 'SYSTEM');
