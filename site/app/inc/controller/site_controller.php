@@ -158,7 +158,26 @@ class site_controller
             $gridId = $grid['idx'];
 
             // Buscar ordens deste grid (apenas as que EXISTEM)
-            $gridOrders = array_filter($allGridOrders, fn($o) => ($o['grids_id'] ?? 0) == $gridId);
+            $allGridOrdersForGrid = array_filter($allGridOrders, fn($o) => ($o['grids_id'] ?? 0) == $gridId);
+
+            // Para cada par (grid_level, side) manter apenas a ordem mais recente (maior idx).
+            // Isso evita múltiplas entradas "Nível 1" causadas por ordens históricas já executadas
+            // no mesmo nível — cada nível deve exibir apenas seu estado atual.
+            $latestPerLevelSide = [];
+            foreach ($allGridOrdersForGrid as $gridOrder) {
+                $order = $gridOrder['orders'][0] ?? null;
+                if (!$order) {
+                    continue;
+                }
+                $side = $order['side'] ?? 'UNKNOWN';
+                $level = (int)($gridOrder['grid_level'] ?? 0);
+                $key = $level . '_' . $side;
+                $currentIdx = (int)($gridOrder['idx'] ?? 0);
+                if (!isset($latestPerLevelSide[$key]) || $currentIdx > $latestPerLevelSide[$key]['idx']) {
+                    $latestPerLevelSide[$key] = $gridOrder;
+                }
+            }
+            $gridOrders = array_values($latestPerLevelSide);
 
             $buyLevels = [];
             $sellLevels = [];
