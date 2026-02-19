@@ -685,13 +685,13 @@ class setup_controller
                 "active = 'yes'",
                 "grids_id = '{$gridId}'"
             ]);
-            $gridsOrdersModel->attach(['orders']);
-            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->load_data(); // CRITICAL: load_data() ANTES de join()
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
             $pendingSells = [];
 
             foreach ($gridsOrdersModel->data as $gridOrder) {
-                $order = $gridOrder['orders'][0] ?? null;
+                $order = $gridOrder['orders_attach'][0] ?? null;
 
                 if (!$order) {
                     continue;
@@ -783,12 +783,12 @@ class setup_controller
             if ($sellOrder['paired_order_id']) {
                 $gridsOrdersModel = new grids_orders_model();
                 $gridsOrdersModel->set_filter(["idx='" . $sellOrder['paired_order_id'] . "'"]);
-                $gridsOrdersModel->attach(['orders']);
-                $gridsOrdersModel->load_data();
+                $gridsOrdersModel->load_data(); // CRITICAL: load_data() ANTES de join()
+                $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
                 if (!empty($gridsOrdersModel->data)) {
                     $buyOrderData = $gridsOrdersModel->data[0];
-                    if (!empty($buyOrderData['orders'])) {
-                        $buyOrder = $buyOrderData['orders'][0];
+                    if (!empty($buyOrderData['orders_attach'])) {
+                        $buyOrder = $buyOrderData['orders_attach'][0];
                     }
                 }
             }
