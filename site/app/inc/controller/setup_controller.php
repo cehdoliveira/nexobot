@@ -76,8 +76,9 @@ class setup_controller
      */
     private function initializeLogger(): void
     {
-        // FORÇAR uso de temp dir para evitar problemas de permissão
-        $this->logPath = rtrim(sys_get_temp_dir(), '/') . '/';
+        // /var/log é mapeado para /opt/gridnexobot/logs no host (volume do Portainer)
+        // Mesmo local onde cron.log é gravado pelo verify_entry.php
+        $this->logPath = '/var/log/';
     }
 
     /**
