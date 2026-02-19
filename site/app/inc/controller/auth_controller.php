@@ -28,6 +28,13 @@ class auth_controller
             if (isset($users->data[0]["idx"])) {
                 // $users->attach(array("profiles"), false, null, array("idx", "name", "adm", "slug"));
                 $_SESSION[constant("cAppKey")] = ["credential" => current($users->data)];
+
+                // Previne session fixation: cria novo SID após autenticação,
+                // descarta o SID anônimo anterior (true = apaga sessão antiga).
+                // Deve ser chamado DEPOIS de popular $_SESSION para que os dados
+                // migrem para o novo SID automaticamente.
+                session_regenerate_id(true);
+
                 $users->set_filter(["idx = '" .  $_SESSION[constant("cAppKey")]["credential"]["idx"]  . "' "]);
                 $users->populate(["last_login" => date("Y-m-d H:i:s")]);
                 $users->save();

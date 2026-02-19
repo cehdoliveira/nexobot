@@ -171,12 +171,11 @@ function basic_redir($url, $code = 302, $use_html = false)
     $url = $url[0];
   }
 
-  // Garante que os dados de sessão sejam gravados no Redis ANTES do browser
-  // executar o redirect. Sem isso, o próximo request pode chegar antes de
-  // session_write_close() ser acionado automaticamente no shutdown.
-  if (session_status() === PHP_SESSION_ACTIVE) {
-    session_write_close();
-  }
+  // session_write_close() NÃO é chamado aqui. Com header("Location:") o browser
+  // só segue o redirect DEPOIS que o PHP termina completamente, incluindo o
+  // shutdown que chama session_write_close() automaticamente.
+  // Chamar session_write_close() manualmente causava conflito com use_strict_mode
+  // no phpredis: a sessão não era marcada como inicializada e era rejeitada.
 
   if ($use_html) {
     $dir = constant("AppLayout");
