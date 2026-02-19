@@ -49,25 +49,14 @@ class site_controller
         $allGrids = $gridsModel->data;
 
         // === BUSCAR ORDENS DE GRID (com relacionamento manual) ===
-        // Coletar IDs de grids ativos para filtrar somente as ordens relevantes
-        $activeGridIds = array_column($allGrids, 'idx');
-
         $gridsOrdersModel = new grids_orders_model();
-        if (!empty($activeGridIds)) {
-            $gridsOrdersModel->set_filter([
-                "active = 'yes'",
-                "grids_id IN (" . implode(',', array_map('intval', $activeGridIds)) . ")"
-            ]);
-        } else {
-            $gridsOrdersModel->set_filter(["active = 'yes'"]);
-        }
         $gridsOrdersModel->load_data();
         $gridOrdersData = $gridsOrdersModel->data;
 
         // Carregar ordens relacionadas
         if (!empty($gridOrdersData)) {
             $orderIds = array_column($gridOrdersData, 'orders_id');
-
+            
             $ordersModel = new orders_model();
             $ordersModel->set_filter([
                 "active = 'yes'",
