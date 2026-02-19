@@ -8,6 +8,10 @@
  * Gerencia sessões, rotas e despacho de requisições
  */
 
+// ob_start() ANTES de qualquer output garante que header() e Set-Cookie
+// funcionem mesmo que algum include gere bytes acidentais (espaços, BOM, etc.)
+ob_start();
+
 // Iniciar sessão com configurações seguras para PHP 8.4
 // cookie_secure: força envio do cookie apenas sobre HTTPS (alinhado ao php.ini)
 // cookie_samesite Lax: permite cookies em redirects GET de topo (pós-login)

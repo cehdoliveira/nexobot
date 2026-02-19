@@ -128,6 +128,13 @@ class auth_controller
 
     public function display($info)
     {
+        // Se já está logado, redireciona para o dashboard
+        // Evita que o usuário fique preso no formulário após um login bem-sucedido
+        if (self::check_login()) {
+            basic_redir($GLOBALS["home_url"]);
+            return;
+        }
+
         // Definir controllers Alpine.js necessários para esta página
         $alpineControllers = ['login'];
 
