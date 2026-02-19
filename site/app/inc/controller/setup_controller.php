@@ -1067,11 +1067,11 @@ class setup_controller
                 $buyPrice = (float)$buyOrder['price'];
 
                 // Calcular lucro (desconta fee de 0.1% em cada lado)
-                $buyValue = $executedQty * $buyPrice;
+                $buyValue  = $executedQty * $buyPrice;
                 $sellValue = $executedQty * $sellPrice;
-                $buyFee = $buyValue * 0.001;
-                $sellFee = $sellValue * 0.001;
-                $profit = $sellValue - $buyValue - $buyFee - $sellFee;
+                $buyFee    = $buyValue * 0.001;
+                $sellFee   = $sellValue * 0.001;
+                $profit    = $sellValue - $buyValue - $buyFee - $sellFee;
 
                 // Salvar lucro na ordem de venda
                 $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
@@ -1080,40 +1080,56 @@ class setup_controller
                 $this->incrementGridProfit($gridId, $profit);
 
                 $this->log(
-                    "PAR COMPLETO em $symbol: Lucro = $$profit (Compra: $buyPrice | Venda: $sellPrice)",
+                    "✅ PAR COMPLETO em $symbol: Lucro = $" . number_format($profit, 4) . " (Compra: $$buyPrice | Venda: $$sellPrice)",
                     'SUCCESS',
                     'TRADE'
                 );
 
-                $this->saveGridLog(
-                    $gridId,
-                    'sell_order_filled',
-                    'success',
-                    "Par completo com lucro",
-                    [
-                        'buy_price' => $buyPrice,
-                        'sell_price' => $sellPrice,
-                        'quantity' => $executedQty,
-                        'profit' => $profit
-                    ]
+                $this->saveGridLog($gridId, 'sell_order_filled', 'success', "Par completo com lucro", [
+                    'buy_price'  => $buyPrice,
+                    'sell_price' => $sellPrice,
+                    'quantity'   => $executedQty,
+                    'profit'     => $profit
+                ]);
+            } else {
+                // Venda inicial do grid híbrido (sem compra pareada) — registra o evento
+                $sellValue = $executedQty * $sellPrice;
+                $sellFee   = $sellValue * 0.001;
+
+                $this->log(
+                    "📤 VENDA INICIAL executada em $symbol: $$sellPrice × " . number_format($executedQty, 8) . " BTC (sem par de compra — grid híbrido)",
+                    'INFO',
+                    'TRADE'
                 );
+
+                $this->saveGridLog($gridId, 'sell_initial_filled', 'success', "Venda inicial do grid híbrido executada", [
+                    'sell_price' => $sellPrice,
+                    'quantity'   => $executedQty,
+                    'sell_value' => $sellValue,
+                    'sell_fee'   => $sellFee,
+                    'note'       => 'Sem lucro calculado pois não há ordem de compra pareada (venda inicial)'
+                ]);
             }
 
-            // Recriar ordem de COMPRA no mesmo nível
-            $gridData = $this->getGridById($gridId);
+            // Recriar ordem de COMPRA no mesmo nível (1% abaixo do preço de venda)
+            $gridData    = $this->getGridById($gridId);
             $gridSpacing = $this->getGridSpacing($symbol);
-            $buyPrice = $sellPrice * (1 - $gridSpacing);
+            $newBuyPrice = $sellPrice * (1 - $gridSpacing);
 
             $newBuyOrderId = $this->placeBuyOrder(
                 $gridId,
                 $symbol,
                 $sellOrder['grid_level'],
-                $buyPrice,
+                $newBuyPrice,
                 $gridData['capital_per_level']
             );
 
             if ($newBuyOrderId) {
-                $this->log("Nova ordem de compra criada para nível {$sellOrder['grid_level']}", 'INFO', 'TRADE');
+                $this->log(
+                    "🔄 Novo BUY criado após venda: Nível {$sellOrder['grid_level']} @ $" . number_format($newBuyPrice, 2),
+                    'INFO',
+                    'TRADE'
+                );
             }
         } catch (Exception $e) {
             throw new Exception("Erro ao processar venda preenchida: " . $e->getMessage());
