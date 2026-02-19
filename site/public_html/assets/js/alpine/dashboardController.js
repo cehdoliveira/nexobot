@@ -22,6 +22,7 @@ document.addEventListener("alpine:init", () => {
         // Limpar cache no servidor
         const response = await fetch(window.location.pathname, {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
           },
@@ -115,6 +116,7 @@ document.addEventListener("alpine:init", () => {
           try {
             const response = await fetch(window.location.pathname, {
               method: 'POST',
+              credentials: 'include',
               headers: {
                 'Content-Type': 'application/json',
               },
