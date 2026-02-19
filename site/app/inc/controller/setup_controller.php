@@ -273,6 +273,51 @@ class setup_controller
     }
 
     /**
+     * Cancela o grid ativo e todas suas ordens abertas na Binance
+     * Usar uma única vez para resetar grid com distribuição de níveis incorreta
+     */
+    public function resetCurrentGrid(string $symbol = 'BTCUSDC'): void
+    {
+        try {
+            $grid = $this->getActiveGrid($symbol);
+
+            if (!$grid) {
+                $this->log("Nenhum grid ativo encontrado para $symbol", 'WARNING', 'SYSTEM');
+                return;
+            }
+
+            $gridId = (int)$grid['idx'];
+            $this->log("🔄 Resetando grid #$gridId para $symbol...", 'INFO', 'SYSTEM');
+
+            // 1. Cancelar todas ordens abertas na Binance
+            $this->cancelAllGridOrders($gridId);
+
+            // 2. Marcar grid como cancelado
+            $this->updateGridStatus($gridId, 'cancelled');
+
+            // 3. Desativar ordens no banco
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter(["grids_id = '{$gridId}'"]);
+            $gridsOrdersModel->load_data();
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $model = new grids_orders_model();
+                $model->set_filter(["idx = '{$gridOrder['idx']}'"]);
+                $model->populate(['active' => 'no']);
+                $model->save();
+            }
+
+            // 4. Limpar cache em memória
+            unset($this->activeGrids[$symbol]);
+
+            $this->log("✅ Grid #$gridId resetado! Pronto para criar novo grid com 3+3 níveis.", 'INFO', 'SYSTEM');
+        } catch (Exception $e) {
+            $this->log("Erro ao resetar grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            throw $e;
+        }
+    }
+
+    /**
      * Processa um símbolo: verifica se grid existe, monitora ou cria novo
      */
     private function processSymbol(string $symbol): void
@@ -517,44 +562,44 @@ class setup_controller
                 return;
             }
 
-            // 2. CALCULAR RANGE DO GRID
-            $gridMin   = $currentPrice * (1 - self::GRID_RANGE_PERCENT);
-            $gridMax   = $currentPrice * (1 + self::GRID_RANGE_PERCENT);
-            $gridRange = $gridMax - $gridMin;
+            // 2. CALCULAR RANGE DO GRID (referência para saveGridConfig)
+            $gridMin = $currentPrice * (1 - self::GRID_RANGE_PERCENT);
+            $gridMax = $currentPrice * (1 + self::GRID_RANGE_PERCENT);
 
-            // 3. DEFINIR NÍVEIS DE PREÇO
-            $priceStep  = $gridRange / self::GRID_LEVELS;
+            // 3. DEFINIR NÍVEIS DE PREÇO (SIMÉTRICO: 3 ABAIXO + 3 ACIMA)
+            // Garante sempre exatamente 3 BUYs + 3 SELLs, independente do preço atual.
             $buyLevels  = [];
             $sellLevels = [];
+            $gridSpacing = $this->getGridSpacing($symbol); // 1% por padrão
 
-            for ($i = 0; $i < self::GRID_LEVELS; $i++) {
-                $levelPrice = $gridMin + ($i * $priceStep);
-
-                if ($levelPrice < $currentPrice) {
-                    $buyLevels[] = [
-                        'level' => null,
-                        'price' => $levelPrice
-                    ];
-                } elseif ($levelPrice > $currentPrice) {
-                    $sellLevels[] = [
-                        'level' => count($sellLevels) + 1,
-                        'price' => $levelPrice
-                    ];
-                }
+            // CALCULAR 3 NÍVEIS DE COMPRA (abaixo do preço atual)
+            // Nível 3 = mais distante | Nível 1 = mais próximo
+            for ($i = 1; $i <= 3; $i++) {
+                $buyPrice   = $currentPrice * (1 - ($i * $gridSpacing));
+                $buyLevels[] = [
+                    'level' => 4 - $i, // 3, 2, 1 — Nível 1 mais próximo
+                    'price' => $buyPrice
+                ];
             }
 
-            // Inverter numeração dos níveis de compra (Nível 1 = mais próximo do preço)
-            $numBuyLevels = count($buyLevels);
-            for ($i = 0; $i < $numBuyLevels; $i++) {
-                $buyLevels[$i]['level'] = $numBuyLevels - $i;
+            // CALCULAR 3 NÍVEIS DE VENDA (acima do preço atual)
+            // Nível 1 = mais próximo | Nível 3 = mais distante
+            for ($i = 1; $i <= 3; $i++) {
+                $sellPrice    = $currentPrice * (1 + ($i * $gridSpacing));
+                $sellLevels[] = [
+                    'level' => $i, // 1, 2, 3
+                    'price' => $sellPrice
+                ];
             }
 
-            $numSellLevels = count($sellLevels);
+            $numBuyLevels  = count($buyLevels);  // Sempre 3
+            $numSellLevels = count($sellLevels); // Sempre 3
 
-            if ($numBuyLevels === 0) {
-                $this->log("Nenhum nível de compra disponível para $symbol", 'WARNING', 'TRADE');
-                return;
-            }
+            $this->log(
+                "📊 Grid configurado: {$numBuyLevels} BUYs (abaixo) + {$numSellLevels} SELLs (acima) | Preço central: $" . number_format($currentPrice, 2),
+                'INFO',
+                'TRADE'
+            );
 
             // 4. DIVIDIR CAPITAL
             $capitalPerBuyLevel  = $capital['usdc_for_buys'] / $numBuyLevels;
