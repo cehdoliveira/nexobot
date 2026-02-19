@@ -159,14 +159,25 @@ function set_url($url = "", $params = [])
 
 /**
  * Redireciona para outra URL
- * Realiza redirecionamento com código HTTP (301, 302, 404)
+ * Realiza redirecionamento com código HTTP (302 temporário por padrão).
+ *
+ * IMPORTANTE: usa header("Location: ...") em vez de JavaScript para garantir
+ * que o cookie de sessão seja enviado corretamente e que não haja race condition
+ * entre a escrita da sessão no Redis e o próximo request do browser.
  */
-function basic_redir($url, $code = 301, $use_html = false)
+function basic_redir($url, $code = 302, $use_html = false)
 {
   if (is_array($url)) {
     $url = $url[0];
   }
-  #header( "Status: " . $code ) ;
+
+  // Garante que os dados de sessão sejam gravados no Redis ANTES do browser
+  // executar o redirect. Sem isso, o próximo request pode chegar antes de
+  // session_write_close() ser acionado automaticamente no shutdown.
+  if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+  }
+
   if ($use_html) {
     $dir = constant("AppLayout");
     ob_start();
@@ -185,8 +196,7 @@ function basic_redir($url, $code = 301, $use_html = false)
     ob_end_clean();
     print str_replace("{location}", $url, $out);
   } else {
-    print("<script>document.location = '" . $url  . "'</script>");
-    #header("Location: " . $url , true , $code ) ;
+    header("Location: " . $url, true, $code);
   }
   exit();
 }

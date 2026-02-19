@@ -9,17 +9,20 @@
  */
 
 // Iniciar sessão com configurações seguras para PHP 8.4
+// cookie_secure: força envio do cookie apenas sobre HTTPS (alinhado ao php.ini)
+// cookie_samesite Lax: permite cookies em redirects GET de topo (pós-login)
+// use_only_cookies: impede que o session_id seja passado via URL
+// use_strict_mode: rejeita IDs de sessão não inicializados pelo servidor
 session_start([
-	'cookie_httponly' => true,
-	'cookie_samesite' => 'Lax',
-	'use_strict_mode' => true
+	'cookie_httponly'  => true,
+	'cookie_secure'    => true,
+	'cookie_samesite'  => 'Lax',
+	'use_only_cookies' => true,
+	'use_strict_mode'  => true
 ]);
 
-// Configurações de erro (DESENVOLVIMENTO)
-// TODO: Desabilitar em produção ou usar variável de ambiente
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
+// Configurações de erro — controladas pelo php.ini em produção
+// ini_set('display_errors', 1) foi REMOVIDO: em produção erros não devem ser exibidos
 
 // Carregar dependências principais
 require_once($_SERVER["DOCUMENT_ROOT"] . "/../app/inc/main.php");

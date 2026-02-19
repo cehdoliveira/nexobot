@@ -50,7 +50,20 @@ define("cTitle", "<PROJETO_NOME>");
 define("cAppRoot", "/");
 define("cRootServer", sprintf("%s%s", $_SERVER["DOCUMENT_ROOT"], constant("cAppRoot")));
 define("cRootServer_APP", sprintf("%s%s", $_SERVER["DOCUMENT_ROOT"], constant("cAppRoot") . "../app"));
-define("cFrontend", sprintf("http://%s%s", $_SERVER["HTTP_HOST"] ?? "localhost", constant("cAppRoot")));
+
+// Detecta HTTPS mesmo atrás de reverse proxy (ex.: Traefik que faz SSL termination).
+// O Apache propaga X-Forwarded-Proto via SetEnvIf, que seta $_SERVER['HTTPS'] = 'on'.
+// Verificamos também o header X-Forwarded-Proto diretamente como fallback.
+$_detected_protocol = 'http';
+if (
+    (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off') ||
+    (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') ||
+    (!empty($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
+) {
+    $_detected_protocol = 'https';
+}
+define("cFrontend", sprintf("%s://%s%s", $_detected_protocol, $_SERVER["HTTP_HOST"] ?? "localhost", constant("cAppRoot")));
+unset($_detected_protocol);
 define("cAssets", sprintf("%s%s", constant("cFrontend"), "assets/"));
 
 // ===== UPLOAD =====
