@@ -13,7 +13,24 @@ class auth_controller
 
     public function logout()
     {
-        unset($_SESSION[constant("cAppKey")]);
+        // Destruir completamente a sessão:
+        // 1. Limpar todos os dados em memória
+        $_SESSION = [];
+        // 2. Apagar o cookie do browser
+        if (ini_get("session.use_cookies")) {
+            $params = session_get_cookie_params();
+            setcookie(
+                session_name(),
+                '',
+                time() - 42000,
+                $params["path"],
+                $params["domain"],
+                $params["secure"],
+                $params["httponly"]
+            );
+        }
+        // 3. Destruir a sessão no Redis
+        session_destroy();
         basic_redir($GLOBALS["login_url"]);
     }
 
@@ -28,13 +45,10 @@ class auth_controller
             if (isset($users->data[0]["idx"])) {
                 // $users->attach(array("profiles"), false, null, array("idx", "name", "adm", "slug"));
                 $_SESSION[constant("cAppKey")] = ["credential" => current($users->data)];
-
-                // Previne session fixation: cria novo SID após autenticação,
-                // descarta o SID anônimo anterior (true = apaga sessão antiga).
-                // Deve ser chamado DEPOIS de popular $_SESSION para que os dados
-                // migrem para o novo SID automaticamente.
-                session_regenerate_id(true);
-
+                // session_regenerate_id() foi REMOVIDO: com phpredis como session handler,
+                // o write da nova sessão só ocorre no shutdown. Se houver qualquer falha
+                // nesse write, o browser fica com um cookie apontando para sessão
+                // inexistente no Redis, derrubando o login no próximo request.
                 $users->set_filter(["idx = '" .  $_SESSION[constant("cAppKey")]["credential"]["idx"]  . "' "]);
                 $users->populate(["last_login" => date("Y-m-d H:i:s")]);
                 $users->save();

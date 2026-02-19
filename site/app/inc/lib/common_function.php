@@ -171,11 +171,13 @@ function basic_redir($url, $code = 302, $use_html = false)
     $url = $url[0];
   }
 
-  // session_write_close() NÃO é chamado aqui. Com header("Location:") o browser
-  // só segue o redirect DEPOIS que o PHP termina completamente, incluindo o
-  // shutdown que chama session_write_close() automaticamente.
-  // Chamar session_write_close() manualmente causava conflito com use_strict_mode
-  // no phpredis: a sessão não era marcada como inicializada e era rejeitada.
+  // Cache-Control: no-store impede que o browser cache 302s.
+  // Sem isso, um redirect para /login poderia ser cacheado e reproduzido
+  // em requisições futuras mesmo com o usuário já autenticado.
+  if (!headers_sent()) {
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
+  }
 
   if ($use_html) {
     $dir = constant("AppLayout");
