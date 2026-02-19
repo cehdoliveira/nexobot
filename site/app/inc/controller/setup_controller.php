@@ -25,6 +25,7 @@ class setup_controller
     private const CAPITAL_ALLOCATION = 0.95;     // 95% do capital USDC disponível
     private const MIN_TRADE_USDC = 11;           // Mínimo por trade
     private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
+    private const INITIAL_BTC_ALLOCATION = 0.30; // 30% do capital inicial convertido em BTC para ordens de venda superiores
 
     // Logs
     private const ERROR_LOG = 'error.log';
@@ -374,35 +375,156 @@ class setup_controller
     }
 
     /**
-     * Cria um novo grid para o símbolo fornecido
+     * Prepara o capital inicial: 70% USDC (compras) + 30% BTC (vendas superiores)
+     * Compra BTC automaticamente se o saldo disponível for insuficiente.
+     *
+     * @param string $symbol Par de negociação (ex: BTCUSDC)
+     * @return array ['usdc_for_buys', 'btc_for_sells', 'current_price', 'total_capital_usd']
+     */
+    private function prepareInitialCapital(string $symbol): array
+    {
+        try {
+            $baseAsset = str_replace('USDC', '', $symbol);
+            $accountInfo = $this->getAccountInfo(true);
+
+            $usdcBalance = 0.0;
+            $btcBalance  = 0.0;
+
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === 'USDC') {
+                    $usdcBalance = (float)$balance['free'];
+                }
+                if ($balance['asset'] === $baseAsset) {
+                    $btcBalance = (float)$balance['free'];
+                }
+            }
+
+            $currentPrice  = $this->getCurrentPrice($symbol);
+            $totalCapital  = $usdcBalance + ($btcBalance * $currentPrice);
+
+            // Quanto BTC devemos ter (30% do capital total)
+            $targetBtcValue = $totalCapital * self::INITIAL_BTC_ALLOCATION;
+            $targetBtcQty   = $targetBtcValue / $currentPrice;
+            $needToBuy      = $targetBtcQty - $btcBalance;
+
+            if ($needToBuy > 0.0001) {
+                $this->log(
+                    "🤖 Comprando " . number_format($needToBuy, 8) . " $baseAsset para grid híbrido (~$" . number_format($needToBuy * $currentPrice, 2) . " USDC)",
+                    'INFO',
+                    'TRADE'
+                );
+
+                $this->buyBtcForGrid($symbol, $needToBuy);
+
+                // Recarregar saldos após compra
+                $accountInfo = $this->getAccountInfo(true);
+                foreach ($accountInfo['balances'] as $balance) {
+                    if ($balance['asset'] === 'USDC') {
+                        $usdcBalance = (float)$balance['free'];
+                    }
+                    if ($balance['asset'] === $baseAsset) {
+                        $btcBalance = (float)$balance['free'];
+                    }
+                }
+
+                $this->log(
+                    "✅ Compra inicial concluída! Saldo: $btcBalance $baseAsset (~$" . number_format($btcBalance * $currentPrice, 2) . ") | $usdcBalance USDC",
+                    'SUCCESS',
+                    'TRADE'
+                );
+            } else {
+                $this->log(
+                    "✅ Saldo $baseAsset suficiente: $btcBalance $baseAsset (~$" . number_format($btcBalance * $currentPrice, 2) . ")",
+                    'INFO',
+                    'TRADE'
+                );
+            }
+
+            return [
+                'usdc_for_buys'    => $usdcBalance,
+                'btc_for_sells'    => $btcBalance,
+                'current_price'    => $currentPrice,
+                'total_capital_usd' => $usdcBalance + ($btcBalance * $currentPrice)
+            ];
+        } catch (Exception $e) {
+            throw new Exception("Erro ao preparar capital inicial: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Compra BTC a mercado para alocação inicial do grid híbrido
+     *
+     * @param string $symbol   Par de negociação (ex: BTCUSDC)
+     * @param float  $quantity Quantidade de BTC a comprar
+     */
+    private function buyBtcForGrid(string $symbol, float $quantity): void
+    {
+        try {
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+
+            $stepSizeFloat  = (float)$stepSize;
+            $adjustedQty    = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
+
+            if ($adjustedQty <= 0) {
+                throw new Exception("Quantidade inválida para compra inicial de BTC: $adjustedQty");
+            }
+
+            $orderReq = new NewOrderRequest();
+            $orderReq->setSymbol($symbol);
+            $orderReq->setSide(Side::BUY);
+            $orderReq->setType(OrderType::MARKET);
+            $orderReq->setQuantity((float)$adjustedQty);
+
+            $response  = $this->client->newOrder($orderReq);
+            $orderData = $response->getData();
+
+            $executedQty = method_exists($orderData, 'getExecutedQty')
+                ? $orderData->getExecutedQty()
+                : ($orderData['executedQty'] ?? $adjustedQty);
+
+            $cumulativeQuote = method_exists($orderData, 'getCummulativeQuoteQty')
+                ? (float)$orderData->getCummulativeQuoteQty()
+                : (float)($orderData['cummulativeQuoteQty'] ?? 0.0);
+            $avgPrice = ($executedQty > 0 && $cumulativeQuote > 0)
+                ? $cumulativeQuote / $executedQty
+                : 0.0;
+
+            $this->log(
+                "✅ Compra MARKET inicial: $executedQty $symbol @ ~$" . number_format($avgPrice, 2),
+                'SUCCESS',
+                'TRADE'
+            );
+        } catch (Exception $e) {
+            throw new Exception("Erro ao comprar BTC inicial: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Cria um novo grid híbrido: ordens BUY abaixo (USDC) + ordens SELL acima (BTC)
      */
     private function createNewGrid(string $symbol): void
     {
         try {
+            // 0. PREPARAR CAPITAL INICIAL (30% BTC + 70% USDC)
+            $this->log("🔄 Preparando capital inicial para grid híbrido...", 'INFO', 'TRADE');
+            $capital = $this->prepareInitialCapital($symbol);
+
             // 1. OBTER PREÇO ATUAL
-            $currentPrice = $this->getCurrentPrice($symbol);
+            $currentPrice = $capital['current_price'];
             if ($currentPrice <= 0) {
                 $this->log("Preço inválido para $symbol", 'ERROR', 'TRADE');
                 return;
             }
 
             // 2. CALCULAR RANGE DO GRID
-            $gridMin = $currentPrice * (1 - self::GRID_RANGE_PERCENT);
-            $gridMax = $currentPrice * (1 + self::GRID_RANGE_PERCENT);
+            $gridMin   = $currentPrice * (1 - self::GRID_RANGE_PERCENT);
+            $gridMax   = $currentPrice * (1 + self::GRID_RANGE_PERCENT);
             $gridRange = $gridMax - $gridMin;
 
-            // 3. CALCULAR CAPITAL ALOCADO PARA ESTE SÍMBOLO
-            $symbolAllocation = $this->getSymbolAllocation($symbol);
-            $capitalForSymbol = $this->totalCapital * self::CAPITAL_ALLOCATION * $symbolAllocation;
-
-            if ($capitalForSymbol < self::MIN_TRADE_USDC) {
-                $this->log("Capital insuficiente para criar grid em $symbol: {$capitalForSymbol} USDC", 'WARNING', 'TRADE');
-                return;
-            }
-
-            // 4. DEFINIR NÍVEIS DE PREÇO
-            $priceStep = $gridRange / self::GRID_LEVELS;
-            $buyLevels = [];
+            // 3. DEFINIR NÍVEIS DE PREÇO
+            $priceStep  = $gridRange / self::GRID_LEVELS;
+            $buyLevels  = [];
             $sellLevels = [];
 
             for ($i = 0; $i < self::GRID_LEVELS; $i++) {
@@ -421,32 +543,37 @@ class setup_controller
                 }
             }
 
-            // Inverter numeração dos níveis de compra
+            // Inverter numeração dos níveis de compra (Nível 1 = mais próximo do preço)
             $numBuyLevels = count($buyLevels);
             for ($i = 0; $i < $numBuyLevels; $i++) {
                 $buyLevels[$i]['level'] = $numBuyLevels - $i;
             }
+
+            $numSellLevels = count($sellLevels);
 
             if ($numBuyLevels === 0) {
                 $this->log("Nenhum nível de compra disponível para $symbol", 'WARNING', 'TRADE');
                 return;
             }
 
-            $capitalPerLevel = $capitalForSymbol / $numBuyLevels;
+            // 4. DIVIDIR CAPITAL
+            $capitalPerBuyLevel  = $capital['usdc_for_buys'] / $numBuyLevels;
+            $btcPerSellLevel     = $numSellLevels > 0 ? $capital['btc_for_sells'] / $numSellLevels : 0;
+            $totalCapital        = $capital['total_capital_usd'];
 
-            // 6. SALVAR CONFIGURAÇÃO DO GRID NO BANCO
+            // 5. SALVAR CONFIGURAÇÃO DO GRID NO BANCO
             $gridId = $this->saveGridConfig(
                 $symbol,
                 $gridMin,
                 $gridMax,
                 $currentPrice,
-                $capitalForSymbol,
-                $capitalPerLevel
+                $totalCapital,
+                $capitalPerBuyLevel
             );
 
-            // 7. CRIAR ORDENS LIMIT DE COMPRA (todas)
-            $successCount = 0;
-            $failedOrders = [];
+            // 6. CRIAR ORDENS LIMIT DE COMPRA (níveis ABAIXO do preço — usa USDC)
+            $successBuys = 0;
+            $failedBuys  = [];
             foreach ($buyLevels as $level) {
                 try {
                     $orderDbId = $this->placeBuyOrder(
@@ -454,40 +581,70 @@ class setup_controller
                         $symbol,
                         $level['level'],
                         $level['price'],
-                        $capitalPerLevel
+                        $capitalPerBuyLevel
                     );
                     if ($orderDbId) {
-                        $successCount++;
-                        $this->log("Ordem de compra Nível {$level['level']} criada com sucesso na Binance", 'INFO', 'TRADE');
+                        $successBuys++;
+                        $this->log("✅ BUY Nível {$level['level']} @ $" . number_format($level['price'], 2), 'INFO', 'TRADE');
                     } else {
-                        $failedOrders[] = $level['level'];
-                        $this->log("Falha ao criar ordem de compra Nível {$level['level']}", 'WARNING', 'TRADE');
+                        $failedBuys[] = $level['level'];
+                        $this->log("❌ Falha BUY Nível {$level['level']}", 'WARNING', 'TRADE');
                     }
                 } catch (Exception $e) {
-                    $failedOrders[] = $level['level'];
-                    $this->log("Exceção ao criar ordem Nível {$level['level']}: " . $e->getMessage(), 'ERROR', 'TRADE');
+                    $failedBuys[] = $level['level'];
+                    $this->log("❌ Exceção BUY Nível {$level['level']}: " . $e->getMessage(), 'ERROR', 'TRADE');
                 }
             }
 
+            // 7. CRIAR ORDENS LIMIT DE VENDA (níveis ACIMA do preço — usa BTC)
+            $successSells = 0;
+            $failedSells  = [];
+            foreach ($sellLevels as $level) {
+                try {
+                    $orderDbId = $this->placeSellOrder(
+                        $gridId,
+                        $symbol,
+                        $level['level'],
+                        $level['price'],
+                        $btcPerSellLevel,
+                        null // sem paired_order_id: é venda inicial do grid
+                    );
+                    if ($orderDbId) {
+                        $successSells++;
+                        $this->log("✅ SELL Nível {$level['level']} @ $" . number_format($level['price'], 2), 'INFO', 'TRADE');
+                    } else {
+                        $failedSells[] = $level['level'];
+                        $this->log("❌ Falha SELL Nível {$level['level']}", 'WARNING', 'TRADE');
+                    }
+                } catch (Exception $e) {
+                    $failedSells[] = $level['level'];
+                    $this->log("❌ Exceção SELL Nível {$level['level']}: " . $e->getMessage(), 'ERROR', 'TRADE');
+                }
+            }
+
+            $allOk = ($successBuys === $numBuyLevels && $successSells === $numSellLevels);
             $this->log(
-                "Grid criado para $symbol com $numBuyLevels níveis de compra. Sucesso: $successCount ordens. " .
-                    (count($failedOrders) > 0 ? "Falhas: Níveis " . implode(', ', $failedOrders) : "Todas as ordens criadas!"),
-                $successCount === $numBuyLevels ? 'SUCCESS' : 'WARNING',
+                "🎉 Grid HÍBRIDO criado para $symbol | BUYs: $successBuys/$numBuyLevels | SELLs: $successSells/$numSellLevels",
+                $allOk ? 'SUCCESS' : 'WARNING',
                 'TRADE'
             );
 
-            // Salvar log
-            $this->saveGridLog($gridId, 'grid_created', $successCount === $numBuyLevels ? 'success' : 'warning', "Grid criado para $symbol", [
-                'grid_min' => $gridMin,
-                'grid_max' => $gridMax,
-                'center_price' => $currentPrice,
-                'buy_levels' => $numBuyLevels,
-                'orders_created' => $successCount,
-                'orders_failed' => count($failedOrders),
-                'capital_allocated' => $capitalForSymbol
+            $this->saveGridLog($gridId, 'grid_created_hybrid', $allOk ? 'success' : 'warning', "Grid híbrido criado para $symbol", [
+                'grid_min'            => $gridMin,
+                'grid_max'            => $gridMax,
+                'center_price'        => $currentPrice,
+                'buy_levels'          => $numBuyLevels,
+                'sell_levels'         => $numSellLevels,
+                'buy_orders_created'  => $successBuys,
+                'sell_orders_created' => $successSells,
+                'buy_orders_failed'   => count($failedBuys),
+                'sell_orders_failed'  => count($failedSells),
+                'usdc_allocated'      => $capital['usdc_for_buys'],
+                'btc_allocated'       => $capital['btc_for_sells'],
+                'total_capital_usd'   => $totalCapital
             ]);
         } catch (Exception $e) {
-            throw new Exception("Erro ao criar grid para $symbol: " . $e->getMessage());
+            throw new Exception("Erro ao criar grid híbrido para $symbol: " . $e->getMessage());
         }
     }
 
@@ -556,15 +713,11 @@ class setup_controller
     private function handleBuyOrderFilled(int $gridId, array $buyOrder): void
     {
         try {
-            $symbol = $buyOrder['symbol'];
-            $buyPrice = (float)$buyOrder['price'];
-            $executedQty = (float)$buyOrder['executed_qty'];
-
-            // EXTRAIR ASSET BASE (BTC de BTCUSDC)
+            $symbol   = $buyOrder['symbol'];
             $baseAsset = str_replace('USDC', '', $symbol);
 
-            // BUSCAR TODO O SALDO LIVRE DA MOEDA NA CARTEIRA
-            $accountInfo = $this->getAccountInfo(true);
+            // 1. BUSCAR SALDO LIVRE DE BTC NA CARTEIRA
+            $accountInfo           = $this->getAccountInfo(true);
             $totalAvailableBalance = 0.0;
 
             foreach ($accountInfo['balances'] as $balance) {
@@ -583,68 +736,79 @@ class setup_controller
                 return;
             }
 
+            // 2. CALCULAR BTC JÁ ALOCADO EM ORDENS SELL ATIVAS (PROTEÇÃO GRID HÍBRIDO)
+            $btcAllocatedInSells  = $this->getBtcAllocatedInActiveSells($gridId, $symbol);
+            $availableForNewSells = $totalAvailableBalance - $btcAllocatedInSells;
+
             $this->log(
-                "💰 Saldo livre de $baseAsset na carteira: $totalAvailableBalance",
+                "💰 $baseAsset — Total: " . number_format($totalAvailableBalance, 8) .
+                " | Em ordens sell: " . number_format($btcAllocatedInSells, 8) .
+                " | Disponível: " . number_format($availableForNewSells, 8),
                 'INFO',
                 'TRADE'
             );
 
-            // BUSCAR TODAS AS COMPRAS EXECUTADAS E NÃO VENDIDAS DESTE GRID
+            if ($availableForNewSells <= 0) {
+                $this->log(
+                    "⚠️ Todo BTC já está alocado em ordens SELL ativas. Nenhuma nova venda criada.",
+                    'WARNING',
+                    'TRADE'
+                );
+                return;
+            }
+
+            // 3. BUSCAR COMPRAS EXECUTADAS SEM VENDA PAREADA
             $pendingSellOrders = $this->getPendingSellOrdersForGrid($gridId);
             $totalPendingSells = count($pendingSellOrders);
 
             if ($totalPendingSells === 0) {
                 $this->log(
-                    "⚠️ Nenhuma venda pendente encontrada. Criando venda para ordem {$buyOrder['grids_orders_idx']}",
+                    "⚠️ Nenhuma venda pendente encontrada para grid $gridId",
                     'WARNING',
                     'TRADE'
                 );
-                $totalPendingSells = 1;
-                $pendingSellOrders = [$buyOrder];
+                return;
             }
 
-            // DIVIDIR SALDO IGUALMENTE ENTRE AS VENDAS PENDENTES
-            $qtyPerSell = $totalAvailableBalance / $totalPendingSells;
+            // 4. DIVIDIR SALDO DISPONÍVEL IGUALMENTE ENTRE AS VENDAS PENDENTES
+            $qtyPerSell = $availableForNewSells / $totalPendingSells;
 
             $this->log(
-                "📊 Total de vendas pendentes: $totalPendingSells | Quantidade por venda: $qtyPerSell $baseAsset",
+                "📊 Vendas pendentes: $totalPendingSells | Qty por venda: " . number_format($qtyPerSell, 8) . " $baseAsset",
                 'INFO',
                 'TRADE'
             );
 
-            // CRIAR/ATUALIZAR ORDENS DE VENDA PARA CADA COMPRA EXECUTADA
+            // 5. CRIAR ORDENS DE VENDA PARA CADA COMPRA PENDENTE
+            $successCount = 0;
             foreach ($pendingSellOrders as $pendingOrder) {
                 try {
-                    $orderBuyPrice = (float)$pendingOrder['price'];
-                    $gridLevel = $pendingOrder['grid_level'];
+                    $orderBuyPrice  = (float)$pendingOrder['price'];
+                    $gridLevel      = $pendingOrder['grid_level'];
                     $gridsOrdersIdx = $pendingOrder['grids_orders_idx'];
 
-                    // Calcular preço de venda
                     $gridSpacing = $this->getGridSpacing($symbol);
-                    $sellPrice = $orderBuyPrice * (1 + $gridSpacing);
+                    $sellPrice   = $orderBuyPrice * (1 + $gridSpacing);
 
-                    // Criar ordem LIMIT de venda com quantidade dividida
                     $sellOrderId = $this->placeSellOrder(
                         $gridId,
                         $symbol,
                         $gridLevel,
                         $sellPrice,
                         $qtyPerSell,
-                        $gridsOrdersIdx
+                        $gridsOrdersIdx // paired_order_id
                     );
 
                     if ($sellOrderId) {
+                        $successCount++;
                         $this->log(
-                            "✅ Venda criada: Nível $gridLevel @ $sellPrice | Qty: $qtyPerSell $baseAsset",
+                            "✅ Venda criada: Nível $gridLevel @ $" . number_format($sellPrice, 2) .
+                            " | Qty: " . number_format($qtyPerSell, 8) . " $baseAsset",
                             'SUCCESS',
                             'TRADE'
                         );
                     } else {
-                        $this->log(
-                            "❌ Falha ao criar venda para Nível $gridLevel",
-                            'ERROR',
-                            'TRADE'
-                        );
+                        $this->log("❌ Falha ao criar venda para Nível $gridLevel", 'ERROR', 'TRADE');
                     }
                 } catch (Exception $e) {
                     $this->log(
@@ -655,18 +819,21 @@ class setup_controller
                 }
             }
 
-            // LOG CONSOLIDADO
+            // 6. LOG CONSOLIDADO
             $this->saveGridLog(
                 $gridId,
                 'buy_order_filled_batch',
                 'success',
-                "Compras executadas e vendas criadas",
+                "Compras executadas e vendas criadas com proteção de BTC alocado",
                 [
-                    'total_balance' => $totalAvailableBalance,
-                    'pending_sells' => $totalPendingSells,
-                    'qty_per_sell' => $qtyPerSell,
-                    'symbol' => $symbol,
-                    'asset' => $baseAsset
+                    'total_balance'          => $totalAvailableBalance,
+                    'allocated_in_sells'     => $btcAllocatedInSells,
+                    'available_for_new_sells' => $availableForNewSells,
+                    'pending_sells'          => $totalPendingSells,
+                    'qty_per_sell'           => $qtyPerSell,
+                    'sells_created'          => $successCount,
+                    'symbol'                 => $symbol,
+                    'asset'                  => $baseAsset
                 ]
             );
         } catch (Exception $e) {
@@ -764,6 +931,62 @@ class setup_controller
         } catch (Exception $e) {
             $this->log("Erro ao verificar venda pareada: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return false;
+        }
+    }
+
+    /**
+     * Calcula quanto BTC está alocado em ordens SELL ativas (NEW / PARTIALLY_FILLED)
+     * Usado para proteger o BTC das vendas superiores ao processar uma nova compra.
+     *
+     * @param int    $gridId ID do grid
+     * @param string $symbol Par de negociação
+     * @return float Quantidade total de BTC ainda comprometida em SELLs abertas
+     */
+    private function getBtcAllocatedInActiveSells(int $gridId, string $symbol): float
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'"
+            ]);
+            // CRITICAL: load_data() ANTES de join()
+            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            $totalAllocated = 0.0;
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders_attach'][0] ?? null;
+
+                if (!$order) {
+                    continue;
+                }
+
+                $isSell   = $order['side'] === 'SELL';
+                $isActive = in_array($order['status'], ['NEW', 'PARTIALLY_FILLED']);
+
+                if ($isSell && $isActive) {
+                    $remainingQty = (float)$order['quantity'];
+
+                    if ($order['status'] === 'PARTIALLY_FILLED') {
+                        $remainingQty -= (float)$order['executed_qty'];
+                    }
+
+                    $totalAllocated += max(0.0, $remainingQty);
+                }
+            }
+
+            $this->log(
+                "🔍 BTC alocado em SELLs ativas (grid $gridId): " . number_format($totalAllocated, 8),
+                'INFO',
+                'TRADE'
+            );
+
+            return $totalAllocated;
+        } catch (Exception $e) {
+            $this->log("Erro ao calcular BTC alocado em SELLs: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return 0.0;
         }
     }
 

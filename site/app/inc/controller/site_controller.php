@@ -450,16 +450,21 @@ class site_controller
             if ($accountData && isset($accountData["balances"])) {
                 foreach ($accountData["balances"] as $balance) {
                     if ($balance["asset"] === "USDC") {
-                        $free = (float)$balance["free"];
+                        $free   = (float)$balance["free"];
                         $locked = (float)$balance["locked"];
                         $usdcBalance = $free + $locked;
-                        break;
+                    }
+                    if ($balance["asset"] === "BTC") {
+                        $btcFree   = (float)$balance["free"];
+                        $btcLocked = (float)$balance["locked"];
+                        $btcBalance = $btcFree + $btcLocked;
                     }
                 }
             }
         } catch (Exception $e) {
             // Se falhar, manter saldo em 0
             $usdcBalance = 0;
+            $btcBalance  = 0;
         }
 
         $gridDashboardData = [
@@ -493,7 +498,8 @@ class site_controller
             'logs' => $gridLogs,
             'binance_env' => $binanceConfig['mode'] ?? 'dev',
             'wallet' => [
-                'usdc_balance' => $usdcBalance
+                'usdc_balance' => $usdcBalance,
+                'btc_balance'  => $btcBalance ?? 0
             ]
         ];
 

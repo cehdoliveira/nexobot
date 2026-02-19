@@ -73,6 +73,7 @@
                         </div>
                         <p class="text-muted mb-1 small">Saldo USDC</p>
                         <h4 class="mb-0 fs-5 text-primary">$<?php echo number_format($gridDashboardData['wallet']['usdc_balance'] ?? 0, 2, '.', ','); ?></h4>
+                        <p class="text-muted mb-0 mt-1" style="font-size:0.75rem;">BTC: <?php echo number_format($gridDashboardData['wallet']['btc_balance'] ?? 0, 8); ?></p>
                     </div>
                 </div>
             </div>
@@ -276,7 +277,7 @@
                             <div class="mb-5">
                                 <div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
                                     <i class="bi bi-info-circle"></i> <strong>Legenda:</strong>
-                                    Planejado = nível calculado; Aguardando = ordem aberta na Binance; Executada = ordem concluída.
+                                    Ativa = ordem aberta na Binance; Aguardando = aguardando preco atingir o nível; Executada = ordem concluída.
                                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                                 </div>
                                 <div class="d-flex justify-content-between align-items-start align-items-md-center gap-2 mb-3 flex-wrap">
@@ -285,6 +286,22 @@
                                         <span class="badge bg-<?php echo $grid['status'] === 'active' ? 'success' : 'secondary'; ?> ms-1">
                                             <?php echo ucfirst($grid['status']); ?>
                                         </span>
+                                        <?php
+                                        // Badge Grid Híbrido: verifica se há SELL inicial (sem paired_order_id)
+                                        $isHybrid = false;
+                                        foreach ($sellLevels as $sl) {
+                                            if ($sl['has_order']) { $isHybrid = true; break; }
+                                        }
+                                        ?>
+                                        <?php if ($isHybrid): ?>
+                                            <span class="badge bg-warning text-dark ms-1" title="Grid com ordens de venda iniciais acima do preço">
+                                                <i class="bi bi-arrow-left-right"></i> Híbrido
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="badge bg-secondary ms-1" title="Grid apenas com ordens de compra">
+                                                <i class="bi bi-arrow-down"></i> Simples
+                                            </span>
+                                        <?php endif; ?>
                                     </h6>
                                     <small class="text-muted fs-7">
                                         <i class="bi bi-graph-up"></i> $<?php echo number_format((float)$grid['lower_price'], 2); ?> - $<?php echo number_format((float)$grid['upper_price'], 2); ?>
@@ -369,22 +386,22 @@
                                                     <div class="list-group list-group-flush">
                                                         <?php foreach ($sellLevels as $level): ?>
                                                             <?php
-                                                            // Determinar status
+                                                            // Determinar status — sell levels no Grid Híbrido sempre têm ordem real
                                                             if (!$level['has_order']) {
                                                                 $statusLabel = '📋 Planejado';
                                                                 $statusBadge = 'bg-secondary';
                                                             } else {
                                                                 $statusLabel = match ($level['status']) {
-                                                                    'FILLED' => '✅ Executada',
-                                                                    'PARTIALLY_FILLED' => '⏳ Parcial',
+                                                                    'FILLED'                => '✅ Executada',
+                                                                    'PARTIALLY_FILLED'      => '⏳ Parcial',
                                                                     'CANCELED', 'CANCELLED' => '❌ Cancelada',
-                                                                    default => '🎯 Aguardando Preço Subir'
+                                                                    default                 => '🎯 Aguardando Preço Subir'
                                                                 };
                                                                 $statusBadge = match ($level['status']) {
-                                                                    'FILLED' => 'bg-success',
-                                                                    'PARTIALLY_FILLED' => 'bg-info',
+                                                                    'FILLED'                => 'bg-success',
+                                                                    'PARTIALLY_FILLED'      => 'bg-info',
                                                                     'CANCELED', 'CANCELLED' => 'bg-secondary',
-                                                                    default => 'bg-warning text-dark'
+                                                                    default                 => 'bg-warning text-dark'
                                                                 };
                                                             }
                                                             ?>
@@ -440,6 +457,35 @@
                                                     <div class="col-6 col-md-3">
                                                         <div class="text-muted">Capital por Nível</div>
                                                         <strong><?php echo ($grid['grid_levels'] ?? 0) > 0 ? number_format((float)($grid['capital_allocated_usdc'] ?? 0) / (float)($grid['grid_levels'] ?? 1), 2, '.', ',') : '0.00'; ?></strong>
+                                                    </div>
+                                                </div>
+                                                <!-- Alocacão USDC vs BTC -->
+                                                <div class="row g-2 mt-2 small">
+                                                    <?php
+                                                    $usdcInBuys = 0;
+                                                    $btcInSells = 0;
+                                                    foreach ($buyLevels as $bl) {
+                                                        if ($bl['has_order'] && in_array($bl['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                                                            $usdcInBuys += $bl['price'] * $bl['quantity'];
+                                                        }
+                                                    }
+                                                    foreach ($sellLevels as $sl) {
+                                                        if ($sl['has_order'] && in_array($sl['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                                                            $btcInSells += $sl['quantity'];
+                                                        }
+                                                    }
+                                                    $btcPrice = (float)($grid['current_price'] ?? 0);
+                                                    ?>
+                                                    <div class="col-6">
+                                                        <div class="text-muted">USDC em Compras</div>
+                                                        <strong class="text-success">$<?php echo number_format($usdcInBuys, 2, '.', ','); ?></strong>
+                                                    </div>
+                                                    <div class="col-6">
+                                                        <div class="text-muted">BTC em Vendas</div>
+                                                        <strong class="text-warning"><?php echo number_format($btcInSells, 8); ?> BTC</strong>
+                                                        <?php if ($btcPrice > 0): ?>
+                                                        <small class="text-muted d-block">(~$<?php echo number_format($btcInSells * $btcPrice, 2, '.', ','); ?>)</small>
+                                                        <?php endif; ?>
                                                     </div>
                                                 </div>
                                             </div>
