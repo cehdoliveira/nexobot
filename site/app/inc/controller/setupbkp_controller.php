@@ -18,14 +18,14 @@ class setup_controller
 {
     // Configuração de símbolos e grid
     private const SYMBOLS = ['BTCUSDC'];
-    private const GRID_LEVELS = 2;              // 6 níveis por grid
+    private const GRID_LEVELS = 6;              // 6 níveis por grid
     private const GRID_RANGE_PERCENT = 0.05;     // ±5% do preço atual
-    private const GRID_SPACING_PERCENT = 0.04;   // 1% entre níveis
-    private const REBALANCE_THRESHOLD = 0.08;    // Rebalancear se sair 5% do range
+    private const GRID_SPACING_PERCENT = 0.01;   // 1% entre níveis
+    private const REBALANCE_THRESHOLD = 0.05;    // Rebalancear se sair 5% do range
     private const CAPITAL_ALLOCATION = 0.95;     // 95% do capital USDC disponível
-    private const MIN_TRADE_USDC = 10;           // Mínimo por trade
+    private const MIN_TRADE_USDC = 11;           // Mínimo por trade
     private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
-    private const INITIAL_BTC_ALLOCATION = 0.50; // 30% do capital inicial convertido em BTC para ordens de venda superiores
+    private const INITIAL_BTC_ALLOCATION = 0.30; // 30% do capital inicial convertido em BTC para ordens de venda superiores
 
     // Logs
     private const ERROR_LOG = 'error.log';
@@ -593,8 +593,8 @@ class setup_controller
                 ];
             }
 
-            $numBuyLevels  = 1; //count($buyLevels);  // Sempre 3
-            $numSellLevels = 1; //count($sellLevels); // Sempre 3
+            $numBuyLevels  = count($buyLevels);  // Sempre 3
+            $numSellLevels = count($sellLevels); // Sempre 3
 
             $this->log(
                 "📊 Grid configurado: {$numBuyLevels} BUYs (abaixo) + {$numSellLevels} SELLs (acima) | Preço central: $" . number_format($currentPrice, 2),
