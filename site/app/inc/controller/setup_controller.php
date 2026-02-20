@@ -567,40 +567,46 @@ class setup_controller
             $gridMin = $currentPrice * (1 - self::GRID_RANGE_PERCENT);
             $gridMax = $currentPrice * (1 + self::GRID_RANGE_PERCENT);
 
-            // 3. DEFINIR NÍVEIS DE PREÇO (SIMÉTRICO: 3 ABAIXO + 3 ACIMA)
+            // 3. DEFINIR NÍVEIS DE PREÇO (DINÂMICO baseado em GRID_LEVELS)
             // Garante sempre exatamente 3 BUYs + 3 SELLs, independente do preço atual.
             $buyLevels  = [];
             $sellLevels = [];
             $gridSpacing = $this->getGridSpacing($symbol); // 1% por padrão
 
-            // CALCULAR 3 NÍVEIS DE COMPRA (abaixo do preço atual)
-            // Nível 3 = mais distante | Nível 1 = mais próximo
-            for ($i = 1; $i <= 3; $i++) {
-                $buyPrice   = $currentPrice * (1 - ($i * $gridSpacing));
+            // CALCULAR NÍVEIS DINAMICAMENTE baseado em GRID_LEVELS
+            $numLevels = (int)(self::GRID_LEVELS / 2);  // 2 ÷ 2 = 1
+
+            // CALCULAR NÍVEIS DE COMPRA (abaixo do preço atual)
+            for ($i = 1; $i <= $numLevels; $i++) {  // ✅ RESPEITA GRID_LEVELS
+                $buyPrice = $currentPrice * (1 - ($i * $gridSpacing));
                 $buyLevels[] = [
-                    'level' => 4 - $i, // 3, 2, 1 — Nível 1 mais próximo
+                    'level' => $numLevels + 1 - $i,
                     'price' => $buyPrice
                 ];
             }
 
-            // CALCULAR 3 NÍVEIS DE VENDA (acima do preço atual)
-            // Nível 1 = mais próximo | Nível 3 = mais distante
-            for ($i = 1; $i <= 3; $i++) {
-                $sellPrice    = $currentPrice * (1 + ($i * $gridSpacing));
+            // CALCULAR NÍVEIS DE VENDA (acima do preço atual)
+            for ($i = 1; $i <= $numLevels; $i++) {  // ✅ RESPEITA GRID_LEVELS
+                $sellPrice = $currentPrice * (1 + ($i * $gridSpacing));
                 $sellLevels[] = [
-                    'level' => $i, // 1, 2, 3
+                    'level' => $i,
                     'price' => $sellPrice
                 ];
             }
 
-            $numBuyLevels  = 1; //count($buyLevels);  // Sempre 3
-            $numSellLevels = 1; //count($sellLevels); // Sempre 3
+            $numBuyLevels  = count($buyLevels);  // Dinâmico: depende de GRID_LEVELS
+            $numSellLevels = count($sellLevels); // Dinâmico: depende de GRID_LEVELS
 
             $this->log(
                 "📊 Grid configurado: {$numBuyLevels} BUYs (abaixo) + {$numSellLevels} SELLs (acima) | Preço central: $" . number_format($currentPrice, 2),
                 'INFO',
                 'TRADE'
             );
+
+            $maxLevels = floor(self::GRID_RANGE_PERCENT / $gridSpacing);
+            if ($numLevels > $maxLevels) {
+                $this->log("⚠️ GRID_LEVELS/2 ($numLevels) excede capacidade do range ($maxLevels)", 'WARNING', 'SYSTEM');
+            }
 
             // 4. DIVIDIR CAPITAL
             $capitalPerBuyLevel  = $capital['usdc_for_buys'] / $numBuyLevels;
@@ -788,8 +794,8 @@ class setup_controller
 
             $this->log(
                 "💰 $baseAsset — Total: " . number_format($totalAvailableBalance, 8) .
-                " | Em ordens sell: " . number_format($btcAllocatedInSells, 8) .
-                " | Disponível: " . number_format($availableForNewSells, 8),
+                    " | Em ordens sell: " . number_format($btcAllocatedInSells, 8) .
+                    " | Disponível: " . number_format($availableForNewSells, 8),
                 'INFO',
                 'TRADE'
             );
@@ -849,7 +855,7 @@ class setup_controller
                         $successCount++;
                         $this->log(
                             "✅ Venda criada: Nível $gridLevel @ $" . number_format($sellPrice, 2) .
-                            " | Qty: " . number_format($qtyPerSell, 8) . " $baseAsset",
+                                " | Qty: " . number_format($qtyPerSell, 8) . " $baseAsset",
                             'SUCCESS',
                             'TRADE'
                         );
