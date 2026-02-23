@@ -247,11 +247,6 @@ class setup_controller
             // 1. Carregar capital USDC disponível
             $this->loadCapitalInfo();
 
-            if ($this->totalCapital < self::MIN_TRADE_USDC) {
-                $this->log("Capital insuficiente: {$this->totalCapital} USDC", 'WARNING', 'SYSTEM');
-                return;
-            }
-
             // 2. Processar cada símbolo
             foreach (self::SYMBOLS as $symbol) {
                 try {
@@ -329,10 +324,19 @@ class setup_controller
 
             if ($activeGrid) {
                 // Grid existe → Sincronizar ordens e depois monitorar
+                // (não depende de saldo USDC livre — o capital já está alocado em ordens/BTC)
                 $this->syncOrdersWithBinance($activeGrid['idx']);
                 $this->monitorGrid($activeGrid);
             } else {
-                // Grid não existe → Criar novo
+                // Grid não existe → verificar capital ANTES de criar novo
+                if ($this->totalCapital < self::MIN_TRADE_USDC) {
+                    $this->log(
+                        "Capital USDC insuficiente para criar novo grid em $symbol: {$this->totalCapital} USDC (mínimo: " . self::MIN_TRADE_USDC . " USDC)",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    return;
+                }
                 $this->createNewGrid($symbol);
             }
         } catch (Exception $e) {
