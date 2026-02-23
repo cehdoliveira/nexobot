@@ -271,11 +271,12 @@
                             $sellLevels = $gridData['sell_levels'];
 
                             // Ordenar níveis para exibição em escada de preços:
-                            // Compra:  Nível 3 (mais alto / mais próximo do preço atual) → Nível 1 (mais baixo)
-                            // Venda:   Nível 3 (mais alto / mais distante) → Nível 1 (mais baixo / mais próximo)
-                            // Ambas as colunas exibem preços decrescentes de cima para baixo.
-                            usort($buyLevels,  fn($a, $b) => $b['level'] <=> $a['level']); // Nível 3, 2, 1
-                            usort($sellLevels, fn($a, $b) => $b['level'] <=> $a['level']); // Nível 3, 2, 1
+                            // Compra (banco: level=4-$i → level3=mais próximo): sort desc → preço alto no topo
+                            //   Label remapeado na exibição: 4 - db_level → Nível 1 (topo/mais próximo) … Nível 3 (base/mais distante)
+                            // Venda (banco: level=$i → level1=mais próximo): sort asc → preço baixo no topo
+                            //   Label direto: Nível 1 (topo/mais próximo) … Nível 3 (base/mais distante)
+                            usort($buyLevels,  fn($a, $b) => $b['level'] <=> $a['level']); // DB: 3,2,1 (preço ↓)
+                            usort($sellLevels, fn($a, $b) => $a['level'] <=> $b['level']); // DB: 1,2,3 (preço ↑)
                             ?>
                             <div class="mb-5">
                                 <div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
@@ -348,7 +349,7 @@
                                                             <div class="list-group-item py-2">
                                                                 <div class="d-flex justify-content-between align-items-start mb-1 flex-wrap gap-1">
                                                                     <div>
-                                                                        <span class="badge bg-success me-1" style="font-size: 0.75rem;">Nível <?php echo $level['level']; ?></span>
+                                                                        <span class="badge bg-success me-1" style="font-size: 0.75rem;">Nível <?php echo (count($buyLevels) + 1 - $level['level']); ?></span>
                                                                         <strong class="text-success fs-7">$<?php echo number_format($level['price'], 2, '.', ','); ?></strong>
                                                                     </div>
                                                                     <span class="badge <?php echo $statusBadge; ?>" style="font-size: 0.7rem;">
