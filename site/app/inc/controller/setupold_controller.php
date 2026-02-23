@@ -964,12 +964,13 @@ class setup_controller
                 "active = 'yes'",
                 "paired_order_id = '{$buyGridOrderIdx}'"
             ]);
-            $gridsOrdersModel->attach(['orders']);
+            // CRITICAL: load_data() ANTES de join()
             $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
             // Se encontrou alguma venda pareada ATIVA ou PENDENTE
             foreach ($gridsOrdersModel->data as $gridOrder) {
-                $order = $gridOrder['orders'][0] ?? null;
+                $order = $gridOrder['orders_attach'][0] ?? null;
 
                 if ($order && $order['side'] === 'SELL') {
                     // Verificar se a venda está ativa (não cancelada)

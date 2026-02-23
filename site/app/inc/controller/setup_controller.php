@@ -146,9 +146,20 @@ class setup_controller
     private function getAccountInfo(bool $forceRefresh = false): array
     {
         try {
+            $now = time();
+            if (
+                !$forceRefresh &&
+                $this->accountInfoCache !== null &&
+                ($now - $this->accountInfoCacheTime) < self::CACHE_TTL_ACCOUNT_INFO
+            ) {
+                return $this->accountInfoCache;
+            }
+
             $resp = $this->client->getAccount();
             $accountData = $resp->getData();
-            return json_decode(json_encode($accountData), true);
+            $this->accountInfoCache = json_decode(json_encode($accountData), true);
+            $this->accountInfoCacheTime = $now;
+            return $this->accountInfoCache;
         } catch (Exception $e) {
             throw new Exception("Erro ao obter informações da conta: " . $e->getMessage());
         }
@@ -157,6 +168,11 @@ class setup_controller
     public function getExchangeInfo($symbol): array
     {
         try {
+            // Cache em memória por CACHE_TTL_EXCHANGE_INFO segundos (padrão 60s)
+            if (isset($this->exchangeInfoCache[$symbol])) {
+                return $this->exchangeInfoCache[$symbol];
+            }
+
             $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
             $response = file_get_contents($url);
 
@@ -169,7 +185,8 @@ class setup_controller
                 throw new Exception("Símbolo {$symbol} não encontrado na API da Binance.");
             }
 
-            return $exchangeData['symbols'][0];
+            $this->exchangeInfoCache[$symbol] = $exchangeData['symbols'][0];
+            return $this->exchangeInfoCache[$symbol];
         } catch (Exception $e) {
             throw new Exception("Erro ao obter exchange info: " . $e->getMessage());
         }
@@ -962,12 +979,13 @@ class setup_controller
                 "active = 'yes'",
                 "paired_order_id = '{$buyGridOrderIdx}'"
             ]);
-            $gridsOrdersModel->attach(['orders']);
+            // CRITICAL: load_data() ANTES de join()
             $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
             // Se encontrou alguma venda pareada ATIVA ou PENDENTE
             foreach ($gridsOrdersModel->data as $gridOrder) {
-                $order = $gridOrder['orders'][0] ?? null;
+                $order = $gridOrder['orders_attach'][0] ?? null;
 
                 if ($order && $order['side'] === 'SELL') {
                     // Verificar se a venda está ativa (não cancelada)
