@@ -270,9 +270,12 @@
                             $buyLevels = $gridData['buy_levels'];
                             $sellLevels = $gridData['sell_levels'];
 
-                            // Ordenar níveis para exibição correta
-                            usort($buyLevels, fn($a, $b) => $a['level'] <=> $b['level']); // Nível 1, 2, 3
-                            usort($sellLevels, fn($a, $b) => $a['level'] <=> $b['level']); // Nível 1, 2, 3
+                            // Ordenar níveis para exibição em escada de preços:
+                            // Compra:  Nível 3 (mais alto / mais próximo do preço atual) → Nível 1 (mais baixo)
+                            // Venda:   Nível 3 (mais alto / mais distante) → Nível 1 (mais baixo / mais próximo)
+                            // Ambas as colunas exibem preços decrescentes de cima para baixo.
+                            usort($buyLevels,  fn($a, $b) => $b['level'] <=> $a['level']); // Nível 3, 2, 1
+                            usort($sellLevels, fn($a, $b) => $b['level'] <=> $a['level']); // Nível 3, 2, 1
                             ?>
                             <div class="mb-5">
                                 <div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
