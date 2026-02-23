@@ -744,15 +744,21 @@ class setup_controller
                         $this->handleSellOrderFilled($gridId, $order);
                     }
 
-                    // Marcar ordem como processada
+                    // Marcar como processada SOMENTE se não houve exceção
+                    // Se handleBuyOrderFilled falhar (ex: minNotional), a exceção
+                    // chegará aqui e a ordem NÃO será marcada — será retentada na próxima CRON
                     $this->markOrderAsProcessed($order['grids_orders_idx']);
                 } catch (Exception $e) {
-                    $this->log("Erro ao processar ordem {$order['idx']}: " . $e->getMessage(), 'ERROR', 'TRADE');
+                    $this->log(
+                        "Erro ao processar ordem {$order['idx']} (será retentada): " . $e->getMessage(),
+                        'ERROR',
+                        'TRADE'
+                    );
                     $this->saveGridLog(
                         $gridId,
                         'order_processing_error',
                         'error',
-                        "Erro ao processar ordem: " . $e->getMessage()
+                        "Erro ao processar ordem (retentando na próxima rodada): " . $e->getMessage()
                     );
                 }
             }
@@ -890,7 +896,7 @@ class setup_controller
             $this->saveGridLog(
                 $gridId,
                 'buy_order_filled_batch',
-                'success',
+                $successCount > 0 ? 'success' : 'error',
                 "Compras executadas e vendas criadas com proteção de BTC alocado",
                 [
                     'total_balance'          => $totalAvailableBalance,
@@ -903,6 +909,15 @@ class setup_controller
                     'asset'                  => $baseAsset
                 ]
             );
+
+            // Se nenhuma venda foi criada, lança exceção para impedir que a ordem
+            // seja marcada como processada — será retentada na próxima rodada da CRON
+            if ($successCount === 0) {
+                throw new Exception(
+                    "Nenhuma ordem de venda criada para $totalPendingSells compra(s) pendente(s) em $symbol. " .
+                    "A ordem será reprocessada na próxima rodada."
+                );
+            }
         } catch (Exception $e) {
             throw new Exception("Erro ao processar compra preenchida: " . $e->getMessage());
         }
