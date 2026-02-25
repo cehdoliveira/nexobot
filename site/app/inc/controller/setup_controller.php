@@ -532,22 +532,12 @@ class setup_controller
             );
 
             // Buscar ordens ABERTAS na Binance
-            $openOrders = $this->client->openOrders(['symbol' => $symbol]);
+            $response = $this->client->getOpenOrders($symbol);
+            $openOrders = $response->getData();
             
             if (empty($openOrders)) {
-                $this->log(
-                    "[CancelObsoleteOrders] Nenhuma ordem aberta encontrada na Binance para $symbol",
-                    'INFO',
-                    'SYSTEM'
-                );
                 return;
             }
-
-            $this->log(
-                "[CancelObsoleteOrders] Encontradas " . count($openOrders) . " ordens abertas na Binance",
-                'INFO',
-                'SYSTEM'
-            );
 
             $canceledCount = 0;
 
@@ -563,12 +553,6 @@ class setup_controller
                     $ordersModel->load_data();
 
                     if (count($ordersModel->data) === 0) {
-                        $this->log(
-                            "[CancelObsoleteOrders] Ordem Binance ID $binanceOrderId não encontrada no banco. Cancelando...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
-                        
                         // Cancelar ordem órfã na Binance
                         $this->client->cancelOrder([
                             'symbol' => $symbol,
@@ -584,13 +568,6 @@ class setup_controller
                     // Se no banco está FILLED/CANCELED mas na Binance está NEW, cancelar
                     if (in_array($dbOrder['status'], ['FILLED', 'CANCELED', 'EXPIRED']) 
                         && $status === 'NEW') {
-                        
-                        $this->log(
-                            "[CancelObsoleteOrders] Ordem ID={$dbOrder['idx']} (Binance ID=$binanceOrderId) " .
-                            "está NEW na Binance mas {$dbOrder['status']} no banco. Cancelando...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
 
                         // Cancelar na Binance
                         $this->client->cancelOrder([
@@ -607,30 +584,16 @@ class setup_controller
                     }
                 } catch (Exception $e) {
                     $this->log(
-                        "[CancelObsoleteOrders] Erro ao processar ordem: " . $e->getMessage(),
+                        "Erro ao cancelar ordem Binance ID $binanceOrderId: " . $e->getMessage(),
                         'ERROR',
                         'SYSTEM'
                     );
                     continue;
                 }
             }
-
-            if ($canceledCount > 0) {
-                $this->log(
-                    "✅ $canceledCount ordem(ns) obsoleta(s) cancelada(s)",
-                    'SUCCESS',
-                    'SYSTEM'
-                );
-            } else {
-                $this->log(
-                    "[CancelObsoleteOrders] Nenhuma ordem obsoleta encontrada",
-                    'INFO',
-                    'SYSTEM'
-                );
-            }
         } catch (Exception $e) {
             $this->log(
-                "Erro ao cancelar ordens obsoletas: " . $e->getMessage(),
+                "Erro ao sincronizar ordens obsoletas: " . $e->getMessage(),
                 'ERROR',
                 'SYSTEM'
             );
@@ -1109,11 +1072,10 @@ class setup_controller
                         'SYSTEM'
                     );
                     
-                    // TODO: Implementar método correto para cancelar ordens obsoletas no SDK Binance
-                    // Por enquanto, aguardar que ordens expirem naturalmente
-                    // $this->cancelObsoleteOrders($gridId, $symbol);
+                    // Tentar liberar BTC cancelando ordens obsoletas
+                    $this->cancelObsoleteOrders($gridId, $symbol);
                     
-                    // Re-verificar saldo após aguardar
+                    // Re-verificar saldo após cancelamento
                     $accountInfo = $this->getAccountInfo(true);
                     foreach ($accountInfo['balances'] as $balance) {
                         if ($balance['asset'] === $baseAsset) {
