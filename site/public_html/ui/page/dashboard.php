@@ -602,25 +602,27 @@
                     
                     <!-- Paginação -->
                     <?php if ($totalPages > 1): ?>
-                    <div class="card-footer border-top p-3">
-                        <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
-                            <!-- Controles de Paginação -->
+                    <div class="card-footer border-top p-2">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+                            <!-- Botões de navegação -->
                             <nav aria-label="Paginação de ordens">
                                 <ul class="pagination pagination-sm mb-0">
                                     <!-- Botão Anterior -->
                                     <li class="page-item <?php echo $currentPage <= 1 ? 'disabled' : ''; ?>">
                                         <a class="page-link" href="?orders_page=<?php echo max(1, $currentPage - 1); ?>">
-                                            <i class="bi bi-chevron-left"></i> Anterior
+                                            &lt; Anterior
                                         </a>
                                     </li>
                                     
-                                    <!-- Números de página com separador -->
+                                    <!-- Números de página -->
                                     <?php 
-                                    $startPage = max(1, $currentPage - 1);
-                                    $endPage = min($totalPages, $currentPage + 1);
+                                    $startPage = max(1, $currentPage - 2);
+                                    $endPage = min($totalPages, $currentPage + 2);
                                     
                                     if ($startPage > 1): ?>
-                                        <li class="page-item"><a class="page-link" href="?orders_page=1">1</a></li>
+                                        <li class="page-item">
+                                            <a class="page-link" href="?orders_page=1">1</a>
+                                        </li>
                                         <?php if ($startPage > 2): ?>
                                             <li class="page-item disabled"><span class="page-link">...</span></li>
                                         <?php endif; ?>
@@ -628,11 +630,10 @@
                                     
                                     <?php for ($i = $startPage; $i <= $endPage; $i++): ?>
                                         <li class="page-item <?php echo $i === $currentPage ? 'active' : ''; ?>">
-                                            <a class="page-link" href="?orders_page=<?php echo $i; ?>"><?php echo $i; ?></a>
+                                            <a class="page-link" href="?orders_page=<?php echo $i; ?>">
+                                                <?php echo $i; ?>
+                                            </a>
                                         </li>
-                                        <?php if ($i < $endPage): ?>
-                                            <li class="page-item disabled"><span class="page-link">|</span></li>
-                                        <?php endif; ?>
                                     <?php endfor; ?>
                                     
                                     <?php if ($endPage < $totalPages): ?>
@@ -647,16 +648,16 @@
                                     <!-- Botão Próximo -->
                                     <li class="page-item <?php echo $currentPage >= $totalPages ? 'disabled' : ''; ?>">
                                         <a class="page-link" href="?orders_page=<?php echo min($totalPages, $currentPage + 1); ?>">
-                                            Próximo <i class="bi bi-chevron-right"></i>
+                                            Próximo &gt;
                                         </a>
                                     </li>
                                 </ul>
                             </nav>
                             
-                            <!-- Informação de Itens -->
-                            <div class="small text-muted text-end">
+                            <!-- Informação de items -->
+                            <small class="text-muted">
                                 Exibindo <?php echo count($gridDashboardData['open_orders']); ?> de <?php echo $totalItems; ?> Ordens
-                            </div>
+                            </small>
                         </div>
                     </div>
                     <?php endif; ?>
