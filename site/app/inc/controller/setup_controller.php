@@ -1544,26 +1544,43 @@ class setup_controller
             
             $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
+            // Se houver múltiplas SELLs pareadas (original + recovery), retornar a com maior quantidade
+            $bestSell = null;
+            $maxQty = 0;
+
             foreach ($gridsOrdersModel->data as $gridOrder) {
                 $order = $gridOrder['orders_attach'][0] ?? null;
 
                 if ($order && $order['side'] === 'SELL') {
-                    $this->log(
-                        "[DEBUG getPairedSellInfo] SELL pareada encontrada: order_id={$order['idx']}, status={$order['status']}, qty={$order['executed_qty']}",
-                        'INFO',
-                        'SYSTEM'
-                    );
+                    $qty = (float)($order['executed_qty'] ?? 0);
                     
-                    // Retornar info da ordem SELL
-                    return [
-                        'grids_orders_idx' => $gridOrder['idx'],
-                        'order_id' => $order['idx'],
-                        'status' => $order['status'],
-                        'price' => $order['price'],
-                        'executed_qty' => $order['executed_qty'] ?? 0,
-                        'is_processed' => $gridOrder['is_processed']
-                    ];
+                    if ($qty >= $maxQty) {
+                        $maxQty = $qty;
+                        $bestSell = [
+                            'grids_orders_idx' => $gridOrder['idx'],
+                            'order_id' => $order['idx'],
+                            'status' => $order['status'],
+                            'price' => $order['price'],
+                            'executed_qty' => $qty,
+                            'is_processed' => $gridOrder['is_processed']
+                        ];
+                        
+                        $this->log(
+                            "[DEBUG getPairedSellInfo] SELL encontrada: order_id={$order['idx']}, status={$order['status']}, qty={$qty}",
+                            'INFO',
+                            'SYSTEM'
+                        );
+                    }
                 }
+            }
+
+            if ($bestSell) {
+                $this->log(
+                    "[DEBUG getPairedSellInfo] Retornando SELL com maior qty: {$bestSell['order_id']} com qty={$bestSell['executed_qty']}",
+                    'INFO',
+                    'SYSTEM'
+                );
+                return $bestSell;
             }
 
             $this->log(
