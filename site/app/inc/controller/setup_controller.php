@@ -516,6 +516,128 @@ class setup_controller
     }
 
     /**
+     * Cancela ordens obsoletas/travadas que estão impedindo a recuperação de BTC órfão
+     * Busca ordens SELL abertas na Binance que não deveriam estar ativas
+     * 
+     * @param int $gridId ID do grid
+     * @param string $symbol Par de negociação 
+     */
+    private function cancelObsoleteOrders(int $gridId, string $symbol): void
+    {
+        try {
+            $this->log(
+                "[CancelObsoleteOrders] Buscando ordens abertas na Binance para $symbol...",
+                'INFO',
+                'SYSTEM'
+            );
+
+            // Buscar ordens ABERTAS na Binance
+            $openOrders = $this->client->openOrders(['symbol' => $symbol]);
+            
+            if (empty($openOrders)) {
+                $this->log(
+                    "[CancelObsoleteOrders] Nenhuma ordem aberta encontrada na Binance para $symbol",
+                    'INFO',
+                    'SYSTEM'
+                );
+                return;
+            }
+
+            $this->log(
+                "[CancelObsoleteOrders] Encontradas " . count($openOrders) . " ordens abertas na Binance",
+                'INFO',
+                'SYSTEM'
+            );
+
+            $canceledCount = 0;
+
+            foreach ($openOrders as $binanceOrder) {
+                try {
+                    $binanceOrderId = $binanceOrder['orderId'];
+                    $side = $binanceOrder['side'];
+                    $status = $binanceOrder['status'];
+
+                    // Buscar ordem no banco
+                    $ordersModel = new orders_model();
+                    $ordersModel->set_filter(["binance_order_id = '{$binanceOrderId}'"]);
+                    $ordersModel->load_data();
+
+                    if (count($ordersModel->data) === 0) {
+                        $this->log(
+                            "[CancelObsoleteOrders] Ordem Binance ID $binanceOrderId não encontrada no banco. Cancelando...",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+                        
+                        // Cancelar ordem órfã na Binance
+                        $this->client->cancelOrder([
+                            'symbol' => $symbol,
+                            'orderId' => $binanceOrderId
+                        ]);
+                        
+                        $canceledCount++;
+                        continue;
+                    }
+
+                    $dbOrder = $ordersModel->data[0];
+
+                    // Se no banco está FILLED/CANCELED mas na Binance está NEW, cancelar
+                    if (in_array($dbOrder['status'], ['FILLED', 'CANCELED', 'EXPIRED']) 
+                        && $status === 'NEW') {
+                        
+                        $this->log(
+                            "[CancelObsoleteOrders] Ordem ID={$dbOrder['idx']} (Binance ID=$binanceOrderId) " .
+                            "está NEW na Binance mas {$dbOrder['status']} no banco. Cancelando...",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+
+                        // Cancelar na Binance
+                        $this->client->cancelOrder([
+                            'symbol' => $symbol,
+                            'orderId' => $binanceOrderId
+                        ]);
+
+                        // Atualizar status no banco
+                        $ordersModel->load_byIdx($dbOrder['idx']);
+                        $ordersModel->populate(['status' => 'CANCELED']);
+                        $ordersModel->save();
+
+                        $canceledCount++;
+                    }
+                } catch (Exception $e) {
+                    $this->log(
+                        "[CancelObsoleteOrders] Erro ao processar ordem: " . $e->getMessage(),
+                        'ERROR',
+                        'SYSTEM'
+                    );
+                    continue;
+                }
+            }
+
+            if ($canceledCount > 0) {
+                $this->log(
+                    "✅ $canceledCount ordem(ns) obsoleta(s) cancelada(s)",
+                    'SUCCESS',
+                    'SYSTEM'
+                );
+            } else {
+                $this->log(
+                    "[CancelObsoleteOrders] Nenhuma ordem obsoleta encontrada",
+                    'INFO',
+                    'SYSTEM'
+                );
+            }
+        } catch (Exception $e) {
+            $this->log(
+                "Erro ao cancelar ordens obsoletas: " . $e->getMessage(),
+                'ERROR',
+                'SYSTEM'
+            );
+        }
+    }
+
+    /**
      * Prepara o capital inicial: 70% USDC (compras) + 30% BTC (vendas superiores)
      * Compra BTC automaticamente se o saldo disponível for insuficiente.
      *
@@ -910,7 +1032,7 @@ class setup_controller
                         
                         // VERIFICAR SE A SELL PAREADA EXECUTOU MENOS QUE O COMPRADO
                         if (in_array($sellStatus, ['FILLED']) && $sellQty < $buyQty) {
-                            $orphanedQty = $buyQty - $sellQty;
+                            $orphanedQty = round($buyQty - $sellQty, 8); // Arredondar para 8 decimais
                             $this->log(
                                 "⚠️ BTC órfão detectado: BUY idx={$gridOrder['idx']} comprou $buyQty mas SELL vendeu apenas $sellQty. " .
                                 "Órfão: " . number_format($orphanedQty, 8) . " $baseAsset",
@@ -923,7 +1045,7 @@ class setup_controller
                                 'grids_orders_idx' => $gridOrder['idx'],
                                 'grid_level' => $gridOrder['grid_level'],
                                 'buy_price' => (float)$order['price'],
-                                'executed_qty' => $orphanedQty, // Apenas a diferença
+                                'executed_qty' => $orphanedQty, // Apenas a diferença (já arredondada)
                                 'symbol' => $order['symbol']
                             ];
                             continue;
@@ -961,17 +1083,140 @@ class setup_controller
                 'TRADE'
             );
 
-            // 2. OBTER PREÇO ATUAL
-            $currentPrice = $this->getCurrentPrice($symbol);
-            $gridSpacing = $this->getGridSpacing($symbol);
+            // 2. VERIFICAR SALDO REAL DE BTC DISPONÍVEL
+            try {
+                $accountInfo = $this->getAccountInfo(true);
+                $freeBtc = 0.0;
+                $lockedBtc = 0.0;
+
+                foreach ($accountInfo['balances'] as $balance) {
+                    if ($balance['asset'] === $baseAsset) {
+                        $freeBtc = (float)$balance['free'];
+                        $lockedBtc = (float)$balance['locked'];
+                        break;
+                    }
+                }
+
+                $totalOrphanedQty = array_sum(array_column($orphanedBuys, 'executed_qty'));
+
+                $this->log(
+                    "[RecoverOrphanedBtc] Saldo $baseAsset - Livre: " . number_format($freeBtc, 8) . 
+                    " | Bloqueado: " . number_format($lockedBtc, 8) . 
+                    " | Órfão necessário: " . number_format($totalOrphanedQty, 8),
+                    'INFO',
+                    'SYSTEM'
+                );
+
+                if ($freeBtc < $totalOrphanedQty) {
+                    $this->log(
+                        "⚠️ Saldo livre insuficiente! Livre=$freeBtc, Necessário=$totalOrphanedQty. " .
+                        "Há " . number_format($lockedBtc, 8) . " $baseAsset bloqueado em outras ordens. " .
+                        "Sincronizando ordens abertas com Binance...",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    
+                    // Tentar liberar BTC cancelando ordens obsoletas
+                    $this->cancelObsoleteOrders($gridId, $symbol);
+                    
+                    // Re-verificar saldo após cancelamento
+                    $accountInfo = $this->getAccountInfo(true);
+                    foreach ($accountInfo['balances'] as $balance) {
+                        if ($balance['asset'] === $baseAsset) {
+                            $freeBtc = (float)$balance['free'];
+                            break;
+                        }
+                    }
+                    
+                    $this->log(
+                        "[RecoverOrphanedBtc] Saldo após cancelamento: " . number_format($freeBtc, 8) . " $baseAsset",
+                        'INFO',
+                        'SYSTEM'
+                    );
+                }
+            } catch (Exception $e) {
+                $this->log(
+                    "❌ Erro ao verificar saldo de $baseAsset: " . $e->getMessage(),
+                    'ERROR',
+                    'TRADE'
+                );
+                return;
+            }
+
+            // 3. OBTER PREÇO ATUAL
+            try {
+                $currentPrice = $this->getCurrentPrice($symbol);
+                $this->log(
+                    "[RecoverOrphanedBtc] Preço atual de $symbol: $" . number_format($currentPrice, 2),
+                    'INFO',
+                    'SYSTEM'
+                );
+            } catch (Exception $e) {
+                $this->log(
+                    "❌ Erro ao obter preço atual de $symbol: " . $e->getMessage(),
+                    'ERROR',
+                    'TRADE'
+                );
+                return;
+            }
+
+            try {
+                $gridSpacing = $this->getGridSpacing($symbol);
+                $this->log(
+                    "[RecoverOrphanedBtc] Grid spacing: " . ($gridSpacing * 100) . "%",
+                    'INFO',
+                    'SYSTEM'
+                );
+            } catch (Exception $e) {
+                $this->log(
+                    "❌ Erro ao obter grid spacing: " . $e->getMessage(),
+                    'ERROR',
+                    'TRADE'
+                );
+                return;
+            }
 
             // 3. CRIAR SELL PARA CADA BTC ÓRFÃO
             $successCount = 0;
 
+            $this->log(
+                "[RecoverOrphanedBtc] Iniciando criação de " . count($orphanedBuys) . " ordens de recuperação...",
+                'INFO',
+                'SYSTEM'
+            );
+
             foreach ($orphanedBuys as $orphan) {
                 try {
+                    // ARREDONDAR quantity para evitar problemas de precisão flutuante
+                    $orphanQty = round((float)$orphan['executed_qty'], 8);
+
+                    $this->log(
+                        "[RecoverOrphanedBtc] Processando órfão: grids_orders_idx={$orphan['grids_orders_idx']}, " .
+                        "level={$orphan['grid_level']}, qty=$orphanQty",
+                        'INFO',
+                        'SYSTEM'
+                    );
+
+                    // Verificar se temos saldo livre suficiente para ESTA ordem
+                    if ($freeBtc < $orphanQty) {
+                        $this->log(
+                            "⚠️ Saldo livre insuficiente para órfão idx={$orphan['grids_orders_idx']}. " .
+                            "Necessário: $orphanQty, Disponível: $freeBtc. Pulando...",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+                        continue;
+                    }
+
                     // Calcular preço de venda (acima do preço atual, 1 grid spacing)
                     $sellPrice = $currentPrice * (1 + $gridSpacing);
+
+                    $this->log(
+                        "[RecoverOrphanedBtc] Criando SELL: price=$sellPrice, qty=$orphanQty, " .
+                        "paired_to={$orphan['grids_orders_idx']}",
+                        'INFO',
+                        'SYSTEM'
+                    );
 
                     // Criar ordem de venda pareada com o BTC órfão
                     $sellOrderId = $this->placeSellOrder(
@@ -979,22 +1224,24 @@ class setup_controller
                         $symbol,
                         $orphan['grid_level'],
                         $sellPrice,
-                        $orphan['executed_qty'],
+                        $orphanQty,  // Usar valor arredondado
                         $orphan['grids_orders_idx']  // Parear com a BUY órfã
                     );
 
                     if ($sellOrderId) {
                         $successCount++;
+                        $freeBtc -= $orphanQty; // Descontar do saldo disponível
+                        
                         $this->log(
                             "✅ Venda de recuperação criada: Nível {$orphan['grid_level']} | " .
-                            "Qty: " . number_format($orphan['executed_qty'], 8) . " $baseAsset @ $" . 
-                            number_format($sellPrice, 2) . " | Pareada com BUY órfã",
+                            "Qty: " . number_format($orphanQty, 8) . " $baseAsset @ $" . 
+                            number_format($sellPrice, 2) . " | Pareada com BUY idx={$orphan['grids_orders_idx']}",
                             'SUCCESS',
                             'TRADE'
                         );
                     } else {
                         $this->log(
-                            "❌ Falha ao criar venda de recuperação para nivel {$orphan['grid_level']}",
+                            "❌ Falha ao criar venda de recuperação para nivel {$orphan['grid_level']} (sellOrderId=null)",
                             'ERROR',
                             'TRADE'
                         );
