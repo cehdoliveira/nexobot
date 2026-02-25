@@ -178,8 +178,13 @@ class site_controller
         foreach ($allGrids as &$grid) {  // Usar referência (&) para modificar o array original
             $gridId = $grid['idx'];
 
-            // Buscar ordens deste grid (apenas as que EXISTEM)
-            $allGridOrdersForGrid = array_filter($allGridOrders, fn($o) => ($o['grids_id'] ?? 0) == $gridId);
+            // Buscar ordens deste grid (apenas as ORIGINAIS, sem paired_order_id)
+            // Ordens originais = criadas quando o grid foi montado
+            // Ordens pareadas = criadas dinamicamente após execução de compra
+            $allGridOrdersForGrid = array_filter($allGridOrders, function($o) use ($gridId) {
+                return ($o['grids_id'] ?? 0) == $gridId && 
+                       (!isset($o['paired_order_id']) || (int)($o['paired_order_id'] ?? 0) === 0);
+            });
 
             // Para cada par (grid_level, side) manter apenas a ordem mais recente (maior idx).
             // Isso evita múltiplas entradas "Nível 1" causadas por ordens históricas já executadas
