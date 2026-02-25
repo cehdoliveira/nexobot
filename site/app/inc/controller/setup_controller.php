@@ -525,70 +525,16 @@ class setup_controller
     private function cancelObsoleteOrders(int $gridId, string $symbol): void
     {
         try {
-            $this->log(
-                "[cancelObsoleteOrders] INICIANDO para $symbol (gridId=$gridId)",
-                'INFO',
-                'SYSTEM'
-            );
-
-            // Verificar se client está ok
-            if (!isset($this->client) || $this->client === null) {
-                $this->log(
-                    "[cancelObsoleteOrders] ERRO FATAL: \$this->client não está inicializado!",
-                    'ERROR',
-                    'SYSTEM'
-                );
-                return;
-            }
-
-            $this->log(
-                "[cancelObsoleteOrders] Client OK. Chamando getOpenOrders($symbol)...",
-                'DEBUG',
-                'SYSTEM'
-            );
-
             // Buscar ordens ABERTAS na Binance
             $response = $this->client->getOpenOrders($symbol);
-            
-            $this->log(
-                "[cancelObsoleteOrders] Resposta recebida. Tipo: " . gettype($response) . " | IsNull: " . ($response === null ? 'SIM' : 'NÃO'),
-                'DEBUG',
-                'SYSTEM'
-            );
 
             if ($response === null) {
-                $this->log(
-                    "[cancelObsoleteOrders] ERRO: Response é NULL! getOpenOrders() falhou!",
-                    'ERROR',
-                    'SYSTEM'
-                );
-                return;
-            }
-
-            // Tentar pegar dados da resposta
-            if (!method_exists($response, 'getData')) {
-                $this->log(
-                    "[cancelObsoleteOrders] ERRO: Response não tem método getData()! Classe: " . get_class($response),
-                    'ERROR',
-                    'SYSTEM'
-                );
                 return;
             }
 
             $responseData = $response->getData();
-            
-            $this->log(
-                "[cancelObsoleteOrders] ResponseData recebido. Tipo: " . gettype($responseData) . " | IsNull: " . ($responseData === null ? 'SIM' : 'NÃO') . " | IsEmpty: " . (empty($responseData) ? 'SIM' : 'NÃO'),
-                'DEBUG',
-                'SYSTEM'
-            );
 
             if ($responseData === null) {
-                $this->log(
-                    "[cancelObsoleteOrders] AVISO: ResponseData é NULL (talvez sem ordens)",
-                    'INFO',
-                    'SYSTEM'
-                );
                 $responseData = [];
             }
 
@@ -596,62 +542,20 @@ class setup_controller
             $openOrders = [];
             if (is_array($responseData)) {
                 $openOrders = $responseData;
-                $this->log(
-                    "[cancelObsoleteOrders] ResponseData é ARRAY com " . count($responseData) . " itens",
-                    'DEBUG',
-                    'SYSTEM'
-                );
             } elseif (is_object($responseData)) {
                 // Tentar chamar getItems() se existir (padrão do Binance SDK)
                 if (method_exists($responseData, 'getItems')) {
-                    $this->log(
-                        "[cancelObsoleteOrders] ResponseData tem método getItems(), chamando...",
-                        'DEBUG',
-                        'SYSTEM'
-                    );
                     $openOrders = $responseData->getItems();
-                    $this->log(
-                        "[cancelObsoleteOrders] getItems() retornou: " . count($openOrders) . " ordens",
-                        'DEBUG',
-                        'SYSTEM'
-                    );
                 } else {
                     // Fallback: tentar json_encode
-                    $this->log(
-                        "[cancelObsoleteOrders] Sem getItems(), tentando JSON...",
-                        'DEBUG',
-                        'SYSTEM'
-                    );
                     $jsonStr = json_encode($responseData);
-                    $this->log(
-                        "[cancelObsoleteOrders] JSON gerado: " . substr($jsonStr, 0, 100),
-                        'DEBUG',
-                        'SYSTEM'
-                    );
                     $openOrders = json_decode($jsonStr, true) ?? [];
                 }
-            } else {
-                $this->log(
-                    "[cancelObsoleteOrders] ResponseData é tipo UNKNOWN: " . var_export($responseData, true),
-                    'WARNING',
-                    'SYSTEM'
-                );
             }
 
             if (empty($openOrders)) {
-                $this->log(
-                    "[cancelObsoleteOrders] Nenhuma ordem aberta encontrada em $symbol",
-                    'INFO',
-                    'SYSTEM'
-                );
                 return;
             }
-
-            $this->log(
-                "[cancelObsoleteOrders] ✅ Encontradas " . count($openOrders) . " ordem(s) aberta(s) em $symbol",
-                'SUCCESS',
-                'SYSTEM'
-            );
 
             $canceledCount = 0;
             $currentTime = round(microtime(true) * 1000); // em millisegundos
@@ -659,34 +563,17 @@ class setup_controller
 
             foreach ($openOrders as $idx => $binanceOrder) {
                 try {
-                    $this->log(
-                        "[cancelObsoleteOrders] Processando ordem #$idx",
-                        'DEBUG',
-                        'SYSTEM'
-                    );
-
                     if (!is_array($binanceOrder)) {
                         $binanceOrder = json_decode(json_encode($binanceOrder), true);
                     }
 
                     $binanceOrderId = $binanceOrder['orderId'] ?? null;
                     if ($binanceOrderId === null) {
-                        $this->log(
-                            "[cancelObsoleteOrders] ERRO: orderId não encontrado em ordem #$idx",
-                            'WARNING',
-                            'SYSTEM'
-                        );
                         continue;
                     }
 
                     $side = $binanceOrder['side'] ?? 'UNKNOWN';
                     $status = $binanceOrder['status'] ?? 'UNKNOWN';
-
-                    $this->log(
-                        "[cancelObsoleteOrders] ➡️ Ordem={$binanceOrderId} | {$side} | {$status}",
-                        'DEBUG',
-                        'SYSTEM'
-                    );
 
                     // Buscar ordem no banco
                     $ordersModel = new orders_model();
@@ -695,21 +582,16 @@ class setup_controller
 
                     // Se não está no banco, cancelar (órfã)
                     if (count($ordersModel->data) === 0) {
-                        $this->log(
-                            "[cancelObsoleteOrders] ⚠️ Ordem {$binanceOrderId} NÃO encontrada no banco (ÓRFÃ). Tentando cancelar...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
                         try {
                             $this->client->deleteOrder($symbol, $binanceOrderId);
                             $this->log(
-                                "[cancelObsoleteOrders] ✅ Ordem órfã {$binanceOrderId} CANCELADA",
+                                "✅ Ordem órfã {$binanceOrderId} cancelada",
                                 'SUCCESS',
                                 'SYSTEM'
                             );
                         } catch (Exception $cancelErr) {
                             $this->log(
-                                "[cancelObsoleteOrders] ❌ Erro ao cancelar órfã {$binanceOrderId}: " . $cancelErr->getMessage(),
+                                "❌ Erro ao cancelar órfã {$binanceOrderId}: " . $cancelErr->getMessage(),
                                 'ERROR',
                                 'SYSTEM'
                             );
@@ -724,16 +606,10 @@ class setup_controller
                     $createdAt = (int)($dbOrder['order_created_at'] ?? 0);
                     $ageMinutes = $createdAt > 0 ? round(($currentTime - $createdAt) / 1000 / 60) : 0;
 
-                    $this->log(
-                        "[cancelObsoleteOrders] ✓ Ordem {$binanceOrderId} (idx={$dbOrderIdx}) ENCONTRADA | DB={$dbStatus} | Binance={$status} | Age={$ageMinutes}min",
-                        'DEBUG',
-                        'SYSTEM'
-                    );
-
                     // Se status NEW e ficou aberto por > 15 min, cancelar (não vai executar)
                     if ($status === 'NEW' && $createdAt > 0 && ($currentTime - $createdAt) > $maxAgeMs) {
                         $this->log(
-                            "⚠️ Ordem ID={$dbOrderIdx} (Bin={$binanceOrderId}, {$side}) NEW por {$ageMinutes}min. Cancelando...",
+                            "⚠️ Ordem ID={$dbOrderIdx} ({$side}) NEW por {$ageMinutes}min. Cancelando...",
                             'WARNING',
                             'SYSTEM'
                         );
@@ -744,7 +620,7 @@ class setup_controller
                             $ordersModel->populate(['status' => 'CANCELED']);
                             $ordersModel->save();
                             $this->log(
-                                "✅ Ordem cancelada com sucesso",
+                                "✅ Ordem cancelada",
                                 'SUCCESS',
                                 'SYSTEM'
                             );
@@ -758,11 +634,10 @@ class setup_controller
                         }
                     }
 
-                    // NOVO: Cancelar QUALQUER SELL que fica NEW (não vai executar se foi precificada corretamente)
-                    // SELLs recovery são criadas 0.5% abaixo do mercado e deveriam executar em SEGUNDOS
+                    // Cancelar QUALQUER SELL que fica NEW (não vai executar)
                     if ($side === 'SELL' && $status === 'NEW') {
                         $this->log(
-                            "🚫 SELL ID={$dbOrderIdx} (Bin={$binanceOrderId}) ficou NEW. Cancelando imediatamente...",
+                            "⚠️ SELL ID={$dbOrderIdx} ficou NEW. Cancelando...",
                             'WARNING',
                             'SYSTEM'
                         );
@@ -787,41 +662,23 @@ class setup_controller
                         }
                     }
                 } catch (Exception $e) {
-                    $this->log(
-                        "[cancelObsoleteOrders] ERRO processando ordem #$idx: " . $e->getMessage(),
-                        'ERROR',
-                        'SYSTEM'
-                    );
                     continue;
                 }
             }
 
             if ($canceledCount > 0) {
                 $this->log(
-                    "✅ {$canceledCount} ordem(s) cancelada(s) com SUCESSO!",
+                    "✅ {$canceledCount} ordem(s) cancelada(s)",
                     'SUCCESS',
-                    'SYSTEM'
-                );
-            } else {
-                $this->log(
-                    "[cancelObsoleteOrders] Nenhuma ordem foi cancelada (todas estavam OK)",
-                    'INFO',
                     'SYSTEM'
                 );
             }
         } catch (Exception $e) {
             $this->log(
-                "[cancelObsoleteOrders] ERRO FATAL: " . $e->getMessage() . " | Classe: " . get_class($e),
+                "Erro ao cancelar ordens: " . $e->getMessage(),
                 'ERROR',
                 'SYSTEM'
             );
-            if (method_exists($e, 'getTraceAsString')) {
-                $this->log(
-                    "Trace: " . substr($e->getTraceAsString(), 0, 500),
-                    'DEBUG',
-                    'SYSTEM'
-                );
-            }
         }
     }
 
