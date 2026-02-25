@@ -701,7 +701,7 @@ class setup_controller
                             'SYSTEM'
                         );
                         try {
-                            $this->client->cancelOrder(['symbol' => $symbol, 'orderId' => $binanceOrderId]);
+                            $this->client->deleteOrder($symbol, $binanceOrderId);
                             $this->log(
                                 "[cancelObsoleteOrders] ✅ Ordem órfã {$binanceOrderId} CANCELADA",
                                 'SUCCESS',
@@ -739,7 +739,7 @@ class setup_controller
                         );
 
                         try {
-                            $this->client->cancelOrder(['symbol' => $symbol, 'orderId' => $binanceOrderId]);
+                            $this->client->deleteOrder($symbol, $binanceOrderId);
                             $ordersModel->load_byIdx($dbOrderIdx);
                             $ordersModel->populate(['status' => 'CANCELED']);
                             $ordersModel->save();
@@ -768,7 +768,7 @@ class setup_controller
                         );
 
                         try {
-                            $this->client->cancelOrder(['symbol' => $symbol, 'orderId' => $binanceOrderId]);
+                            $this->client->deleteOrder($symbol, $binanceOrderId);
                             $ordersModel->load_byIdx($dbOrderIdx);
                             $ordersModel->populate(['status' => 'CANCELED']);
                             $ordersModel->save();
@@ -2600,7 +2600,7 @@ class setup_controller
 
                 if ($order && in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
                     try {
-                        $this->client->cancelOrder($order['symbol'], $order['binance_order_id']);
+                        $this->client->deleteOrder($order['symbol'], $order['binance_order_id']);
                         $this->log("Ordem {$order['binance_order_id']} cancelada", 'INFO', 'TRADE');
                     } catch (Exception $e) {
                         $this->log("Erro ao cancelar ordem {$order['binance_order_id']}: " . $e->getMessage(), 'WARNING', 'TRADE');
