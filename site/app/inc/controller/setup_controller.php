@@ -196,6 +196,44 @@ class setup_controller
         }
     }
 
+    /**
+     * Calcula o capital para uma nova ordem de compra, incluindo reinvestimento de lucros
+     * 
+     * Distribui o lucro acumulado entre as novas ordens de compra (1/6 do lucro por ordem,
+     * já que temos 6 níveis total: 3 BUY + 3 SELL iniciais).
+     * 
+     * @param int $gridId ID do grid
+     * @param array $gridData Dados atuais do grid
+     * @return float Capital ajustado com reinvestimento de lucros
+     */
+    private function getCapitalForNewBuyOrder(int $gridId, array $gridData): float
+    {
+        try {
+            $baseCapital = (float)$gridData['capital_per_level'];
+            $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
+            
+            // Distribui o lucro acumulado entre os 6 níveis do grid
+            // Assim cada nova ordem recebe 1/6 do lucro total reinvestido
+            $profitReinvestmentPer Ordem = $accumulatedProfit / self::GRID_LEVELS;
+            
+            $capitalWithReinvestment = $baseCapital + $profitReinvestmentPer Ordem;
+            
+            if ($profitReinvestmentPer Ordem > 0) {
+                $this->log(
+                    "💰 Capital reinvestido para BUY: \$" . number_format($profitReinvestmentPer Ordem, 2) . 
+                    " (lucro acumulado: \$" . number_format($accumulatedProfit, 2) . ")",
+                    'INFO',
+                    'TRADE'
+                );
+            }
+            
+            return $capitalWithReinvestment;
+        } catch (Exception $e) {
+            $this->log("Erro ao calcular capital com reinvestimento: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return (float)$gridData['capital_per_level'];
+        }
+    }
+
     public function getExchangeInfo($symbol): array
     {
         try {
@@ -1217,14 +1255,16 @@ class setup_controller
             $gridSpacing = $this->getGridSpacing($symbol);
             $buyPrice = $sellPrice * (1 - $gridSpacing);
 
+            // Calcular capital com reinvestimento de lucros
+            $capitalWithReinvestment = $this->getCapitalForNewBuyOrder($gridId, $gridData);
+
             // Validar se há USDC disponível antes de tentar colocar a ordem
             $availableUsdc = $this->getAvailableUsdcBalance(true);
-            $requiredCapital = $gridData['capital_per_level'];
 
-            if ($availableUsdc < $requiredCapital) {
+            if ($availableUsdc < $capitalWithReinvestment) {
                 $this->log(
                     "⚠️ Saldo USDC insuficiente para nova ordem BUY no nível {$sellOrder['grid_level']}: " .
-                    "disponível $availableUsdc USDC, requerido $requiredCapital USDC",
+                    "disponível $availableUsdc USDC, requerido $capitalWithReinvestment USDC",
                     'WARNING',
                     'TRADE'
                 );
@@ -1234,7 +1274,7 @@ class setup_controller
                     $symbol,
                     $sellOrder['grid_level'],
                     $buyPrice,
-                    $gridData['capital_per_level']
+                    $capitalWithReinvestment
                 );
 
                 if ($newBuyOrderId) {
