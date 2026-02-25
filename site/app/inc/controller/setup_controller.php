@@ -1037,12 +1037,23 @@ class setup_controller
                             'SYSTEM'
                         );
                         
-                        // VERIFICAR SE A SELL PAREADA EXECUTOU MENOS QUE O COMPRADO
-                        if (in_array($sellStatus, ['FILLED']) && $sellQty < $buyQty) {
-                            $orphanedQty = round($buyQty - $sellQty, 8); // Arredondar para 8 decimais
+                        // SE A SELL ESTÁ FILLED (totalmente executada), considerar como já pareada e concluída
+                        if ($sellStatus === 'FILLED') {
                             $this->log(
-                                "⚠️ BTC órfão detectado: BUY idx={$gridOrder['idx']} comprou $buyQty mas SELL vendeu apenas $sellQty. " .
-                                "Órfão: " . number_format($orphanedQty, 8) . " $baseAsset",
+                                "[DEBUG] BUY idx={$gridOrder['idx']} já tem SELL pareada com status FILLED. Considerando como já concluído.",
+                                'INFO',
+                                'SYSTEM'
+                            );
+                            $alreadyPairedCount++;
+                            continue;
+                        }
+                        
+                        // SE A SELL ESTÁ EM UM STATUS DIFERENTE DE FILLED E AINDA PRECISA DE MAIS VENDA
+                        if (in_array($sellStatus, ['NEW', 'PARTIALLY_FILLED']) && $sellQty < $buyQty) {
+                            $orphanedQty = round($buyQty - $sellQty, 8);
+                            $this->log(
+                                "⚠️ BTC órfão detectado: BUY idx={$gridOrder['idx']} comprou $buyQty mas SELL pareada só vendeu $sellQty. " .
+                                "Status SELL: $sellStatus. Órfão: " . number_format($orphanedQty, 8) . " $baseAsset",
                                 'WARNING',
                                 'SYSTEM'
                             );
@@ -1052,7 +1063,7 @@ class setup_controller
                                 'grids_orders_idx' => $gridOrder['idx'],
                                 'grid_level' => $gridOrder['grid_level'],
                                 'buy_price' => (float)$order['price'],
-                                'executed_qty' => $orphanedQty, // Apenas a diferença (já arredondada)
+                                'executed_qty' => $orphanedQty,
                                 'symbol' => $order['symbol']
                             ];
                             continue;
