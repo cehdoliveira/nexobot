@@ -1129,10 +1129,11 @@ class setup_controller
                         'SYSTEM'
                     );
                     
-                    // Tentar liberar BTC cancelando ordens obsoletas
-                    $this->cancelObsoleteOrders($gridId, $symbol);
+                    // TODO: Implementar método correto para cancelar ordens obsoletas no SDK Binance
+                    // Por enquanto, aguardar que ordens expirem naturalmente
+                    // $this->cancelObsoleteOrders($gridId, $symbol);
                     
-                    // Re-verificar saldo após cancelamento
+                    // Re-verificar saldo após aguardar
                     $accountInfo = $this->getAccountInfo(true);
                     foreach ($accountInfo['balances'] as $balance) {
                         if ($balance['asset'] === $baseAsset) {
