@@ -53,7 +53,7 @@ class setup_controller
         $this->accountInfoCache = null;
         $this->accountInfoCacheTime = 0;
         $this->exchangeInfoCache = [];
-        
+
         $this->initializeBinanceClient();
         $this->initializeLogger();
         register_shutdown_function([$this, 'flushLogs']);
@@ -187,13 +187,13 @@ class setup_controller
     {
         try {
             $accountInfo = $this->getAccountInfo($forceRefresh);
-            
+
             foreach ($accountInfo['balances'] as $balance) {
                 if ($balance['asset'] === 'USDC') {
                     return (float)$balance['free'];
                 }
             }
-            
+
             return 0.0;
         } catch (Exception $e) {
             $this->log("Erro ao obter saldo USDC disponível: " . $e->getMessage(), 'ERROR', 'SYSTEM');
@@ -216,22 +216,22 @@ class setup_controller
         try {
             $baseCapital = (float)$gridData['capital_per_level'];
             $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
-            
+
             // Distribui o lucro acumulado entre os 6 níveis do grid
             // Assim cada nova ordem recebe 1/6 do lucro total reinvestido
             $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
-            
+
             $capitalWithReinvestment = $baseCapital + $profitReinvestmentPerOrder;
-            
+
             if ($profitReinvestmentPerOrder > 0) {
                 $this->log(
-                    "💰 Capital reinvestido para BUY: \$" . number_format($profitReinvestmentPerOrder, 2) . 
-                    " (lucro acumulado: \$" . number_format($accumulatedProfit, 2) . ")",
+                    "💰 Capital reinvestido para BUY: \$" . number_format($profitReinvestmentPerOrder, 2) .
+                        " (lucro acumulado: \$" . number_format($accumulatedProfit, 2) . ")",
                     'INFO',
                     'TRADE'
                 );
             }
-            
+
             return $capitalWithReinvestment;
         } catch (Exception $e) {
             $this->log("Erro ao calcular capital com reinvestimento: " . $e->getMessage(), 'ERROR', 'SYSTEM');
@@ -533,31 +533,45 @@ class setup_controller
 
             // Buscar ordens ABERTAS na Binance
             $response = $this->client->getOpenOrders($symbol);
-            
-            $this->log(
-                "DEBUG: Tipo de resposta: " . get_class($response),
-                'INFO',
-                'SYSTEM'
-            );
-            
             $responseData = $response->getData();
-            
-            $this->log(
-                "DEBUG: Tipo de dados: " . gettype($responseData) . " | Count: " . (is_countable($responseData) ? count($responseData) : 'N/A'),
-                'INFO',
-                'SYSTEM'
-            );
-            
-            // Converter resposta para array se necessário
+
+            // Converter resposta para array - tentar múltiplas abordagens
+            $openOrders = [];
+
             if (is_array($responseData)) {
                 $openOrders = $responseData;
             } elseif (is_object($responseData)) {
-                // Se é um array de objetos
-                $openOrders = json_decode(json_encode($responseData), true);
-            } else {
-                $openOrders = [];
+                // Se é uma lista de objetos, converter cada um
+                if (method_exists($responseData, '__toArray')) {
+                    $openOrders = $responseData->__toArray();
+                } else {
+                    // Tentar converter as propriedades do objeto
+                    $reflection = new ReflectionObject($responseData);
+                    $properties = $reflection->getProperties(ReflectionProperty::IS_PUBLIC | ReflectionProperty::IS_PROTECTED | ReflectionProperty::IS_PRIVATE);
+
+                    // Se o objeto tem uma propriedade que é array (como 'data' ou 'orders')
+                    foreach ($properties as $property) {
+                        $property->setAccessible(true);
+                        $value = $property->getValue($responseData);
+                        if (is_array($value) && !empty($value)) {
+                            $openOrders = $value;
+                            break;
+                        }
+                    }
+
+                    // Se não encontrou propriedade com array, converter o objeto inteiro
+                    if (empty($openOrders)) {
+                        $openOrders = json_decode(json_encode($responseData), true);
+                    }
+                }
             }
-            
+
+            $this->log(
+                "DEBUG: Após conversão - Type: " . gettype($openOrders) . " | Count: " . count($openOrders),
+                'INFO',
+                'SYSTEM'
+            );
+
             if (empty($openOrders)) {
                 $this->log(
                     "ℹ️ Nenhuma ordem aberta encontrada na Binance",
@@ -581,7 +595,7 @@ class setup_controller
                     if (!is_array($binanceOrder)) {
                         $binanceOrder = json_decode(json_encode($binanceOrder), true);
                     }
-                    
+
                     $binanceOrderId = $binanceOrder['orderId'];
                     $side = $binanceOrder['side'];
                     $status = $binanceOrder['status'];
@@ -597,13 +611,13 @@ class setup_controller
                             'WARNING',
                             'SYSTEM'
                         );
-                        
+
                         // Cancelar ordem órfã na Binance
                         $this->client->cancelOrder([
                             'symbol' => $symbol,
                             'orderId' => $binanceOrderId
                         ]);
-                        
+
                         $canceledCount++;
                         continue;
                     }
@@ -611,9 +625,11 @@ class setup_controller
                     $dbOrder = $ordersModel->data[0];
 
                     // Se no banco está FILLED/CANCELED mas na Binance está NEW, cancelar
-                    if (in_array($dbOrder['status'], ['FILLED', 'CANCELED', 'EXPIRED']) 
-                        && $status === 'NEW') {
-                        
+                    if (
+                        in_array($dbOrder['status'], ['FILLED', 'CANCELED', 'EXPIRED'])
+                        && $status === 'NEW'
+                    ) {
+
                         $this->log(
                             "⚠️ Ordem ID={$dbOrder['idx']} (Binance={$binanceOrderId}) está NEW na Binance mas {$dbOrder['status']} no banco. Cancelando...",
                             'WARNING',
@@ -1012,7 +1028,7 @@ class setup_controller
     {
         try {
             $baseAsset = str_replace('USDC', '', $symbol);
-            
+
             // 1. BUSCAR COMPRAS EXECUTADAS SEM VENDA PAREADA
             $gridsOrdersModel = new grids_orders_model();
             $gridsOrdersModel->set_filter([
@@ -1037,24 +1053,24 @@ class setup_controller
                 if ($order['side'] === 'BUY' && $order['status'] === 'FILLED') {
                     $filledBuysCount++;
                     $buyQty = (float)$order['executed_qty'];
-                    
+
                     // VERIFICAR SE JÁ EXISTE VENDA PAREADA
                     $pairedSellInfo = $this->getPairedSellInfo($gridOrder['idx']);
-                    
+
                     if ($pairedSellInfo) {
                         $sellQty = (float)$pairedSellInfo['executed_qty'];
                         $sellStatus = $pairedSellInfo['status'];
-                        
+
                         // SE A SELL ESTÁ FILLED (totalmente executada), considerar como já pareada e concluída
                         if ($sellStatus === 'FILLED') {
                             $alreadyPairedCount++;
                             continue;
                         }
-                        
+
                         // SE A SELL ESTÁ EM UM STATUS DIFERENTE DE FILLED E AINDA PRECISA DE MAIS VENDA
                         if (in_array($sellStatus, ['NEW', 'PARTIALLY_FILLED']) && $sellQty < $buyQty) {
                             $orphanedQty = round($buyQty - $sellQty, 8);
-                            
+
                             // BTC ÓRFÃO DETECTADO (diferença entre comprado e vendido)
                             $orphanedBuys[] = [
                                 'grids_orders_idx' => $gridOrder['idx'],
@@ -1065,11 +1081,11 @@ class setup_controller
                             ];
                             continue;
                         }
-                        
+
                         $alreadyPairedCount++;
                         continue;
                     }
-                    
+
                     // BTC ÓRFÃO ENCONTRADO (compra sem venda pareada)!
                     $orphanedBuys[] = [
                         'grids_orders_idx' => $gridOrder['idx'],
@@ -1083,7 +1099,7 @@ class setup_controller
 
             $this->log(
                 "[RecoverOrphanedBtc] {$filledBuysCount} BUY FILLED, {$alreadyPairedCount} já pareadas, " .
-                count($orphanedBuys) . " órfãs detectadas",
+                    count($orphanedBuys) . " órfãs detectadas",
                 'INFO',
                 'SYSTEM'
             );
@@ -1115,9 +1131,9 @@ class setup_controller
                 $totalOrphanedQty = array_sum(array_column($orphanedBuys, 'executed_qty'));
 
                 $this->log(
-                    "[RecoverOrphanedBtc] Saldo $baseAsset - Livre: " . number_format($freeBtc, 8) . 
-                    " | Bloqueado: " . number_format($lockedBtc, 8) . 
-                    " | Órfão necessário: " . number_format($totalOrphanedQty, 8),
+                    "[RecoverOrphanedBtc] Saldo $baseAsset - Livre: " . number_format($freeBtc, 8) .
+                        " | Bloqueado: " . number_format($lockedBtc, 8) .
+                        " | Órfão necessário: " . number_format($totalOrphanedQty, 8),
                     'INFO',
                     'SYSTEM'
                 );
@@ -1125,15 +1141,15 @@ class setup_controller
                 if ($freeBtc < $totalOrphanedQty) {
                     $this->log(
                         "⚠️ Saldo livre insuficiente! Livre=$freeBtc, Necessário=$totalOrphanedQty. " .
-                        "Há " . number_format($lockedBtc, 8) . " $baseAsset bloqueado em outras ordens. " .
-                        "Sincronizando ordens abertas com Binance...",
+                            "Há " . number_format($lockedBtc, 8) . " $baseAsset bloqueado em outras ordens. " .
+                            "Sincronizando ordens abertas com Binance...",
                         'WARNING',
                         'SYSTEM'
                     );
-                    
+
                     // Tentar liberar BTC cancelando ordens obsoletas
                     $this->cancelObsoleteOrders($gridId, $symbol);
-                    
+
                     // Re-verificar saldo após cancelamento
                     $accountInfo = $this->getAccountInfo(true);
                     foreach ($accountInfo['balances'] as $balance) {
@@ -1142,7 +1158,7 @@ class setup_controller
                             break;
                         }
                     }
-                    
+
                     $this->log(
                         "[RecoverOrphanedBtc] Saldo após cancelamento: " . number_format($freeBtc, 8) . " $baseAsset",
                         'INFO',
@@ -1215,11 +1231,11 @@ class setup_controller
                     if ($sellOrderId) {
                         $successCount++;
                         $freeBtc -= $orphanQty; // Descontar do saldo disponível
-                        
+
                         $this->log(
                             "✅ Venda de recuperação criada: Nível {$orphan['grid_level']} | " .
-                            "Qty: " . number_format($orphanQty, 8) . " $baseAsset @ $" . 
-                            number_format($sellPrice, 2) . " | Pareada com BUY idx={$orphan['grids_orders_idx']}",
+                                "Qty: " . number_format($orphanQty, 8) . " $baseAsset @ $" .
+                                number_format($sellPrice, 2) . " | Pareada com BUY idx={$orphan['grids_orders_idx']}",
                             'SUCCESS',
                             'TRADE'
                         );
@@ -1311,7 +1327,7 @@ class setup_controller
             if ($availableBtc < $buyQty) {
                 $this->log(
                     "⚠️ BTC disponível ($availableBtc) é menor que qty comprada ($buyQty). " .
-                    "Criando SELL com saldo disponível.",
+                        "Criando SELL com saldo disponível.",
                     'WARNING',
                     'TRADE'
                 );
@@ -1323,7 +1339,7 @@ class setup_controller
             if ($sellQty <= 0) {
                 throw new Exception(
                     "Nenhum BTC disponível para criar SELL pareada (BUY idx=$gridsOrdersIdx). " .
-                    "Ordem será reprocessada."
+                        "Ordem será reprocessada."
                 );
             }
 
@@ -1344,13 +1360,13 @@ class setup_controller
             if (!$sellOrderId) {
                 throw new Exception(
                     "Falha ao criar SELL pareada para BUY idx=$gridsOrdersIdx. " .
-                    "Ordem será reprocessada."
+                        "Ordem será reprocessada."
                 );
             }
 
             $this->log(
                 "✅ SELL pareada criada: Nível $gridLevel @ $" . number_format($sellPrice, 2) .
-                " | Qty: " . number_format($sellQty, 8) . " $baseAsset | Pareada com BUY idx=$gridsOrdersIdx",
+                    " | Qty: " . number_format($sellQty, 8) . " $baseAsset | Pareada com BUY idx=$gridsOrdersIdx",
                 'SUCCESS',
                 'TRADE'
             );
@@ -1461,18 +1477,18 @@ class setup_controller
                     if (in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
                         return true; // SELL ativa aguardando execução
                     }
-                    
+
                     // Se FILLED e is_processed=yes, foi processada corretamente
                     if ($order['status'] === 'FILLED' && $gridOrder['is_processed'] === 'yes') {
                         return true; // SELL executada e processada (nova BUY já foi criada)
                     }
-                    
+
                     // Se FILLED mas is_processed=no, o BTC foi vendido mas não foi processado
                     // Neste caso, NÃO há BTC órfão (foi vendido), mas precisa processar a SELL
                     if ($order['status'] === 'FILLED' && $gridOrder['is_processed'] === 'no') {
                         $this->log(
                             "[WARN] SELL FILLED mas não processada! order_id={$order['idx']}, " .
-                            "paired_to_buy=$buyGridOrderIdx. BTC JÁ FOI VENDIDO.",
+                                "paired_to_buy=$buyGridOrderIdx. BTC JÁ FOI VENDIDO.",
                             'WARNING',
                             'SYSTEM'
                         );
@@ -1514,7 +1530,7 @@ class setup_controller
 
                 if ($order && $order['side'] === 'SELL') {
                     $qty = (float)($order['executed_qty'] ?? 0);
-                    
+
                     if ($qty >= $maxQty) {
                         $maxQty = $qty;
                         $bestSell = [
@@ -1714,7 +1730,7 @@ class setup_controller
             if ($availableUsdc < $capitalWithReinvestment) {
                 $this->log(
                     "⚠️ Saldo USDC insuficiente para nova ordem BUY no nível {$sellOrder['grid_level']}: " .
-                    "disponível $availableUsdc USDC, requerido $capitalWithReinvestment USDC",
+                        "disponível $availableUsdc USDC, requerido $capitalWithReinvestment USDC",
                     'WARNING',
                     'TRADE'
                 );
