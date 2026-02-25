@@ -539,6 +539,12 @@ class setup_controller
                 return;
             }
 
+            $this->log(
+                "🔍 Encontradas " . count($openOrders) . " ordem(s) aberta(s) na Binance",
+                'INFO',
+                'SYSTEM'
+            );
+
             $canceledCount = 0;
 
             foreach ($openOrders as $binanceOrder) {
@@ -553,6 +559,12 @@ class setup_controller
                     $ordersModel->load_data();
 
                     if (count($ordersModel->data) === 0) {
+                        $this->log(
+                            "⚠️ Ordem Binance ID=$binanceOrderId não está no banco. Cancelando...",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+                        
                         // Cancelar ordem órfã na Binance
                         $this->client->cancelOrder([
                             'symbol' => $symbol,
@@ -568,6 +580,12 @@ class setup_controller
                     // Se no banco está FILLED/CANCELED mas na Binance está NEW, cancelar
                     if (in_array($dbOrder['status'], ['FILLED', 'CANCELED', 'EXPIRED']) 
                         && $status === 'NEW') {
+                        
+                        $this->log(
+                            "⚠️ Ordem ID={$dbOrder['idx']} (Binance={$binanceOrderId}) está NEW na Binance mas {$dbOrder['status']} no banco. Cancelando...",
+                            'WARNING',
+                            'SYSTEM'
+                        );
 
                         // Cancelar na Binance
                         $this->client->cancelOrder([
@@ -590,6 +608,14 @@ class setup_controller
                     );
                     continue;
                 }
+            }
+
+            if ($canceledCount > 0) {
+                $this->log(
+                    "✅ $canceledCount ordem(s) cancelada(s)",
+                    'SUCCESS',
+                    'SYSTEM'
+                );
             }
         } catch (Exception $e) {
             $this->log(
