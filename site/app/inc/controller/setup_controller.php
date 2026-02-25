@@ -533,12 +533,37 @@ class setup_controller
 
             // Buscar ordens ABERTAS na Binance
             $response = $this->client->getOpenOrders($symbol);
+            
+            $this->log(
+                "DEBUG: Tipo de resposta: " . get_class($response),
+                'INFO',
+                'SYSTEM'
+            );
+            
             $responseData = $response->getData();
             
+            $this->log(
+                "DEBUG: Tipo de dados: " . gettype($responseData) . " | Count: " . (is_countable($responseData) ? count($responseData) : 'N/A'),
+                'INFO',
+                'SYSTEM'
+            );
+            
             // Converter resposta para array se necessário
-            $openOrders = is_array($responseData) ? $responseData : json_decode(json_encode($responseData), true);
+            if (is_array($responseData)) {
+                $openOrders = $responseData;
+            } elseif (is_object($responseData)) {
+                // Se é um array de objetos
+                $openOrders = json_decode(json_encode($responseData), true);
+            } else {
+                $openOrders = [];
+            }
             
             if (empty($openOrders)) {
+                $this->log(
+                    "ℹ️ Nenhuma ordem aberta encontrada na Binance",
+                    'INFO',
+                    'SYSTEM'
+                );
                 return;
             }
 
@@ -610,7 +635,7 @@ class setup_controller
                     }
                 } catch (Exception $e) {
                     $this->log(
-                        "Erro ao processar ordem Binance ID $binanceOrderId: " . $e->getMessage(),
+                        "Erro ao processar ordem Binance: " . $e->getMessage(),
                         'ERROR',
                         'SYSTEM'
                     );
