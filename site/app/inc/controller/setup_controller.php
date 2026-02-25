@@ -796,6 +796,9 @@ class setup_controller
             // 0. SINCRONIZAR STATUS DAS ORDENS COM A BINANCE
             $this->syncOrdersWithBinance($gridId);
 
+            // 0.5 RECUPERAR BTC ÓRFÃO (sem venda pareada)
+            $this->recoverOrphanedBtc($gridId, $symbol, $gridData);
+
             // 1. BUSCAR ORDENS EXECUTADAS MAS NÃO PROCESSADAS
             $executedOrders = $this->getExecutedUnprocessedOrders($gridId);
 
@@ -845,6 +848,142 @@ class setup_controller
             $this->updateGridStats($gridId);
         } catch (Exception $e) {
             throw new Exception("Erro ao monitorar grid: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Recupera BTC "órfão": identifica BUYs executadas sem SELL pareada
+     * e cria SELLs para elas utilizando o preço de mercado atual
+     * 
+     * @param int $gridId ID do grid
+     * @param string $symbol Par de negociação (ex: BTCUSDC)
+     * @param array $gridData Dados atuais do grid
+     */
+    private function recoverOrphanedBtc(int $gridId, string $symbol, array $gridData): void
+    {
+        try {
+            $baseAsset = str_replace('USDC', '', $symbol);
+            
+            // 1. BUSCAR COMPRAS EXECUTADAS SEM VENDA PAREADA
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'"
+            ]);
+            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            $orphanedBuys = [];
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders_attach'][0] ?? null;
+
+                if (!$order) {
+                    continue;
+                }
+
+                // VERIFICAR SE É UMA COMPRA EXECUTADA
+                if ($order['side'] !== 'BUY' || $order['status'] !== 'FILLED') {
+                    continue;
+                }
+
+                // VERIFICAR SE JÁ EXISTE VENDA PAREADA
+                if ($this->hasPairedSellOrder($gridOrder['idx'])) {
+                    continue;
+                }
+
+                // BTC ÓRFÃO ENCONTRADO!
+                $orphanedBuys[] = [
+                    'grids_orders_idx' => $gridOrder['idx'],
+                    'grid_level' => $gridOrder['grid_level'],
+                    'buy_price' => (float)$order['price'],
+                    'executed_qty' => (float)$order['executed_qty'],
+                    'symbol' => $order['symbol']
+                ];
+            }
+
+            if (empty($orphanedBuys)) {
+                return; // Nenhum BTC órfão
+            }
+
+            $this->log(
+                "🔍 Recuperando " . count($orphanedBuys) . " BTC órfão(s) sem venda pareada no grid $gridId",
+                'WARNING',
+                'TRADE'
+            );
+
+            // 2. OBTER PREÇO ATUAL
+            $currentPrice = $this->getCurrentPrice($symbol);
+            $gridSpacing = $this->getGridSpacing($symbol);
+
+            // 3. CRIAR SELL PARA CADA BTC ÓRFÃO
+            $successCount = 0;
+
+            foreach ($orphanedBuys as $orphan) {
+                try {
+                    // Calcular preço de venda (acima do preço atual, 1 grid spacing)
+                    $sellPrice = $currentPrice * (1 + $gridSpacing);
+
+                    // Criar ordem de venda pareada com o BTC órfão
+                    $sellOrderId = $this->placeSellOrder(
+                        $gridId,
+                        $symbol,
+                        $orphan['grid_level'],
+                        $sellPrice,
+                        $orphan['executed_qty'],
+                        $orphan['grids_orders_idx']  // Parear com a BUY órfã
+                    );
+
+                    if ($sellOrderId) {
+                        $successCount++;
+                        $this->log(
+                            "✅ Venda de recuperação criada: Nível {$orphan['grid_level']} | " .
+                            "Qty: " . number_format($orphan['executed_qty'], 8) . " $baseAsset @ $" . 
+                            number_format($sellPrice, 2) . " | Pareada com BUY órfã",
+                            'SUCCESS',
+                            'TRADE'
+                        );
+                    } else {
+                        $this->log(
+                            "❌ Falha ao criar venda de recuperação para nivel {$orphan['grid_level']}",
+                            'ERROR',
+                            'TRADE'
+                        );
+                    }
+                } catch (Exception $e) {
+                    $this->log(
+                        "❌ Erro ao recuperar BTC órfão (Nível {$orphan['grid_level']}): " . $e->getMessage(),
+                        'ERROR',
+                        'TRADE'
+                    );
+                }
+            }
+
+            if ($successCount > 0) {
+                $this->log(
+                    "💰 Recuperação de BTC concluída: $successCount venda(s) de recuperação criada(s)",
+                    'SUCCESS',
+                    'TRADE'
+                );
+
+                $this->saveGridLog(
+                    $gridId,
+                    'orphaned_btc_recovered',
+                    'success',
+                    "$successCount BTC órfão(s) recuperado(s) com sucesso",
+                    [
+                        'orphaned_count' => count($orphanedBuys),
+                        'recovered_count' => $successCount,
+                        'symbol' => $symbol
+                    ]
+                );
+            }
+        } catch (Exception $e) {
+            $this->log(
+                "Erro ao recuperar BTC órfão: " . $e->getMessage(),
+                'ERROR',
+                'TRADE'
+            );
         }
     }
 
