@@ -49,6 +49,11 @@ class setup_controller
 
     public function __construct()
     {
+        // Inicializar variáveis de cache para evitar deprecated warnings
+        $this->accountInfoCache = null;
+        $this->accountInfoCacheTime = 0;
+        $this->exchangeInfoCache = [];
+        
         $this->initializeBinanceClient();
         $this->initializeLogger();
         register_shutdown_function([$this, 'flushLogs']);
@@ -214,13 +219,13 @@ class setup_controller
             
             // Distribui o lucro acumulado entre os 6 níveis do grid
             // Assim cada nova ordem recebe 1/6 do lucro total reinvestido
-            $profitReinvestmentPer Ordem = $accumulatedProfit / self::GRID_LEVELS;
+            $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
             
-            $capitalWithReinvestment = $baseCapital + $profitReinvestmentPer Ordem;
+            $capitalWithReinvestment = $baseCapital + $profitReinvestmentPerOrder;
             
-            if ($profitReinvestmentPer Ordem > 0) {
+            if ($profitReinvestmentPerOrder > 0) {
                 $this->log(
-                    "💰 Capital reinvestido para BUY: \$" . number_format($profitReinvestmentPer Ordem, 2) . 
+                    "💰 Capital reinvestido para BUY: \$" . number_format($profitReinvestmentPerOrder, 2) . 
                     " (lucro acumulado: \$" . number_format($accumulatedProfit, 2) . ")",
                     'INFO',
                     'TRADE'
