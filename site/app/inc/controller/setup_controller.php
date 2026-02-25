@@ -538,8 +538,19 @@ class setup_controller
             }
 
             if (empty($openOrders)) {
+                $this->log(
+                    "[cancelObsoleteOrders] Nenhuma ordem aberta em $symbol",
+                    'INFO',
+                    'SYSTEM'
+                );
                 return;
             }
+
+            $this->log(
+                "[cancelObsoleteOrders] Encontradas " . count($openOrders) . " ordem(s) aberta(s) em $symbol",
+                'INFO',
+                'SYSTEM'
+            );
 
             $canceledCount = 0;
             $currentTime = round(microtime(true) * 1000); // em millisegundos
@@ -555,6 +566,12 @@ class setup_controller
                     $side = $binanceOrder['side'];
                     $status = $binanceOrder['status'];
 
+                    $this->log(
+                        "[cancelObsoleteOrders] Analisando ordem {$binanceOrderId} | {$side} | {$status}",
+                        'DEBUG',
+                        'SYSTEM'
+                    );
+
                     // Buscar ordem no banco
                     $ordersModel = new orders_model();
                     $ordersModel->set_filter(["binance_order_id = '{$binanceOrderId}'"]);
@@ -562,6 +579,11 @@ class setup_controller
 
                     // Se não está no banco, cancelar (órfã)
                     if (count($ordersModel->data) === 0) {
+                        $this->log(
+                            "[cancelObsoleteOrders] Ordem {$binanceOrderId} NÃO ENCONTRADA no banco (órfã). Cancelando...",
+                            'INFO',
+                            'SYSTEM'
+                        );
                         $this->client->cancelOrder(['symbol' => $symbol, 'orderId' => $binanceOrderId]);
                         $canceledCount++;
                         continue;
@@ -571,6 +593,12 @@ class setup_controller
                     $dbStatus = $dbOrder['status'];
                     $createdAt = (int)($dbOrder['order_created_at'] ?? 0);
                     $ageMinutes = $createdAt > 0 ? round(($currentTime - $createdAt) / 1000 / 60) : 0;
+
+                    $this->log(
+                        "[cancelObsoleteOrders] Ordem {$binanceOrderId} ENCONTRADA | DB={$dbStatus} | createdAt={$createdAt} | ageMin={$ageMinutes}",
+                        'DEBUG',
+                        'SYSTEM'
+                    );
 
                     // Se status NEW e ficou aberto por > 15 min, cancelar (não vai executar)
                     if ($status === 'NEW' && $createdAt > 0 && ($currentTime - $createdAt) > $maxAgeMs) {
@@ -608,7 +636,11 @@ class setup_controller
                         $canceledCount++;
                     }
                 } catch (Exception $e) {
-                    // Log silencioso para não poluir logs
+                    $this->log(
+                        "[cancelObsoleteOrders] ERRO processando ordem: " . $e->getMessage(),
+                        'ERROR',
+                        'SYSTEM'
+                    );
                     continue;
                 }
             }
@@ -616,6 +648,12 @@ class setup_controller
             if ($canceledCount > 0) {
                 $this->log(
                     "✅ {$canceledCount} ordem(s) obsoleta(s) cancelada(s)",
+                    'INFO',
+                    'SYSTEM'
+                );
+            } else {
+                $this->log(
+                    "[cancelObsoleteOrders] Nenhuma ordem foi cancelada",
                     'INFO',
                     'SYSTEM'
                 );
