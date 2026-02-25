@@ -165,6 +165,30 @@ class setup_controller
         }
     }
 
+    /**
+     * Obtém o saldo USDC disponível (free) que não está alocado em ordens pendentes
+     * 
+     * @param bool $forceRefresh Force latest account info from API
+     * @return float Saldo USDC livre em USDC
+     */
+    private function getAvailableUsdcBalance(bool $forceRefresh = false): float
+    {
+        try {
+            $accountInfo = $this->getAccountInfo($forceRefresh);
+            
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === 'USDC') {
+                    return (float)$balance['free'];
+                }
+            }
+            
+            return 0.0;
+        } catch (Exception $e) {
+            $this->log("Erro ao obter saldo USDC disponível: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return 0.0;
+        }
+    }
+
     public function getExchangeInfo($symbol): array
     {
         try {
@@ -1186,16 +1210,29 @@ class setup_controller
             $gridSpacing = $this->getGridSpacing($symbol);
             $buyPrice = $sellPrice * (1 - $gridSpacing);
 
-            $newBuyOrderId = $this->placeBuyOrder(
-                $gridId,
-                $symbol,
-                $sellOrder['grid_level'],
-                $buyPrice,
-                $gridData['capital_per_level']
-            );
+            // Validar se há USDC disponível antes de tentar colocar a ordem
+            $availableUsdc = $this->getAvailableUsdcBalance(true);
+            $requiredCapital = $gridData['capital_per_level'];
 
-            if ($newBuyOrderId) {
-                $this->log("Nova ordem de compra criada para nível {$sellOrder['grid_level']}", 'INFO', 'TRADE');
+            if ($availableUsdc < $requiredCapital) {
+                $this->log(
+                    "⚠️ Saldo USDC insuficiente para nova ordem BUY no nível {$sellOrder['grid_level']}: " .
+                    "disponível $availableUsdc USDC, requerido $requiredCapital USDC",
+                    'WARNING',
+                    'TRADE'
+                );
+            } else {
+                $newBuyOrderId = $this->placeBuyOrder(
+                    $gridId,
+                    $symbol,
+                    $sellOrder['grid_level'],
+                    $buyPrice,
+                    $gridData['capital_per_level']
+                );
+
+                if ($newBuyOrderId) {
+                    $this->log("Nova ordem de compra criada para nível {$sellOrder['grid_level']}", 'INFO', 'TRADE');
+                }
             }
         } catch (Exception $e) {
             throw new Exception("Erro ao processar venda preenchida: " . $e->getMessage());
