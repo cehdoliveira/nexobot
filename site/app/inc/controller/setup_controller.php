@@ -889,6 +889,23 @@ class setup_controller
                 'SYSTEM'
             );
 
+            // LOG: Todas as grids_orders para identificar o problema
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders_attach'][0] ?? null;
+                
+                $orderInfo = $order 
+                    ? "order_id={$order['idx']}, side={$order['side']}, status={$order['status']}, qty=" . ($order['executed_qty'] ?? 0)
+                    : "SEM ORDEM";
+                
+                $this->log(
+                    "[DEBUG] grid_order idx={$gridOrder['idx']}, level={$gridOrder['grid_level']}, " .
+                    "is_processed={$gridOrder['is_processed']}, paired_order_id={$gridOrder['paired_order_id']}, " .
+                    "$orderInfo",
+                    'INFO',
+                    'SYSTEM'
+                );
+            }
+
             foreach ($gridsOrdersModel->data as $gridOrder) {
                 $order = $gridOrder['orders_attach'][0] ?? null;
 
