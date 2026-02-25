@@ -602,26 +602,34 @@ class setup_controller
                     'SYSTEM'
                 );
             } elseif (is_object($responseData)) {
-                $this->log(
-                    "[cancelObsoleteOrders] ResponseData é OBJECT (classe: " . get_class($responseData) . "), tentando conversão JSON",
-                    'DEBUG',
-                    'SYSTEM'
-                );
-                
-                // Tentar json_encode em um objeto
-                $jsonStr = json_encode($responseData);
-                $this->log(
-                    "[cancelObsoleteOrders] JSON gerado: " . substr($jsonStr, 0, 100) . (strlen($jsonStr) > 100 ? '...' : ''),
-                    'DEBUG',
-                    'SYSTEM'
-                );
-                
-                $openOrders = json_decode($jsonStr, true) ?? [];
-                $this->log(
-                    "[cancelObsoleteOrders] Após conversão JSON: " . count($openOrders) . " ordens",
-                    'DEBUG',
-                    'SYSTEM'
-                );
+                // Tentar chamar getItems() se existir (padrão do Binance SDK)
+                if (method_exists($responseData, 'getItems')) {
+                    $this->log(
+                        "[cancelObsoleteOrders] ResponseData tem método getItems(), chamando...",
+                        'DEBUG',
+                        'SYSTEM'
+                    );
+                    $openOrders = $responseData->getItems();
+                    $this->log(
+                        "[cancelObsoleteOrders] getItems() retornou: " . count($openOrders) . " ordens",
+                        'DEBUG',
+                        'SYSTEM'
+                    );
+                } else {
+                    // Fallback: tentar json_encode
+                    $this->log(
+                        "[cancelObsoleteOrders] Sem getItems(), tentando JSON...",
+                        'DEBUG',
+                        'SYSTEM'
+                    );
+                    $jsonStr = json_encode($responseData);
+                    $this->log(
+                        "[cancelObsoleteOrders] JSON gerado: " . substr($jsonStr, 0, 100),
+                        'DEBUG',
+                        'SYSTEM'
+                    );
+                    $openOrders = json_decode($jsonStr, true) ?? [];
+                }
             } else {
                 $this->log(
                     "[cancelObsoleteOrders] ResponseData é tipo UNKNOWN: " . var_export($responseData, true),
