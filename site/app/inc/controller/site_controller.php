@@ -424,6 +424,40 @@ class site_controller
                 }
             }
 
+            // Garantir que todas as ordens SELL reais apareçam nos níveis
+            // (mesmo se não houver nível planejado correspondente)
+            if (!empty($gridOrders)) {
+                foreach ($gridOrders as $gridOrder) {
+                    $order = $gridOrder['orders'][0] ?? null;
+                    if (!$order || ($order['side'] ?? '') !== 'SELL') {
+                        continue;
+                    }
+
+                    // Verificar se essa ordem SELL já está em $sellLevels
+                    $orderFound = false;
+                    foreach ($sellLevels as $level) {
+                        if (($level['order_id'] ?? 0) == ($order['idx'] ?? 0)) {
+                            $orderFound = true;
+                            break;
+                        }
+                    }
+
+                    // Se não encontrou, adicionar como novo nível
+                    if (!$orderFound) {
+                        $sellLevels[] = [
+                            'level' => (int)($gridOrder['grid_level'] ?? 0),
+                            'price' => (float)($order['price'] ?? 0),
+                            'quantity' => (float)($order['quantity'] ?? 0),
+                            'side' => 'SELL',
+                            'status' => $order['status'] ?? 'UNKNOWN',
+                            'order_id' => (int)($order['idx'] ?? 0),
+                            'has_order' => true,
+                            'created_at' => $order['created_at'] ?? null
+                        ];
+                    }
+                }
+            }
+
             // Ordenar por preço para garantir ordem consistente
             if (is_array($buyLevels) && !empty($buyLevels)) {
                 usort($buyLevels, fn($a, $b) => $b['price'] <=> $a['price']); // Decrescente: alto->baixo (Level 1 é mais próximo do preço atual)
