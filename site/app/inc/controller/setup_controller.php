@@ -878,7 +878,16 @@ class setup_controller
             $gridsOrdersModel->load_data();
             $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
+            $totalGridOrders = count($gridsOrdersModel->data);
+            $filledBuysCount = 0;
+            $alreadyPairedCount = 0;
             $orphanedBuys = [];
+
+            $this->log(
+                "[DEBUG] RecoverOrphanedBtc: Analisando {$totalGridOrders} grids_orders do grid $gridId",
+                'INFO',
+                'SYSTEM'
+            );
 
             foreach ($gridsOrdersModel->data as $gridOrder) {
                 $order = $gridOrder['orders_attach'][0] ?? null;
@@ -888,24 +897,42 @@ class setup_controller
                 }
 
                 // VERIFICAR SE É UMA COMPRA EXECUTADA
-                if ($order['side'] !== 'BUY' || $order['status'] !== 'FILLED') {
-                    continue;
-                }
+                if ($order['side'] === 'BUY' && $order['status'] === 'FILLED') {
+                    $filledBuysCount++;
+                    
+                    // VERIFICAR SE JÁ EXISTE VENDA PAREADA
+                    $hasPaired = $this->hasPairedSellOrder($gridOrder['idx']);
+                    
+                    $this->log(
+                        "[DEBUG] BUY FILLED encontrada: grids_orders_idx={$gridOrder['idx']}, " .
+                        "order_id={$order['idx']}, qty={$order['executed_qty']}, " .
+                        "has_paired=" . ($hasPaired ? 'SIM' : 'NÃO'),
+                        'INFO',
+                        'SYSTEM'
+                    );
+                    
+                    if ($hasPaired) {
+                        $alreadyPairedCount++;
+                        continue;
+                    }
 
-                // VERIFICAR SE JÁ EXISTE VENDA PAREADA
-                if ($this->hasPairedSellOrder($gridOrder['idx'])) {
-                    continue;
+                    // BTC ÓRFÃO ENCONTRADO!
+                    $orphanedBuys[] = [
+                        'grids_orders_idx' => $gridOrder['idx'],
+                        'grid_level' => $gridOrder['grid_level'],
+                        'buy_price' => (float)$order['price'],
+                        'executed_qty' => (float)$order['executed_qty'],
+                        'symbol' => $order['symbol']
+                    ];
                 }
-
-                // BTC ÓRFÃO ENCONTRADO!
-                $orphanedBuys[] = [
-                    'grids_orders_idx' => $gridOrder['idx'],
-                    'grid_level' => $gridOrder['grid_level'],
-                    'buy_price' => (float)$order['price'],
-                    'executed_qty' => (float)$order['executed_qty'],
-                    'symbol' => $order['symbol']
-                ];
             }
+
+            $this->log(
+                "[DEBUG] Resultado: {$filledBuysCount} BUY FILLED, {$alreadyPairedCount} já pareadas, " .
+                count($orphanedBuys) . " órfãs",
+                'INFO',
+                'SYSTEM'
+            );
 
             if (empty($orphanedBuys)) {
                 return; // Nenhum BTC órfão
