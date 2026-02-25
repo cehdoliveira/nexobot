@@ -49,29 +49,28 @@ class site_controller
         $allGrids = $gridsModel->data;
 
         // === BUSCAR ORDENS DE GRID (com relacionamento manual) ===
-        // Carregar TODAS as grids_orders (ativas e inativas) para que o dashboard mostre o histórico completo
         $gridsOrdersModel = new grids_orders_model();
-        $gridsOrdersModel->set_filter([]); // Remover filtro padrão 'active = yes' para carregar todas
+        // Carrega todas as grids_orders (ativas e inativas) usando filtro que sempre é verdadeiro
+        // para incluir tanto ordens abertas quanto executadas no histórico
+        $gridsOrdersModel->set_filter(["1=1"]);
         $gridsOrdersModel->load_data();
         $gridOrdersData = $gridsOrdersModel->data;
 
         // Carregar ordens relacionadas
         if (!empty($gridOrdersData)) {
             $orderIds = array_column($gridOrdersData, 'orders_id');
-            
-            // Carregar TODAS as ordens (sem filtro 'active'), para que o dashboard mostre todas as ordens
-            // tanto as abertas quanto as que foram executadas
-            $con = new local_pdo();
-            $result = $con->select(
-                "*",
-                "orders",
-                "WHERE idx IN (" . implode(',', array_map('intval', $orderIds)) . ")"
-            );
-            $allOrdersData = $con->results($result);
+
+            $ordersModel = new orders_model();
+            // Carrega todas as ordens (ativas e inativas) para exibir histórico completo
+            $ordersModel->set_filter([
+                "1=1",
+                "idx IN (" . implode(',', array_map('intval', $orderIds)) . ")"
+            ]);
+            $ordersModel->load_data();
 
             // Mapear ordens por ID
             $ordersMap = [];
-            foreach ($allOrdersData as $order) {
+            foreach ($ordersModel->data as $order) {
                 $ordersMap[$order['idx']] = $order;
             }
 
@@ -441,7 +440,7 @@ class site_controller
             // Garantir que são arrays antes de usar
             $buyLevels = is_array($buyLevels) ? $buyLevels : [];
             $sellLevels = is_array($sellLevels) ? $sellLevels : [];
-            
+
             if (!empty($buyLevels) || !empty($sellLevels)) {
                 $gridsWithLevels[] = [
                     'grid' => $grid,
