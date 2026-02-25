@@ -49,7 +49,9 @@ class site_controller
         $allGrids = $gridsModel->data;
 
         // === BUSCAR ORDENS DE GRID (com relacionamento manual) ===
+        // Carregar TODAS as grids_orders (ativas e inativas) para que o dashboard mostre o histórico completo
         $gridsOrdersModel = new grids_orders_model();
+        $gridsOrdersModel->set_filter([]); // Remover filtro padrão 'active = yes' para carregar todas
         $gridsOrdersModel->load_data();
         $gridOrdersData = $gridsOrdersModel->data;
 
@@ -57,16 +59,19 @@ class site_controller
         if (!empty($gridOrdersData)) {
             $orderIds = array_column($gridOrdersData, 'orders_id');
             
-            $ordersModel = new orders_model();
-            $ordersModel->set_filter([
-                "active = 'yes'",
-                "idx IN (" . implode(',', array_map('intval', $orderIds)) . ")"
-            ]);
-            $ordersModel->load_data();
+            // Carregar TODAS as ordens (sem filtro 'active'), para que o dashboard mostre todas as ordens
+            // tanto as abertas quanto as que foram executadas
+            $con = new local_pdo();
+            $result = $con->select(
+                "*",
+                "orders",
+                "WHERE idx IN (" . implode(',', array_map('intval', $orderIds)) . ")"
+            );
+            $allOrdersData = $con->results($result);
 
             // Mapear ordens por ID
             $ordersMap = [];
-            foreach ($ordersModel->data as $order) {
+            foreach ($allOrdersData as $order) {
                 $ordersMap[$order['idx']] = $order;
             }
 
@@ -100,6 +105,23 @@ class site_controller
         $closedOrders = array_filter($allGridOrders, function ($o) {
             $status = $o['orders'][0]['status'] ?? null;
             return in_array($status, ['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED']);
+        });
+
+        // TODAS as ordens (abertas + fechadas/executadas) para exibição no dashboard
+        // Ordenar por grid_level primeiro, depois por status (abertas primeiro)
+        $allOrdersforDisplay = $allGridOrders;
+        usort($allOrdersforDisplay, function ($a, $b) {
+            $levelA = (int)($a['grid_level'] ?? 0);
+            $levelB = (int)($b['grid_level'] ?? 0);
+            if ($levelA !== $levelB) {
+                return $levelA <=> $levelB;
+            }
+            // Se mesmo nível, colocar abertos primeiro
+            $statusA = $a['orders'][0]['status'] ?? '';
+            $statusB = $b['orders'][0]['status'] ?? '';
+            $isOpenA = in_array($statusA, ['NEW', 'PARTIALLY_FILLED']) ? 0 : 1;
+            $isOpenB = in_array($statusB, ['NEW', 'PARTIALLY_FILLED']) ? 0 : 1;
+            return $isOpenA <=> $isOpenB;
         });
 
         // Total de lucro
@@ -493,7 +515,7 @@ class site_controller
             ],
             'grids' => $allGrids,
             'grids_with_levels' => $gridsWithLevels,
-            'open_orders' => array_values($openOrders),
+            'open_orders' => array_values($allOrdersforDisplay),
             'symbols_stats' => $symbolsStats,
             'logs' => $gridLogs,
             'binance_env' => $binanceConfig['mode'] ?? 'dev',

@@ -518,12 +518,12 @@
         </div>
     <?php endif; ?>
 
-    <!-- Ordens Abertas -->
+    <!-- Ordens do Grid (Abertas e Executadas) -->
     <div class="row mb-4">
         <div class="col-12">
             <div class="card border-0 shadow-sm">
                 <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <h6 class="mb-0 fs-6"><i class="bi bi-list-ul"></i> <span class="d-none d-sm-inline">Ordens Abertas do Grid</span><span class="d-sm-none">Ordens</span></h6>
+                    <h6 class="mb-0 fs-6"><i class="bi bi-list-ul"></i> <span class="d-none d-sm-inline">Todas as Ordens do Grid</span><span class="d-sm-none">Ordens</span></h6>
                     <span class="badge bg-warning text-dark"><?php echo count($gridDashboardData['open_orders'] ?? []); ?></span>
                 </div>
                 <?php if (!empty($gridDashboardData['open_orders'])): ?>
@@ -537,13 +537,16 @@
                                         <th class="text-nowrap">Preço</th>
                                         <th class="text-nowrap d-none d-md-table-cell">Quantidade</th>
                                         <th class="text-nowrap d-none d-lg-table-cell">Nível</th>
+                                        <th class="text-nowrap d-none d-lg-table-cell">Status</th>
                                         <th class="text-nowrap d-none d-xl-table-cell">Data Abertura</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php foreach ($gridDashboardData['open_orders'] as $order): ?>
                                         <?php $orderData = $order['orders'][0] ?? []; ?>
-                                        <tr>
+                                        <?php $status = $orderData['status'] ?? 'UNKNOWN'; ?>
+                                        <?php $isOpen = in_array($status, ['NEW', 'PARTIALLY_FILLED']); ?>
+                                        <tr <?php echo $isOpen ? '' : 'class="table-secondary"'; ?>>
                                             <td class="text-nowrap">
                                                 <span class="badge bg-info"><?php echo htmlspecialchars($orderData['symbol'] ?? 'N/A'); ?></span>
                                             </td>
@@ -560,6 +563,17 @@
                                             </td>
                                             <td class="text-nowrap d-none d-lg-table-cell">
                                                 <span class="badge bg-secondary"><?php echo $order['grid_level'] ?? 'N/A'; ?></span>
+                                            </td>
+                                            <td class="text-nowrap d-none d-lg-table-cell">
+                                                <?php if ($isOpen): ?>
+                                                    <span class="badge bg-success">Aberta</span>
+                                                <?php elseif ($status === 'FILLED'): ?>
+                                                    <span class="badge bg-info">Executada</span>
+                                                <?php elseif ($status === 'CANCELED'): ?>
+                                                    <span class="badge bg-danger">Cancelada</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-secondary"><?php echo htmlspecialchars($status); ?></span>
+                                                <?php endif; ?>
                                             </td>
                                             <td class="text-nowrap d-none d-xl-table-cell">
                                                 <small class="text-muted">
