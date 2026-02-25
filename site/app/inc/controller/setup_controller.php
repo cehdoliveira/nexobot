@@ -1030,6 +1030,13 @@ class setup_controller
                         $sellQty = (float)$pairedSellInfo['executed_qty'];
                         $sellStatus = $pairedSellInfo['status'];
                         
+                        $this->log(
+                            "[DEBUG] BUY idx={$gridOrder['idx']} TEM SELL pareada: " .
+                            "grids_orders_idx={$pairedSellInfo['grids_orders_idx']}, status=$sellStatus, qty=$sellQty, is_processed={$pairedSellInfo['is_processed']}",
+                            'INFO',
+                            'SYSTEM'
+                        );
+                        
                         // VERIFICAR SE A SELL PAREADA EXECUTOU MENOS QUE O COMPRADO
                         if (in_array($sellStatus, ['FILLED']) && $sellQty < $buyQty) {
                             $orphanedQty = round($buyQty - $sellQty, 8); // Arredondar para 8 decimais
@@ -1054,6 +1061,12 @@ class setup_controller
                         $alreadyPairedCount++;
                         continue;
                     }
+                    
+                    $this->log(
+                        "[DEBUG] BUY idx={$gridOrder['idx']} NÃO TEM SELL pareada encontrada. Buscando no DB...",
+                        'INFO',
+                        'SYSTEM'
+                    );
 
                     // BTC ÓRFÃO ENCONTRADO (compra sem venda pareada)!
                     $orphanedBuys[] = [
@@ -1519,12 +1532,27 @@ class setup_controller
                 "paired_order_id = '{$buyGridOrderIdx}'"
             ]);
             $gridsOrdersModel->load_data();
+            
+            $foundCount = count($gridsOrdersModel->data);
+            $this->log(
+                "[DEBUG getPairedSellInfo] Buscando SELL pareada para BUY idx=$buyGridOrderIdx: " .
+                "Encontradas $foundCount grids_order(s) com paired_order_id=$buyGridOrderIdx",
+                'INFO',
+                'SYSTEM'
+            );
+            
             $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
             foreach ($gridsOrdersModel->data as $gridOrder) {
                 $order = $gridOrder['orders_attach'][0] ?? null;
 
                 if ($order && $order['side'] === 'SELL') {
+                    $this->log(
+                        "[DEBUG getPairedSellInfo] SELL pareada encontrada: order_id={$order['idx']}, status={$order['status']}, qty={$order['executed_qty']}",
+                        'INFO',
+                        'SYSTEM'
+                    );
+                    
                     // Retornar info da ordem SELL
                     return [
                         'grids_orders_idx' => $gridOrder['idx'],
@@ -1537,6 +1565,11 @@ class setup_controller
                 }
             }
 
+            $this->log(
+                "[DEBUG getPairedSellInfo] Nenhuma SELL pareada encontrada para BUY idx=$buyGridOrderIdx",
+                'INFO',
+                'SYSTEM'
+            );
             return null; // Não encontrou SELL pareada
         } catch (Exception $e) {
             $this->log("Erro ao buscar info da venda pareada: " . $e->getMessage(), 'ERROR', 'SYSTEM');
