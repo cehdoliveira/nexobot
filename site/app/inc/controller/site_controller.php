@@ -441,11 +441,23 @@ class site_controller
             $buyLevels = is_array($buyLevels) ? $buyLevels : [];
             $sellLevels = is_array($sellLevels) ? $sellLevels : [];
 
-            if (!empty($buyLevels) || !empty($sellLevels)) {
+            // FILTRAR apenas ordens pendentes para a seção de níveis
+            // (Remover ordens FILLED, manter NEW, PARTIALLY_FILLED, PLANNED, etc)
+            $buyLevelsPending = array_filter($buyLevels, function ($level) {
+                $status = $level['status'] ?? 'PLANNED';
+                return $status !== 'FILLED' && $status !== 'CANCELED' && $status !== 'EXPIRED' && $status !== 'REJECTED';
+            });
+            
+            $sellLevelsPending = array_filter($sellLevels, function ($level) {
+                $status = $level['status'] ?? 'PLANNED';
+                return $status !== 'FILLED' && $status !== 'CANCELED' && $status !== 'EXPIRED' && $status !== 'REJECTED';
+            });
+
+            if (!empty($buyLevelsPending) || !empty($sellLevelsPending)) {
                 $gridsWithLevels[] = [
                     'grid' => $grid,
-                    'buy_levels' => $buyLevels,
-                    'sell_levels' => $sellLevels
+                    'buy_levels' => array_values($buyLevelsPending),
+                    'sell_levels' => array_values($sellLevelsPending)
                 ];
             }
         }
@@ -453,6 +465,16 @@ class site_controller
 
         // Ordenar ordens abertas por grid_level (ordem crescente: 1, 2, 3)
         usort($openOrders, fn($a, $b) => ($a['grid_level'] ?? 0) <=> ($b['grid_level'] ?? 0));
+
+        // === PREPARAR PAGINAÇÃO DAS ORDENS ===
+        $itemsPerPage = 6;
+        $currentPage = isset($_GET['orders_page']) ? max(1, (int)$_GET['orders_page']) : 1;
+        $totalOrders = count($allOrdersforDisplay);
+        $totalPages = ceil($totalOrders / $itemsPerPage);
+        $currentPage = min($currentPage, max(1, $totalPages)); // Ajustar página se exceder total
+        
+        $startIndex = ($currentPage - 1) * $itemsPerPage;
+        $ordersForDisplay = array_slice($allOrdersforDisplay, $startIndex, $itemsPerPage);
 
         // === PREPARAR DADOS PARA A VIEW ===
         $binanceConfig = BinanceConfig::getActiveCredentials();
@@ -514,7 +536,13 @@ class site_controller
             ],
             'grids' => $allGrids,
             'grids_with_levels' => $gridsWithLevels,
-            'open_orders' => array_values($allOrdersforDisplay),
+            'open_orders' => array_values($ordersForDisplay),
+            'orders_pagination' => [
+                'current_page' => $currentPage,
+                'total_pages' => $totalPages,
+                'total_items' => $totalOrders,
+                'items_per_page' => $itemsPerPage
+            ],
             'symbols_stats' => $symbolsStats,
             'logs' => $gridLogs,
             'binance_env' => $binanceConfig['mode'] ?? 'dev',
