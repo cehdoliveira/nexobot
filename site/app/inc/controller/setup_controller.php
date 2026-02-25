@@ -1000,16 +1000,9 @@ class setup_controller
             $gridsOrdersModel->load_data();
             $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
-            $totalGridOrders = count($gridsOrdersModel->data);
             $filledBuysCount = 0;
             $alreadyPairedCount = 0;
             $orphanedBuys = [];
-
-            $this->log(
-                "[RecoverOrphanedBtc] Analisando {$totalGridOrders} grids_orders do grid $gridId",
-                'INFO',
-                'SYSTEM'
-            );
 
             foreach ($gridsOrdersModel->data as $gridOrder) {
                 $order = $gridOrder['orders_attach'][0] ?? null;
@@ -1030,20 +1023,8 @@ class setup_controller
                         $sellQty = (float)$pairedSellInfo['executed_qty'];
                         $sellStatus = $pairedSellInfo['status'];
                         
-                        $this->log(
-                            "[DEBUG] BUY idx={$gridOrder['idx']} TEM SELL pareada: " .
-                            "grids_orders_idx={$pairedSellInfo['grids_orders_idx']}, status=$sellStatus, qty=$sellQty, is_processed={$pairedSellInfo['is_processed']}",
-                            'INFO',
-                            'SYSTEM'
-                        );
-                        
                         // SE A SELL ESTÁ FILLED (totalmente executada), considerar como já pareada e concluída
                         if ($sellStatus === 'FILLED') {
-                            $this->log(
-                                "[DEBUG] BUY idx={$gridOrder['idx']} já tem SELL pareada com status FILLED. Considerando como já concluído.",
-                                'INFO',
-                                'SYSTEM'
-                            );
                             $alreadyPairedCount++;
                             continue;
                         }
@@ -1051,12 +1032,6 @@ class setup_controller
                         // SE A SELL ESTÁ EM UM STATUS DIFERENTE DE FILLED E AINDA PRECISA DE MAIS VENDA
                         if (in_array($sellStatus, ['NEW', 'PARTIALLY_FILLED']) && $sellQty < $buyQty) {
                             $orphanedQty = round($buyQty - $sellQty, 8);
-                            $this->log(
-                                "⚠️ BTC órfão detectado: BUY idx={$gridOrder['idx']} comprou $buyQty mas SELL pareada só vendeu $sellQty. " .
-                                "Status SELL: $sellStatus. Órfão: " . number_format($orphanedQty, 8) . " $baseAsset",
-                                'WARNING',
-                                'SYSTEM'
-                            );
                             
                             // BTC ÓRFÃO DETECTADO (diferença entre comprado e vendido)
                             $orphanedBuys[] = [
@@ -1073,12 +1048,6 @@ class setup_controller
                         continue;
                     }
                     
-                    $this->log(
-                        "[DEBUG] BUY idx={$gridOrder['idx']} NÃO TEM SELL pareada encontrada. Buscando no DB...",
-                        'INFO',
-                        'SYSTEM'
-                    );
-
                     // BTC ÓRFÃO ENCONTRADO (compra sem venda pareada)!
                     $orphanedBuys[] = [
                         'grids_orders_idx' => $gridOrder['idx'],
@@ -1187,11 +1156,6 @@ class setup_controller
 
             try {
                 $gridSpacing = $this->getGridSpacing($symbol);
-                $this->log(
-                    "[RecoverOrphanedBtc] Grid spacing: " . ($gridSpacing * 100) . "%",
-                    'INFO',
-                    'SYSTEM'
-                );
             } catch (Exception $e) {
                 $this->log(
                     "❌ Erro ao obter grid spacing: " . $e->getMessage(),
@@ -1204,44 +1168,18 @@ class setup_controller
             // 3. CRIAR SELL PARA CADA BTC ÓRFÃO
             $successCount = 0;
 
-            $this->log(
-                "[RecoverOrphanedBtc] Iniciando criação de " . count($orphanedBuys) . " ordens de recuperação...",
-                'INFO',
-                'SYSTEM'
-            );
-
             foreach ($orphanedBuys as $orphan) {
                 try {
                     // ARREDONDAR quantity para evitar problemas de precisão flutuante
                     $orphanQty = round((float)$orphan['executed_qty'], 8);
 
-                    $this->log(
-                        "[RecoverOrphanedBtc] Processando órfão: grids_orders_idx={$orphan['grids_orders_idx']}, " .
-                        "level={$orphan['grid_level']}, qty=$orphanQty",
-                        'INFO',
-                        'SYSTEM'
-                    );
-
                     // Verificar se temos saldo livre suficiente para ESTA ordem
                     if ($freeBtc < $orphanQty) {
-                        $this->log(
-                            "⚠️ Saldo livre insuficiente para órfão idx={$orphan['grids_orders_idx']}. " .
-                            "Necessário: $orphanQty, Disponível: $freeBtc. Pulando...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
                         continue;
                     }
 
                     // Calcular preço de venda (acima do preço atual, 1 grid spacing)
                     $sellPrice = $currentPrice * (1 + $gridSpacing);
-
-                    $this->log(
-                        "[RecoverOrphanedBtc] Criando SELL: price=$sellPrice, qty=$orphanQty, " .
-                        "paired_to={$orphan['grids_orders_idx']}",
-                        'INFO',
-                        'SYSTEM'
-                    );
 
                     // Criar ordem de venda pareada com o BTC órfão
                     $sellOrderId = $this->placeSellOrder(
@@ -1544,15 +1482,6 @@ class setup_controller
                 "paired_order_id = '{$buyGridOrderIdx}'"
             ]);
             $gridsOrdersModel->load_data();
-            
-            $foundCount = count($gridsOrdersModel->data);
-            $this->log(
-                "[DEBUG getPairedSellInfo] Buscando SELL pareada para BUY idx=$buyGridOrderIdx: " .
-                "Encontradas $foundCount grids_order(s) com paired_order_id=$buyGridOrderIdx",
-                'INFO',
-                'SYSTEM'
-            );
-            
             $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
 
             // Se houver múltiplas SELLs pareadas (original + recovery), retornar a com maior quantidade
@@ -1575,31 +1504,11 @@ class setup_controller
                             'executed_qty' => $qty,
                             'is_processed' => $gridOrder['is_processed']
                         ];
-                        
-                        $this->log(
-                            "[DEBUG getPairedSellInfo] SELL encontrada: order_id={$order['idx']}, status={$order['status']}, qty={$qty}",
-                            'INFO',
-                            'SYSTEM'
-                        );
                     }
                 }
             }
 
-            if ($bestSell) {
-                $this->log(
-                    "[DEBUG getPairedSellInfo] Retornando SELL com maior qty: {$bestSell['order_id']} com qty={$bestSell['executed_qty']}",
-                    'INFO',
-                    'SYSTEM'
-                );
-                return $bestSell;
-            }
-
-            $this->log(
-                "[DEBUG getPairedSellInfo] Nenhuma SELL pareada encontrada para BUY idx=$buyGridOrderIdx",
-                'INFO',
-                'SYSTEM'
-            );
-            return null; // Não encontrou SELL pareada
+            return $bestSell;
         } catch (Exception $e) {
             $this->log("Erro ao buscar info da venda pareada: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return null;
