@@ -1243,9 +1243,36 @@ class setup_controller
                 $order = $gridOrder['orders_attach'][0] ?? null;
 
                 if ($order && $order['side'] === 'SELL') {
+                    $this->log(
+                        "[DEBUG] SELL pareada encontrada para BUY idx=$buyGridOrderIdx: " .
+                        "order_id={$order['idx']}, status={$order['status']}, " .
+                        "is_processed={$gridOrder['is_processed']}",
+                        'INFO',
+                        'SYSTEM'
+                    );
+                    
                     // Verificar se a venda está ativa (não cancelada)
-                    if (in_array($order['status'], ['NEW', 'PARTIALLY_FILLED', 'FILLED'])) {
-                        return true;
+                    // IMPORTANTE: Se status=FILLED mas is_processed=no, o BTC já foi vendido
+                    // mas o sistema ainda não processou (não criou nova BUY)
+                    if (in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                        return true; // SELL ativa aguardando execução
+                    }
+                    
+                    // Se FILLED e is_processed=yes, foi processada corretamente
+                    if ($order['status'] === 'FILLED' && $gridOrder['is_processed'] === 'yes') {
+                        return true; // SELL executada e processada (nova BUY já foi criada)
+                    }
+                    
+                    // Se FILLED mas is_processed=no, o BTC foi vendido mas não foi processado
+                    // Neste caso, NÃO há BTC órfão (foi vendido), mas precisa processar a SELL
+                    if ($order['status'] === 'FILLED' && $gridOrder['is_processed'] === 'no') {
+                        $this->log(
+                            "[WARN] SELL FILLED mas não processada! order_id={$order['idx']}, " .
+                            "paired_to_buy=$buyGridOrderIdx. BTC JÁ FOI VENDIDO.",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+                        return true; // BTC não está órfão (foi vendido)
                     }
                 }
             }
