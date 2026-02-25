@@ -600,6 +600,12 @@ class setup_controller
                     $side = $binanceOrder['side'];
                     $status = $binanceOrder['status'];
 
+                    $this->log(
+                        "ℹ️ Verificando Binance Order ID=$binanceOrderId | Side=$side | Status=$status",
+                        'INFO',
+                        'SYSTEM'
+                    );
+
                     // Buscar ordem no banco
                     $ordersModel = new orders_model();
                     $ordersModel->set_filter(["binance_order_id = '{$binanceOrderId}'"]);
@@ -623,15 +629,22 @@ class setup_controller
                     }
 
                     $dbOrder = $ordersModel->data[0];
+                    $dbStatus = $dbOrder['status'];
+
+                    $this->log(
+                        "ℹ️ Ordem encontrada no banco | DB Status=$dbStatus | Binance Status=$status",
+                        'INFO',
+                        'SYSTEM'
+                    );
 
                     // Se no banco está FILLED/CANCELED mas na Binance está NEW, cancelar
                     if (
-                        in_array($dbOrder['status'], ['FILLED', 'CANCELED', 'EXPIRED'])
+                        in_array($dbStatus, ['FILLED', 'CANCELED', 'EXPIRED'])
                         && $status === 'NEW'
                     ) {
 
                         $this->log(
-                            "⚠️ Ordem ID={$dbOrder['idx']} (Binance={$binanceOrderId}) está NEW na Binance mas {$dbOrder['status']} no banco. Cancelando...",
+                            "⚠️ Ordem ID={$dbOrder['idx']} (Binance={$binanceOrderId}) está NEW na Binance mas {$dbStatus} no banco. Cancelando...",
                             'WARNING',
                             'SYSTEM'
                         );
@@ -659,13 +672,11 @@ class setup_controller
                 }
             }
 
-            if ($canceledCount > 0) {
-                $this->log(
-                    "✅ $canceledCount ordem(s) cancelada(s)",
-                    'SUCCESS',
-                    'SYSTEM'
-                );
-            }
+            $this->log(
+                "✅ Sincronização concluída: $canceledCount ordem(s) cancelada(s)",
+                'INFO',
+                'SYSTEM'
+            );
         } catch (Exception $e) {
             $this->log(
                 "Erro ao sincronizar ordens obsoletas: " . $e->getMessage(),
