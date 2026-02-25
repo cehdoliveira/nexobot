@@ -525,73 +525,28 @@ class setup_controller
     private function cancelObsoleteOrders(int $gridId, string $symbol): void
     {
         try {
-            $this->log(
-                "[CancelObsoleteOrders] Buscando ordens abertas na Binance para $symbol...",
-                'INFO',
-                'SYSTEM'
-            );
-
             // Buscar ordens ABERTAS na Binance
             $response = $this->client->getOpenOrders($symbol);
             $responseData = $response->getData();
 
-            // Converter resposta para array - tentar múltiplas abordagens
+            // Converter resposta para array
             $openOrders = [];
-
             if (is_array($responseData)) {
                 $openOrders = $responseData;
             } elseif (is_object($responseData)) {
-                // Se é uma lista de objetos, converter cada um
-                if (method_exists($responseData, '__toArray')) {
-                    $openOrders = $responseData->__toArray();
-                } else {
-                    // Tentar converter as propriedades do objeto
-                    $reflection = new ReflectionObject($responseData);
-                    $properties = $reflection->getProperties(ReflectionProperty::IS_PUBLIC | ReflectionProperty::IS_PROTECTED | ReflectionProperty::IS_PRIVATE);
-
-                    // Se o objeto tem uma propriedade que é array (como 'data' ou 'orders')
-                    foreach ($properties as $property) {
-                        $property->setAccessible(true);
-                        $value = $property->getValue($responseData);
-                        if (is_array($value) && !empty($value)) {
-                            $openOrders = $value;
-                            break;
-                        }
-                    }
-
-                    // Se não encontrou propriedade com array, converter o objeto inteiro
-                    if (empty($openOrders)) {
-                        $openOrders = json_decode(json_encode($responseData), true);
-                    }
-                }
+                $openOrders = json_decode(json_encode($responseData), true) ?? [];
             }
 
-            $this->log(
-                "DEBUG: Após conversão - Type: " . gettype($openOrders) . " | Count: " . count($openOrders),
-                'INFO',
-                'SYSTEM'
-            );
-
             if (empty($openOrders)) {
-                $this->log(
-                    "ℹ️ Nenhuma ordem aberta encontrada na Binance",
-                    'INFO',
-                    'SYSTEM'
-                );
                 return;
             }
 
-            $this->log(
-                "🔍 Encontradas " . count($openOrders) . " ordem(s) aberta(s) na Binance",
-                'INFO',
-                'SYSTEM'
-            );
-
             $canceledCount = 0;
+            $currentTime = round(microtime(true) * 1000); // em millisegundos
+            $maxAgeMs = 15 * 60 * 1000; // 15 minutos em millisegundos
 
             foreach ($openOrders as $binanceOrder) {
                 try {
-                    // Converter item para array se necessário
                     if (!is_array($binanceOrder)) {
                         $binanceOrder = json_decode(json_encode($binanceOrder), true);
                     }
@@ -600,60 +555,32 @@ class setup_controller
                     $side = $binanceOrder['side'];
                     $status = $binanceOrder['status'];
 
-                    $this->log(
-                        "ℹ️ Verificando Binance Order ID=$binanceOrderId | Side=$side | Status=$status",
-                        'INFO',
-                        'SYSTEM'
-                    );
-
                     // Buscar ordem no banco
                     $ordersModel = new orders_model();
                     $ordersModel->set_filter(["binance_order_id = '{$binanceOrderId}'"]);
                     $ordersModel->load_data();
 
+                    // Se não está no banco, cancelar (órfã)
                     if (count($ordersModel->data) === 0) {
-                        $this->log(
-                            "⚠️ Ordem Binance ID=$binanceOrderId não está no banco. Cancelando...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
-
-                        // Cancelar ordem órfã na Binance
-                        $this->client->cancelOrder([
-                            'symbol' => $symbol,
-                            'orderId' => $binanceOrderId
-                        ]);
-
+                        $this->client->cancelOrder(['symbol' => $symbol, 'orderId' => $binanceOrderId]);
                         $canceledCount++;
                         continue;
                     }
 
                     $dbOrder = $ordersModel->data[0];
                     $dbStatus = $dbOrder['status'];
+                    $createdAt = (int)($dbOrder['order_created_at'] ?? 0);
+                    $ageMinutes = $createdAt > 0 ? round(($currentTime - $createdAt) / 1000 / 60) : 0;
 
-                    $this->log(
-                        "ℹ️ Ordem encontrada no banco | DB Status=$dbStatus | Binance Status=$status",
-                        'INFO',
-                        'SYSTEM'
-                    );
-
-                    // Se no banco está FILLED/CANCELED mas na Binance está NEW, cancelar
-                    if (
-                        in_array($dbStatus, ['FILLED', 'CANCELED', 'EXPIRED'])
-                        && $status === 'NEW'
-                    ) {
-
+                    // Se status NEW e ficou aberto por > 15 min, cancelar (não vai executar)
+                    if ($status === 'NEW' && $createdAt > 0 && ($currentTime - $createdAt) > $maxAgeMs) {
                         $this->log(
-                            "⚠️ Ordem ID={$dbOrder['idx']} (Binance={$binanceOrderId}) está NEW na Binance mas {$dbStatus} no banco. Cancelando...",
+                            "⚠️ Ordem ID={$dbOrder['idx']} (Binance={$binanceOrderId}, {$side}) NEW há {$ageMinutes}min. Cancelando (não executa)...",
                             'WARNING',
                             'SYSTEM'
                         );
 
-                        // Cancelar na Binance
-                        $this->client->cancelOrder([
-                            'symbol' => $symbol,
-                            'orderId' => $binanceOrderId
-                        ]);
+                        $this->client->cancelOrder(['symbol' => $symbol, 'orderId' => $binanceOrderId]);
 
                         // Atualizar status no banco
                         $ordersModel->load_byIdx($dbOrder['idx']);
@@ -662,24 +589,40 @@ class setup_controller
 
                         $canceledCount++;
                     }
+
+                    // NOVO: Cancelar QUALQUER SELL que fica NEW (não vai executar se foi precificada corretamente)
+                    // SELLs recovery são criadas 0.5% abaixo do mercado e deveriam executar em SEGUNDOS
+                    if ($side === 'SELL' && $status === 'NEW') {
+                        $this->log(
+                            "⚠️ SELL ID={$dbOrder['idx']} (Binance={$binanceOrderId}) ficou NEW. Cancelando (não executa OK)...",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+
+                        $this->client->cancelOrder(['symbol' => $symbol, 'orderId' => $binanceOrderId]);
+
+                        $ordersModel->load_byIdx($dbOrder['idx']);
+                        $ordersModel->populate(['status' => 'CANCELED']);
+                        $ordersModel->save();
+
+                        $canceledCount++;
+                    }
                 } catch (Exception $e) {
-                    $this->log(
-                        "Erro ao processar ordem Binance: " . $e->getMessage(),
-                        'ERROR',
-                        'SYSTEM'
-                    );
+                    // Log silencioso para não poluir logs
                     continue;
                 }
             }
 
-            $this->log(
-                "✅ Sincronização concluída: $canceledCount ordem(s) cancelada(s)",
-                'INFO',
-                'SYSTEM'
-            );
+            if ($canceledCount > 0) {
+                $this->log(
+                    "✅ {$canceledCount} ordem(s) obsoleta(s) cancelada(s)",
+                    'INFO',
+                    'SYSTEM'
+                );
+            }
         } catch (Exception $e) {
             $this->log(
-                "Erro ao sincronizar ordens obsoletas: " . $e->getMessage(),
+                "Erro ao cancelar ordens: " . $e->getMessage(),
                 'ERROR',
                 'SYSTEM'
             );
@@ -1226,8 +1169,9 @@ class setup_controller
                         continue;
                     }
 
-                    // Calcular preço de venda (acima do preço atual, 1 grid spacing)
-                    $sellPrice = $currentPrice * (1 + $gridSpacing);
+                    // Calcular preço de venda para RECOVERY (ligeiramente abaixo do market para garantir execução)
+                    // Recovery SELLs devem executar RÁPIDO, não esperar por o mercado subir
+                    $sellPrice = $currentPrice * (1 - $gridSpacing * 0.5);  // 0.5% abaixo do preço atual
 
                     // Criar ordem de venda pareada com o BTC órfão
                     $sellOrderId = $this->placeSellOrder(
