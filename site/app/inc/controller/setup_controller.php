@@ -27,6 +27,10 @@ class setup_controller
     private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
     private const INITIAL_BTC_ALLOCATION = 0.30; // 30% do capital inicial convertido em BTC para ordens de venda superiores
 
+    // Cache TTL
+    private const CACHE_TTL_ACCOUNT_INFO = 5;    // 5 segundos para account info
+    private const CACHE_TTL_EXCHANGE_INFO = 60;  // 60 segundos para exchange info
+
     // Logs
     private const ERROR_LOG = 'error.log';
     private const API_LOG = 'binance_api.log';
@@ -39,6 +43,9 @@ class setup_controller
     private array $logBuffer = [];
     private int $logBufferSize = 100;
     private string $logPath;
+    private ?array $accountInfoCache = null;     // Cache de informações da conta
+    private int $accountInfoCacheTime = 0;       // Timestamp do cache de account info
+    private array $exchangeInfoCache = [];       // Cache de informações de exchange por símbolo
 
     public function __construct()
     {
