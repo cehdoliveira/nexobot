@@ -14,6 +14,15 @@ class grids_model extends DOLModel
 		"capital_per_level",
 		"accumulated_profit_usdc",
 		"current_price",
+		"initial_capital_usdc",
+		"peak_capital_usdc",
+		"current_capital_usdc",
+		"stop_loss_triggered",
+		"stop_loss_triggered_at",
+		"trailing_stop_triggered",
+		"trailing_stop_triggered_at",
+		"is_processing",
+		"last_monitor_at",
 		"last_checked_at",
 		"created_at"
 	];

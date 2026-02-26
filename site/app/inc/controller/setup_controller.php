@@ -12,7 +12,7 @@ use Binance\Client\Spot\Model\OrderType;
  * Implementa a estratégia de Grid Trading para BTC/USDC
  * Controller independente que não depende do setup_controller
  * 
- * Execução: CRON a cada 5 minutos
+ * Execução: CRON a cada 1 minuto(s)
  */
 class setup_controller
 {
@@ -26,6 +26,27 @@ class setup_controller
     private const MIN_TRADE_USDC = 11;           // Mínimo por trade
     private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
     private const INITIAL_BTC_ALLOCATION = 0.30; // 30% do capital inicial convertido em BTC para ordens de venda superiores
+
+    // Proteção: Stop-Loss Global
+    private const MAX_DRAWDOWN_PERCENT = 0.20;    // 20% perda máxima do capital inicial
+    private const ENABLE_STOP_LOSS = true;
+
+    // Proteção: Trailing Stop (proteção de lucros)
+    private const TRAILING_STOP_PERCENT = 0.15;           // 15% de queda do pico
+    private const MIN_PROFIT_TO_ACTIVATE_TRAILING = 0.10;  // Ativa após 10% de lucro
+    private const ENABLE_TRAILING_STOP = true;
+
+    // Proteção: Fee Threshold (validação de lucro mínimo)
+    private const FEE_PERCENT = 0.001;                     // 0.1% por operação
+    private const MIN_PROFIT_USDC_HIGH = 0.25;             // Mínimo para capital_per_level >= 50
+    private const MIN_PROFIT_USDC_LOW = 0.0025;            // Mínimo para capital_per_level < 50
+
+    // Proteção: Race Condition
+    private const LOCK_TIMEOUT_MINUTES = 2;                // Lock travado após 2 minutos
+
+    // Logs aprimorados
+    private const ENABLE_DETAILED_LOGS = true;
+    private const LOG_RETENTION_DAYS = 30;
 
     // Cache TTL
     private const CACHE_TTL_ACCOUNT_INFO = 5;    // 5 segundos para account info
@@ -46,6 +67,7 @@ class setup_controller
     private ?array $accountInfoCache = null;     // Cache de informações da conta
     private int $accountInfoCacheTime = 0;       // Timestamp do cache de account info
     private array $exchangeInfoCache = [];       // Cache de informações de exchange por símbolo
+    private string $executionId = '';               // ID único da execução CRON
 
     public function __construct()
     {
@@ -53,6 +75,9 @@ class setup_controller
         $this->accountInfoCache = null;
         $this->accountInfoCacheTime = 0;
         $this->exchangeInfoCache = [];
+
+        // Gerar ID único para esta execução (rastreabilidade)
+        $this->executionId = substr(md5(uniqid(mt_rand(), true)), 0, 8);
 
         $this->initializeBinanceClient();
         $this->initializeLogger();
@@ -94,7 +119,7 @@ class setup_controller
     }
 
     /**
-     * Sistema de logging
+     * Sistema de logging com execution ID para rastreabilidade
      */
     private function log(string $message, string $level = 'ERROR', string $type = 'SYSTEM'): void
     {
@@ -105,9 +130,12 @@ class setup_controller
             default => $basePath . self::ERROR_LOG
         };
 
+        $execId = $this->executionId ?: '--------';
+
         $this->logBuffer[$logFile][] = sprintf(
-            "[%s] [%s] [%s] - %s\n",
+            "[%s] [%s] [%s] [%s] - %s\n",
             date('Y-m-d H:i:s'),
+            $execId,
             $level,
             $type,
             $message
@@ -331,27 +359,46 @@ class setup_controller
      */
     public function display(): void
     {
+        $startTime = microtime(true);
+        $successCount = 0;
+        $failureCount = 0;
+
         try {
-            $startTime = microtime(true);
-            $this->log("=== Grid Trading Bot INICIADO ===", 'INFO', 'SYSTEM');
+            // Log de início com separador visual
+            $this->log("════════════════════════════════════════════════════════════", 'INFO', 'SYSTEM');
+            $this->log("=== Grid Trading Bot INICIADO | Exec: {$this->executionId} | Host: " . gethostname() . " ===", 'INFO', 'SYSTEM');
+
+            // Rotação de logs antigos
+            $this->rotateOldLogs();
 
             // 1. Carregar capital USDC disponível
             $this->loadCapitalInfo();
+            $this->log("💰 Capital USDC disponível: \$" . number_format($this->totalCapital, 2), 'INFO', 'SYSTEM');
 
             // 2. Processar cada símbolo
             foreach (self::SYMBOLS as $symbol) {
                 try {
                     $this->log("--- Processando $symbol ---", 'INFO', 'TRADE');
                     $this->processSymbol($symbol);
+                    $successCount++;
                 } catch (Exception $e) {
                     $this->log("Erro ao processar $symbol: " . $e->getMessage(), 'ERROR', 'TRADE');
+                    $failureCount++;
                     continue;
                 }
             }
 
             // 3. Estatísticas finais
             $execTime = round((microtime(true) - $startTime) * 1000, 2);
-            $this->log("=== Grid Trading Bot FINALIZADO em {$execTime}ms ===", 'INFO', 'SYSTEM');
+            $totalSymbols = count(self::SYMBOLS);
+            $this->log(
+                "=== Grid Trading Bot FINALIZADO | Exec: {$this->executionId} | " .
+                    "Símbolos: {$successCount}/{$totalSymbols} OK, {$failureCount} falhas | " .
+                    "Tempo: {$execTime}ms ===",
+                'INFO',
+                'SYSTEM'
+            );
+            $this->log("════════════════════════════════════════════════════════════", 'INFO', 'SYSTEM');
         } catch (Exception $e) {
             $this->log("ERRO CRÍTICO no display(): " . $e->getMessage(), 'ERROR', 'SYSTEM');
         } finally {
@@ -406,6 +453,7 @@ class setup_controller
 
     /**
      * Processa um símbolo: verifica se grid existe, monitora ou cria novo
+     * Inclui proteção contra race condition via lock de processamento
      */
     private function processSymbol(string $symbol): void
     {
@@ -414,10 +462,28 @@ class setup_controller
             $activeGrid = $this->getActiveGrid($symbol);
 
             if ($activeGrid) {
-                // Grid existe → Sincronizar ordens e depois monitorar
-                // (não depende de saldo USDC livre — o capital já está alocado em ordens/BTC)
-                $this->syncOrdersWithBinance($activeGrid['idx']);
-                $this->monitorGrid($activeGrid);
+                $gridId = (int)$activeGrid['idx'];
+
+                // ══════ RACE CONDITION PROTECTION ══════
+                // Tentar adquirir lock ANTES de processar o grid
+                if (!$this->acquireGridLock($gridId)) {
+                    $this->log(
+                        "⏳ Grid #$gridId ($symbol) já está sendo processado por outra instância. Pulando...",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    return;
+                }
+
+                try {
+                    // Grid existe → Sincronizar ordens e depois monitorar
+                    // (não depende de saldo USDC livre — o capital já está alocado em ordens/BTC)
+                    $this->syncOrdersWithBinance($activeGrid['idx']);
+                    $this->monitorGrid($activeGrid);
+                } finally {
+                    // GARANTIR liberação do lock mesmo em caso de exceção
+                    $this->releaseGridLock($gridId);
+                }
             } else {
                 // Grid não existe → verificar capital ANTES de criar novo
                 if ($this->totalCapital < self::MIN_TRADE_USDC) {
@@ -889,7 +955,8 @@ class setup_controller
                         $symbol,
                         $level['level'],
                         $level['price'],
-                        $capitalPerBuyLevel
+                        $capitalPerBuyLevel,
+                        true // skipProfitValidation: criação inicial do grid
                     );
                     if ($orderDbId) {
                         $successBuys++;
@@ -958,12 +1025,33 @@ class setup_controller
 
     /**
      * Monitora um grid existente: processa ordens executadas e rebalanceia se necessário
+     * Inclui proteções: Stop-Loss → Trailing Stop → processamento normal
      */
     private function monitorGrid(array $gridData): void
     {
         try {
             $symbol = $gridData['symbol'];
             $gridId = $gridData['idx'];
+
+            // ══════ PROTEÇÃO 1: GLOBAL STOP-LOSS ══════
+            // Verificação ANTES de qualquer processamento de ordens
+            if (self::ENABLE_STOP_LOSS && $this->checkStopLoss((int)$gridId, $gridData)) {
+                $this->log("🛑 STOP-LOSS acionado para grid #$gridId ($symbol). Interrompendo monitoramento.", 'ERROR', 'SYSTEM');
+                return; // Interrompe imediatamente
+            }
+
+            // ══════ PROTEÇÃO 2: TRAILING STOP ══════
+            // Verificação APÓS stop-loss mas ANTES de processar ordens
+            if (self::ENABLE_TRAILING_STOP && $this->checkTrailingStop((int)$gridId, $gridData)) {
+                $this->log("🛡️ TRAILING STOP acionado para grid #$gridId ($symbol). Interrompendo monitoramento.", 'WARNING', 'SYSTEM');
+                return; // Interrompe imediatamente
+            }
+
+            // ══════ ATUALIZAR TRACKING DE CAPITAL ══════
+            $currentCapital = $this->calculateCurrentCapital($symbol);
+            if ($currentCapital > 0) {
+                $this->updateCapitalTracking((int)$gridId, $currentCapital);
+            }
 
             // 0. SINCRONIZAR STATUS DAS ORDENS COM A BINANCE
             $this->syncOrdersWithBinance($gridId);
@@ -1251,7 +1339,7 @@ class setup_controller
                         $this->log(
                             "✅ Recovery SELL criada: Nível {$orphan['grid_level']} | " .
                                 "Qty: " . number_format($orphanQty, 8) . " $baseAsset | " .
-                                "Compra: $" . number_format($buyPrice, 2) . " → Venda: $" . number_format($sellPrice, 2) . 
+                                "Compra: $" . number_format($buyPrice, 2) . " → Venda: $" . number_format($sellPrice, 2) .
                                 " (" . number_format($profitPct, 2) . "%, $strategy)",
                             'SUCCESS',
                             'TRADE'
@@ -1741,7 +1829,16 @@ class setup_controller
             // Validar se há USDC disponível antes de tentar colocar a ordem
             $availableUsdc = $this->getAvailableUsdcBalance(true);
 
-            if ($availableUsdc < $capitalWithReinvestment) {
+            // ══════ FEE THRESHOLD VALIDATION ══════
+            // Validar se a nova BUY será lucrativa antes de criar
+            if (!$this->isTradeViable($capitalWithReinvestment, $symbol)) {
+                $this->log(
+                    "⚠️ Nova BUY pós-SELL nível {$sellOrder['grid_level']} rejeitada: lucro esperado abaixo do mínimo " .
+                        "(capital: \$" . number_format($capitalWithReinvestment, 4) . ")",
+                    'INFO',
+                    'TRADE'
+                );
+            } elseif ($availableUsdc < $capitalWithReinvestment) {
                 $this->log(
                     "⚠️ Saldo USDC insuficiente para nova ordem BUY no nível {$sellOrder['grid_level']}: " .
                         "disponível $availableUsdc USDC, requerido $capitalWithReinvestment USDC",
@@ -1835,15 +1932,29 @@ class setup_controller
 
     /**
      * Coloca uma ordem de compra LIMIT na Binance
+     * Inclui validação de lucro mínimo (Fee Threshold)
      */
     private function placeBuyOrder(
         int $gridId,
         string $symbol,
         int $gridLevel,
         float $price,
-        float $capitalUsdc
+        float $capitalUsdc,
+        bool $skipProfitValidation = false
     ): ?int {
         try {
+            // ══════ FEE THRESHOLD VALIDATION ══════
+            // Não aplica na criação inicial do grid ($skipProfitValidation = true)
+            if (!$skipProfitValidation && !$this->isTradeViable($capitalUsdc, $symbol)) {
+                $this->log(
+                    "⚠️ BUY nível $gridLevel rejeitada: lucro esperado abaixo do mínimo (capital: \$" .
+                        number_format($capitalUsdc, 4) . ")",
+                    'INFO',
+                    'TRADE'
+                );
+                return null;
+            }
+
             // 1. Obter filtros do símbolo
             $symbolData = $this->getExchangeInfo($symbol);
             list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
@@ -2131,6 +2242,529 @@ class setup_controller
         return $allocations[$symbol] ?? 0.0;
     }
 
+    // ========== MÉTODOS DE PROTEÇÃO ==========
+
+    /**
+     * STOP-LOSS GLOBAL: Verifica se drawdown excedeu o limite permitido
+     * Calcula: (initial_capital - current_capital) / initial_capital
+     * Se drawdown >= 20%, aciona shutdown emergencial
+     *
+     * @param int $gridId ID do grid
+     * @param array $gridData Dados do grid
+     * @return bool true se stop-loss foi acionado (grid encerrado)
+     */
+    private function checkStopLoss(int $gridId, array $gridData): bool
+    {
+        try {
+            // Verificar se já foi acionado anteriormente
+            if (($gridData['stop_loss_triggered'] ?? 'no') === 'yes') {
+                return true; // Já está parado, não reprocessar
+            }
+
+            $initialCapital = (float)($gridData['initial_capital_usdc'] ?? 0);
+            if ($initialCapital <= 0) {
+                return false; // Sem dados iniciais, não pode calcular
+            }
+
+            $symbol = $gridData['symbol'];
+            $currentCapital = $this->calculateCurrentCapital($symbol);
+
+            if ($currentCapital <= 0) {
+                $this->log("⚠️ Stop-Loss: capital atual não pode ser calculado", 'WARNING', 'SYSTEM');
+                return false;
+            }
+
+            $drawdown = ($initialCapital - $currentCapital) / $initialCapital;
+
+            $this->log(
+                "📉 Stop-Loss check: Capital inicial=\$" . number_format($initialCapital, 2) .
+                    " | Atual=\$" . number_format($currentCapital, 2) .
+                    " | Drawdown=" . number_format($drawdown * 100, 2) . "%" .
+                    " | Limite=" . number_format(self::MAX_DRAWDOWN_PERCENT * 100, 0) . "%",
+                'INFO',
+                'SYSTEM'
+            );
+
+            if ($drawdown >= self::MAX_DRAWDOWN_PERCENT) {
+                $lossPercent = number_format($drawdown * 100, 2);
+                $this->log(
+                    "🚨🚨🚨 STOP-LOSS ACIONADO! Grid #$gridId | Perda: {$lossPercent}% " .
+                        "(>\$" . number_format(self::MAX_DRAWDOWN_PERCENT * 100, 0) . "%) | " .
+                        "Inicial: \$" . number_format($initialCapital, 2) . " → Atual: \$" . number_format($currentCapital, 2),
+                    'ERROR',
+                    'SYSTEM'
+                );
+
+                $this->emergencyShutdown($gridId, $symbol, 'stop_loss', [
+                    'initial_capital' => $initialCapital,
+                    'current_capital' => $currentCapital,
+                    'drawdown_percent' => $drawdown,
+                    'max_drawdown_allowed' => self::MAX_DRAWDOWN_PERCENT
+                ]);
+
+                return true;
+            }
+
+            return false;
+        } catch (Exception $e) {
+            $this->log("Erro no checkStopLoss: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return false; // Em caso de erro, não acionar (conservador)
+        }
+    }
+
+    /**
+     * TRAILING STOP: Protege lucros acumulados
+     * Ativa somente após lucro >= 10% do capital inicial
+     * Aciona shutdown se capital cai 15% do peak atingido
+     *
+     * @param int $gridId ID do grid
+     * @param array $gridData Dados do grid
+     * @return bool true se trailing stop foi acionado
+     */
+    private function checkTrailingStop(int $gridId, array $gridData): bool
+    {
+        try {
+            // Verificar se já foi acionado
+            if (($gridData['trailing_stop_triggered'] ?? 'no') === 'yes') {
+                return true;
+            }
+
+            $initialCapital = (float)($gridData['initial_capital_usdc'] ?? 0);
+            $peakCapital = (float)($gridData['peak_capital_usdc'] ?? 0);
+
+            if ($initialCapital <= 0 || $peakCapital <= 0) {
+                return false;
+            }
+
+            $symbol = $gridData['symbol'];
+            $currentCapital = $this->calculateCurrentCapital($symbol);
+
+            if ($currentCapital <= 0) {
+                return false;
+            }
+
+            // 1. Verificar se atingiu lucro mínimo de 10% para ativar trailing
+            $profitPercent = ($currentCapital - $initialCapital) / $initialCapital;
+
+            if ($profitPercent < self::MIN_PROFIT_TO_ACTIVATE_TRAILING) {
+                return false; // Ainda não atingiu lucro mínimo para ativar
+            }
+
+            // 2. Calcular queda do pico
+            $dropFromPeak = ($peakCapital - $currentCapital) / $peakCapital;
+
+            $this->log(
+                "📊 Trailing Stop check: Inicial=\$" . number_format($initialCapital, 2) .
+                    " | Pico=\$" . number_format($peakCapital, 2) .
+                    " | Atual=\$" . number_format($currentCapital, 2) .
+                    " | Lucro=" . number_format($profitPercent * 100, 2) . "%" .
+                    " | Queda do pico=" . number_format($dropFromPeak * 100, 2) . "%",
+                'INFO',
+                'SYSTEM'
+            );
+
+            if ($dropFromPeak >= self::TRAILING_STOP_PERCENT) {
+                $preservedProfit = $currentCapital - $initialCapital;
+                $preservedROI = ($preservedProfit / $initialCapital) * 100;
+
+                $this->log(
+                    "🛡️🛡️🛡️ TRAILING STOP ACIONADO! Grid #$gridId | " .
+                        "Pico: \$" . number_format($peakCapital, 2) . " → Atual: \$" . number_format($currentCapital, 2) .
+                        " (queda " . number_format($dropFromPeak * 100, 2) . "%) | " .
+                        "Lucro preservado: \$" . number_format($preservedProfit, 2) . " (ROI: " . number_format($preservedROI, 2) . "%)",
+                    'WARNING',
+                    'SYSTEM'
+                );
+
+                $this->emergencyShutdown($gridId, $symbol, 'trailing_stop', [
+                    'initial_capital' => $initialCapital,
+                    'peak_capital' => $peakCapital,
+                    'current_capital' => $currentCapital,
+                    'drop_from_peak_percent' => $dropFromPeak,
+                    'preserved_profit' => $preservedProfit,
+                    'preserved_roi_percent' => $preservedROI
+                ]);
+
+                return true;
+            }
+
+            return false;
+        } catch (Exception $e) {
+            $this->log("Erro no checkTrailingStop: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return false;
+        }
+    }
+
+    /**
+     * Procedimento de shutdown emergencial
+     * Cancela ordens, vende BTC a mercado, marca grid como parado
+     *
+     * @param int $gridId ID do grid
+     * @param string $symbol Par de negociação
+     * @param string $reason Motivo: 'stop_loss' ou 'trailing_stop'
+     * @param array $metadata Dados adicionais para log
+     */
+    private function emergencyShutdown(int $gridId, string $symbol, string $reason, array $metadata = []): void
+    {
+        try {
+            $this->log("🚨 Iniciando EMERGENCY SHUTDOWN (motivo: $reason) para grid #$gridId...", 'ERROR', 'SYSTEM');
+
+            // 1. CANCELAR TODAS ORDENS ABERTAS NA BINANCE
+            $this->cancelAllGridOrders($gridId);
+            $this->log("✅ Ordens canceladas", 'INFO', 'SYSTEM');
+
+            // 2. VENDER TODO BTC RESTANTE A MERCADO
+            $baseAsset = str_replace('USDC', '', $symbol);
+            $accountInfo = $this->getAccountInfo(true);
+            $btcBalance = 0.0;
+
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === $baseAsset) {
+                    $btcBalance = (float)$balance['free'];
+                    break;
+                }
+            }
+
+            if ($btcBalance > 0.00001) {
+                $this->log("🔄 Vendendo $btcBalance $baseAsset a mercado...", 'INFO', 'SYSTEM');
+                $this->sellAssetAtMarket($symbol, $btcBalance, $gridId);
+            }
+
+            // 3. MARCAR GRID COMO PARADO
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+
+            $updateData = [
+                'status' => 'stopped',
+                'is_processing' => 'no'
+            ];
+
+            if ($reason === 'stop_loss') {
+                $updateData['stop_loss_triggered'] = 'yes';
+                $updateData['stop_loss_triggered_at'] = date('Y-m-d H:i:s');
+            } elseif ($reason === 'trailing_stop') {
+                $updateData['trailing_stop_triggered'] = 'yes';
+                $updateData['trailing_stop_triggered_at'] = date('Y-m-d H:i:s');
+            }
+
+            $gridsModel->populate($updateData);
+            $gridsModel->save();
+
+            // 4. DESATIVAR TODAS ORDENS RELACIONADAS
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter(["grids_id = '{$gridId}'"]);
+            $gridsOrdersModel->load_data();
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $model = new grids_orders_model();
+                $model->set_filter(["idx = '{$gridOrder['idx']}'"]);
+                $model->populate(['active' => 'no']);
+                $model->save();
+            }
+
+            // 5. LIMPAR CACHE EM MEMÓRIA
+            unset($this->activeGrids[$symbol]);
+
+            // 6. SALVAR LOG DO EVENTO
+            $this->saveGridLog(
+                $gridId,
+                "emergency_{$reason}",
+                'error',
+                "Emergency shutdown: $reason acionado",
+                $metadata
+            );
+
+            $this->log(
+                "🏁 EMERGENCY SHUTDOWN CONCLUÍDO para grid #$gridId (motivo: $reason)",
+                'ERROR',
+                'SYSTEM'
+            );
+        } catch (Exception $e) {
+            $this->log(
+                "❌ ERRO CRÍTICO no emergency shutdown: " . $e->getMessage(),
+                'ERROR',
+                'SYSTEM'
+            );
+        }
+    }
+
+    /**
+     * Calcula o capital total atual: saldo USDC livre + valor do BTC em USDC
+     *
+     * @param string $symbol Par de negociação
+     * @return float Capital total estimado em USDC
+     */
+    private function calculateCurrentCapital(string $symbol): float
+    {
+        try {
+            $baseAsset = str_replace('USDC', '', $symbol);
+            $accountInfo = $this->getAccountInfo(true);
+
+            $usdcBalance = 0.0;
+            $btcFree = 0.0;
+            $btcLocked = 0.0;
+
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === 'USDC') {
+                    $usdcBalance = (float)$balance['free'] + (float)$balance['locked'];
+                }
+                if ($balance['asset'] === $baseAsset) {
+                    $btcFree = (float)$balance['free'];
+                    $btcLocked = (float)$balance['locked'];
+                }
+            }
+
+            $currentPrice = $this->getCurrentPrice($symbol);
+            $totalBtcValue = ($btcFree + $btcLocked) * $currentPrice;
+
+            return $usdcBalance + $totalBtcValue;
+        } catch (Exception $e) {
+            $this->log("Erro ao calcular capital atual: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return 0.0;
+        }
+    }
+
+    /**
+     * Atualiza campos de tracking de capital no grid (current e peak)
+     *
+     * @param int $gridId ID do grid
+     * @param float $currentCapital Capital atual calculado
+     */
+    private function updateCapitalTracking(int $gridId, float $currentCapital): void
+    {
+        try {
+            $gridData = $this->getGridById($gridId);
+            if (!$gridData) {
+                return;
+            }
+
+            $peakCapital = (float)($gridData['peak_capital_usdc'] ?? 0);
+
+            $updateData = [
+                'current_capital_usdc' => $currentCapital
+            ];
+
+            // Atualizar pico se capital atual é maior
+            if ($currentCapital > $peakCapital) {
+                $updateData['peak_capital_usdc'] = $currentCapital;
+                $this->log(
+                    "📈 Novo pico de capital para grid #$gridId: \$" . number_format($currentCapital, 2) .
+                        " (anterior: \$" . number_format($peakCapital, 2) . ")",
+                    'INFO',
+                    'SYSTEM'
+                );
+            }
+
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate($updateData);
+            $gridsModel->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao atualizar tracking de capital: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * RACE CONDITION: Tenta adquirir lock de processamento para um grid
+     * Verifica se outro processo já está trabalhando neste grid.
+     * Se lock travado há mais de LOCK_TIMEOUT_MINUTES, força liberação (recovery).
+     *
+     * @param int $gridId ID do grid
+     * @return bool true se lock adquirido com sucesso
+     */
+    private function acquireGridLock(int $gridId): bool
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->load_data();
+
+            if (empty($gridsModel->data)) {
+                return false;
+            }
+
+            $grid = $gridsModel->data[0];
+            $isProcessing = ($grid['is_processing'] ?? 'no') === 'yes';
+            $lastMonitorAt = $grid['last_monitor_at'] ?? null;
+
+            if ($isProcessing) {
+                // Verificar se lock travou (timeout)
+                if ($lastMonitorAt) {
+                    $lastMonitorTime = strtotime($lastMonitorAt);
+                    $elapsedSeconds = time() - $lastMonitorTime;
+                    $timeoutSeconds = self::LOCK_TIMEOUT_MINUTES * 60;
+
+                    if ($elapsedSeconds > $timeoutSeconds) {
+                        // Lock travado → forçar liberação (recovery)
+                        $this->log(
+                            "🔓 Lock TRAVADO detectado no grid #$gridId " .
+                                "(último monitor há " . round($elapsedSeconds / 60, 1) . " min). " .
+                                "Forçando liberação (recovery)...",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+                    } else {
+                        // Lock legítimo, outra instância está processando
+                        $this->log(
+                            "🔒 Grid #$gridId bloqueado por outra instância " .
+                                "(último monitor há " . round($elapsedSeconds / 60, 1) . " min). Lock legítimo.",
+                            'INFO',
+                            'SYSTEM'
+                        );
+                        return false;
+                    }
+                } else {
+                    // is_processing=yes mas sem timestamp → situação anômala → forçar liberação
+                    $this->log(
+                        "🔓 Lock sem timestamp no grid #$gridId. Forçando liberação...",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                }
+            }
+
+            // Adquirir lock
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate([
+                'is_processing' => 'yes',
+                'last_monitor_at' => date('Y-m-d H:i:s')
+            ]);
+            $gridsModel->save();
+
+            $this->log("🔒 Lock adquirido para grid #$gridId", 'INFO', 'SYSTEM');
+            return true;
+        } catch (Exception $e) {
+            $this->log("Erro ao adquirir lock: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return false;
+        }
+    }
+
+    /**
+     * RACE CONDITION: Libera lock de processamento do grid
+     * Deve ser sempre chamado em bloco finally para garantir liberação
+     *
+     * @param int $gridId ID do grid
+     */
+    private function releaseGridLock(int $gridId): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate([
+                'is_processing' => 'no'
+            ]);
+            $gridsModel->save();
+
+            $this->log("🔓 Lock liberado para grid #$gridId", 'INFO', 'SYSTEM');
+        } catch (Exception $e) {
+            $this->log("Erro ao liberar lock do grid #$gridId: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * FEE THRESHOLD: Valida se um trade é lucrativo após descontar taxas
+     * 
+     * Cálculo:
+     * - expected_gross_profit = capital × grid_spacing
+     * - total_fees = capital × 0.002 (0.1% buy + 0.1% sell)
+     * - expected_net_profit = gross - fees
+     * - Viável se net_profit >= threshold dinâmico
+     *
+     * @param float $capitalUsdc Capital em USDC da ordem
+     * @param string $symbol Par de negociação
+     * @param bool $isOrphanRecovery Se é recuperação de BTC órfão (sempre permite)
+     * @return bool true se trade é viável
+     */
+    private function isTradeViable(float $capitalUsdc, string $symbol, bool $isOrphanRecovery = false): bool
+    {
+        // Ordens de recuperação de BTC órfão SEMPRE são permitidas (proteção de capital)
+        if ($isOrphanRecovery) {
+            return true;
+        }
+
+        try {
+            $gridSpacing = $this->getGridSpacing($symbol);
+            $expectedGrossProfit = $capitalUsdc * $gridSpacing;
+            $totalFees = $capitalUsdc * (self::FEE_PERCENT * 2); // buy fee + sell fee
+            $expectedNetProfit = $expectedGrossProfit - $totalFees;
+
+            // Threshold dinâmico baseado no capital por nível
+            $minProfit = ($capitalUsdc < 50.0)
+                ? self::MIN_PROFIT_USDC_LOW   // 0.0025 USDC
+                : self::MIN_PROFIT_USDC_HIGH; // 0.25 USDC
+
+            if ($expectedNetProfit < $minProfit) {
+                $this->log(
+                    "💸 Trade inviável: Capital=\$" . number_format($capitalUsdc, 4) .
+                        " | Lucro bruto=\$" . number_format($expectedGrossProfit, 6) .
+                        " | Fees=\$" . number_format($totalFees, 6) .
+                        " | Lucro líquido=\$" . number_format($expectedNetProfit, 6) .
+                        " | Mínimo=\$" . number_format($minProfit, 4),
+                    'INFO',
+                    'TRADE'
+                );
+                return false;
+            }
+
+            return true;
+        } catch (Exception $e) {
+            $this->log("Erro na validação de viabilidade: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return true; // Em caso de erro, permitir (conservador)
+        }
+    }
+
+    /**
+     * Rotação de logs: remove logs com mais de LOG_RETENTION_DAYS dias
+     * Previne overflow de disco no servidor
+     */
+    private function rotateOldLogs(): void
+    {
+        try {
+            $basePath = $this->logPath ?: rtrim(sys_get_temp_dir(), '/') . '/';
+            $logFiles = [
+                $basePath . self::ERROR_LOG,
+                $basePath . self::API_LOG,
+                $basePath . self::TRADE_LOG
+            ];
+
+            $maxAgeSeconds = self::LOG_RETENTION_DAYS * 86400;
+
+            foreach ($logFiles as $logFile) {
+                if (!file_exists($logFile)) {
+                    continue;
+                }
+
+                $fileAge = time() - filemtime($logFile);
+
+                if ($fileAge > $maxAgeSeconds) {
+                    // Arquivo mais antigo que o limite → arquivar e limpar
+                    $archivePath = $logFile . '.' . date('Y-m-d') . '.bak';
+                    @rename($logFile, $archivePath);
+                    $this->log(
+                        "📁 Log rotacionado: " . basename($logFile) . " → " . basename($archivePath),
+                        'INFO',
+                        'SYSTEM'
+                    );
+                }
+            }
+
+            // Limpar backups antigos (mais de 2× retention)
+            $backupPattern = $basePath . '*.bak';
+            $backups = glob($backupPattern);
+            if ($backups) {
+                foreach ($backups as $backup) {
+                    $backupAge = time() - filemtime($backup);
+                    if ($backupAge > ($maxAgeSeconds * 2)) {
+                        @unlink($backup);
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            // Silenciar erros de rotação para não impactar o bot
+        }
+    }
+
     // ========== MÉTODOS DE BANCO DE DADOS ==========
 
     /**
@@ -2186,6 +2820,7 @@ class setup_controller
 
     /**
      * Salva a configuração de um novo grid no banco
+     * Inclui campos de proteção: initial_capital, peak_capital, flags de stop
      */
     private function saveGridConfig(
         string $symbol,
@@ -2218,7 +2853,17 @@ class setup_controller
                 'capital_allocated_usdc' => $capitalAllocated,
                 'capital_per_level' => $capitalPerLevel,
                 'accumulated_profit_usdc' => 0.0,
-                'current_price' => $centerPrice
+                'current_price' => $centerPrice,
+                // Campos de proteção
+                'initial_capital_usdc' => $capitalAllocated,
+                'peak_capital_usdc' => $capitalAllocated,
+                'current_capital_usdc' => $capitalAllocated,
+                'stop_loss_triggered' => 'no',
+                'stop_loss_triggered_at' => null,
+                'trailing_stop_triggered' => 'no',
+                'trailing_stop_triggered_at' => null,
+                'is_processing' => 'no',
+                'last_monitor_at' => null
             ]);
 
             $gridId = $gridsModel->save();
@@ -2226,6 +2871,15 @@ class setup_controller
             if (!$gridId) {
                 throw new Exception("Falha ao salvar grid config: save() retornou vazio");
             }
+
+            $this->log(
+                "📊 Grid #$gridId criado com proteções: " .
+                    "Stop-Loss=" . (self::ENABLE_STOP_LOSS ? 'ON' : 'OFF') . " (" . (self::MAX_DRAWDOWN_PERCENT * 100) . "%) | " .
+                    "Trailing=" . (self::ENABLE_TRAILING_STOP ? 'ON' : 'OFF') . " (" . (self::TRAILING_STOP_PERCENT * 100) . "%) | " .
+                    "Capital inicial: \$" . number_format($capitalAllocated, 2),
+                'INFO',
+                'SYSTEM'
+            );
 
             return $gridId;
         } catch (Exception $e) {
