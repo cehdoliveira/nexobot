@@ -1222,9 +1222,13 @@ class setup_controller
                         continue;
                     }
 
-                    // Calcular preço de venda para RECOVERY (ligeiramente abaixo do market para garantir execução)
-                    // Recovery SELLs devem executar RÁPIDO, não esperar por o mercado subir
-                    $sellPrice = $currentPrice * (1 - $gridSpacing * 0.5);  // 0.5% abaixo do preço atual
+                    // Calcular preço mínimo de venda para garantir lucro
+                    $buyPrice = (float)$orphan['buy_price'];
+                    $minSellPrice = $buyPrice * (1 + $gridSpacing); // Preço da compra + grid spacing
+
+                    // Se mercado atual permite lucro maior, usar mercado
+                    // Se mercado caiu, usar preço mínimo para garantir lucro (pode demorar mais para executar)
+                    $sellPrice = max($minSellPrice, $currentPrice);
 
                     // Criar ordem de venda pareada com o BTC órfão
                     $sellOrderId = $this->placeSellOrder(
@@ -1240,10 +1244,15 @@ class setup_controller
                         $successCount++;
                         $freeBtc -= $orphanQty; // Descontar do saldo disponível
 
+                        $buyPrice = (float)$orphan['buy_price'];
+                        $profitPct = (($sellPrice - $buyPrice) / $buyPrice) * 100;
+                        $strategy = ($sellPrice > $currentPrice) ? 'lucro garantido' : 'preço de mercado';
+
                         $this->log(
-                            "✅ Venda de recuperação criada: Nível {$orphan['grid_level']} | " .
-                                "Qty: " . number_format($orphanQty, 8) . " $baseAsset @ $" .
-                                number_format($sellPrice, 2) . " | Pareada com BUY idx={$orphan['grids_orders_idx']}",
+                            "✅ Recovery SELL criada: Nível {$orphan['grid_level']} | " .
+                                "Qty: " . number_format($orphanQty, 8) . " $baseAsset | " .
+                                "Compra: $" . number_format($buyPrice, 2) . " → Venda: $" . number_format($sellPrice, 2) . 
+                                " (" . number_format($profitPct, 2) . "%, $strategy)",
                             'SUCCESS',
                             'TRADE'
                         );
@@ -1491,16 +1500,10 @@ class setup_controller
                         return true; // SELL executada e processada (nova BUY já foi criada)
                     }
 
-                    // Se FILLED mas is_processed=no, o BTC foi vendido mas não foi processado
-                    // Neste caso, NÃO há BTC órfão (foi vendido), mas precisa processar a SELL
+                    // Se FILLED mas is_processed=no, o BTC foi vendido mas não foi processado ainda
+                    // Será processado no próximo ciclo (handleSellOrderFilled)
                     if ($order['status'] === 'FILLED' && $gridOrder['is_processed'] === 'no') {
-                        $this->log(
-                            "[WARN] SELL FILLED mas não processada! order_id={$order['idx']}, " .
-                                "paired_to_buy=$buyGridOrderIdx. BTC JÁ FOI VENDIDO.",
-                            'WARNING',
-                            'SYSTEM'
-                        );
-                        return true; // BTC não está órfão (foi vendido)
+                        return true; // BTC não está órfão (foi vendido, aguardando processamento)
                     }
                 }
             }
@@ -1662,9 +1665,12 @@ class setup_controller
                 // Atualizar lucro acumulado do grid
                 $this->incrementGridProfit($gridId, $profit);
 
+                $profitLabel = $profit >= 0 ? 'Lucro' : 'Prejuízo';
+                $profitColor = $profit >= 0 ? 'SUCCESS' : 'WARNING';
+
                 $this->log(
-                    "PAR COMPLETO em $symbol: Lucro = $" . number_format($profit, 4) . " (Compra: \$$buyPrice | Venda: \$$sellPrice)",
-                    'SUCCESS',
+                    "PAR COMPLETO em $symbol: $profitLabel = $" . number_format(abs($profit), 4) . " | Compra: \$$buyPrice × $executedQty BTC | Venda: \$$sellPrice",
+                    $profitColor,
                     'TRADE'
                 );
 
