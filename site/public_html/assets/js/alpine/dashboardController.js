@@ -141,13 +141,23 @@ document.addEventListener('alpine:init', () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'clearCache' })
         });
-      } catch (e) {
-        // Silent
-      }
 
-      setTimeout(() => {
-        window.location.reload();
-      }, 300);
+        // Fetch fresh data via AJAX
+        const success = await this.fetchDashboardData();
+
+        if (success) {
+          this.showToast('Dados atualizados', 'success');
+        } else {
+          // Fallback: reload page if AJAX fetch failed
+          window.location.reload();
+          return;
+        }
+      } catch (e) {
+        console.error('Refresh error:', e);
+        this.showToast('Erro ao atualizar', 'error');
+      } finally {
+        this.isRefreshing = false;
+      }
     },
 
     startAutoRefresh() {

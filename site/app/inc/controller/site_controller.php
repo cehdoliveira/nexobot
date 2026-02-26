@@ -1255,20 +1255,14 @@ class site_controller
                 exit;
             }
 
-            // Limpar todo o cache
-            $flushed = $cache->flush();
+            // Limpar apenas chaves de cache de queries (preservar sessões!)
+            // O DOLModel usa o padrão 'query:{tabela}:{hash}' para cache
+            $deleted = $cache->deletePattern('query:*');
 
-            if ($flushed) {
-                echo json_encode([
-                    'success' => true,
-                    'message' => 'Cache limpo com sucesso'
-                ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            } else {
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Erro ao limpar cache'
-                ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            }
+            echo json_encode([
+                'success' => true,
+                'message' => "Cache limpo com sucesso ($deleted chaves removidas)"
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         } catch (Exception $e) {
             error_log("Erro ao limpar cache: " . $e->getMessage());
             echo json_encode([

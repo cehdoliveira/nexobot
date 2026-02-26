@@ -67,8 +67,6 @@ $dashboardJson = json_encode([
     'currentPrice' => $currentPrice,
     'symbol' => $gridSymbol
 ], JSON_UNESCAPED_UNICODE);
-
-$userName = $_SESSION[constant("cAppKey")]["credential"]["name"] ?? 'Trader';
 ?>
 
 <!-- JSON data for Alpine.js hydration -->
@@ -120,19 +118,6 @@ $userName = $_SESSION[constant("cAppKey")]["credential"]["name"] ?? 'Trader';
                             title="Alternar tema" style="min-width:36px; min-height:36px;">
                         <i class="bi bi-moon-stars"></i>
                     </button>
-
-                    <!-- Settings link -->
-                    <a class="btn btn-sm btn-outline-light border-0 d-none d-md-inline-flex" href="<?php echo $GLOBALS['config_url']; ?>"
-                       title="Configurações" style="min-width:36px; min-height:36px;">
-                        <i class="bi bi-gear"></i>
-                    </a>
-
-                    <!-- Refresh -->
-                    <button class="btn btn-sm btn-outline-light border-0" @click="refreshData()"
-                            :disabled="isRefreshing" title="Atualizar dados"
-                            style="min-width:36px; min-height:36px;">
-                        <i class="bi bi-arrow-clockwise" :class="{ 'spin': isRefreshing }"></i>
-                    </button>
                 </div>
             </div>
         </div>
@@ -147,9 +132,6 @@ $userName = $_SESSION[constant("cAppKey")]["credential"]["name"] ?? 'Trader';
                 <h1 class="fs-5 fw-bold mb-0" style="color: var(--dash-text);">
                     <i class="bi bi-grid-3x3-gap-fill"></i> Grid Trading Dashboard
                 </h1>
-                <p class="mb-0 small" style="color: var(--dash-text-muted);">
-                    Bem-vindo, <strong><?php echo htmlspecialchars($userName); ?></strong>
-                </p>
             </div>
 
             <!-- Desktop Control Toolbar -->
@@ -781,14 +763,14 @@ $userName = $_SESSION[constant("cAppKey")]["credential"]["name"] ?? 'Trader';
             <i class="bi" :class="autoRefresh ? 'bi-pause-circle-fill' : 'bi-play-circle'"></i>
             <span x-text="autoRefresh ? 'Pausar' : 'Auto'"></span>
         </button>
-        <a class="ctrl-btn" href="<?php echo $GLOBALS['config_url']; ?>" aria-label="Configurações">
-            <i class="bi bi-gear"></i>
-            <span>Config</span>
-        </a>
         <?php if ($gridStatus === 'active'): ?>
+        <button class="ctrl-btn" @click="stopBot()" aria-label="Parar bot">
+            <i class="bi bi-stop-circle"></i>
+            <span>Parar</span>
+        </button>
         <button class="ctrl-btn ctrl-danger" @click="emergencyShutdown()" aria-label="Desligamento de emergência">
             <i class="bi bi-exclamation-triangle-fill"></i>
-            <span>Parar</span>
+            <span>Emerg.</span>
         </button>
         <?php endif; ?>
     </div>
