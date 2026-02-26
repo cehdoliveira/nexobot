@@ -215,17 +215,17 @@ class site_controller
         foreach ($allGrids as &$grid) {  // Usar referência (&) para modificar o array original
             $gridId = $grid['idx'];
 
-            // Buscar ordens deste grid (apenas as ORIGINAIS, sem paired_order_id)
-            // Ordens originais = criadas quando o grid foi montado
-            // Ordens pareadas = criadas dinamicamente após execução de compra
+            // Buscar TODAS as ordens deste grid (incluindo pareadas)
+            // Ordens pareadas (sells criadas após execução de buys) também devem ser
+            // incluídas para mostrar corretamente no ladder dinâmico
             $allGridOrdersForGrid = array_filter($allGridOrders, function ($o) use ($gridId) {
-                return ($o['grids_id'] ?? 0) == $gridId &&
-                    (!isset($o['paired_order_id']) || (int)($o['paired_order_id'] ?? 0) === 0);
+                return ($o['grids_id'] ?? 0) == $gridId;
             });
 
             // Para cada par (grid_level, side) manter apenas a ordem mais recente (maior idx).
             // Isso evita múltiplas entradas "Nível 1" causadas por ordens históricas já executadas
             // no mesmo nível — cada nível deve exibir apenas seu estado atual.
+            // Usar order idx como fallback quando grid_level é 0 para evitar colisões
             $latestPerLevelSide = [];
             foreach ($allGridOrdersForGrid as $gridOrder) {
                 $order = $gridOrder['orders'][0] ?? null;
@@ -234,7 +234,7 @@ class site_controller
                 }
                 $side = $order['side'] ?? 'UNKNOWN';
                 $level = (int)($gridOrder['grid_level'] ?? 0);
-                $key = $level . '_' . $side;
+                $key = ($level > 0 ? $level : 'oid_' . ($gridOrder['idx'] ?? 0)) . '_' . $side;
                 $currentIdx = (int)($gridOrder['idx'] ?? 0);
                 if (!isset($latestPerLevelSide[$key]) || $currentIdx > $latestPerLevelSide[$key]['idx']) {
                     $latestPerLevelSide[$key] = $gridOrder;
@@ -1785,32 +1785,34 @@ class site_controller
             foreach ($allGrids as $grid) {
                 $gridId = $grid['idx'];
 
-                // Filtrar ordens deste grid (originais, sem paired_order_id)
+                // Filtrar TODAS as ordens deste grid (incluindo pareadas)
+                // Para o ladder dinâmico, precisamos ver todas as ordens abertas,
+                // incluindo sells criadas após execução de buys (paired orders)
                 $allGridOrdersForGrid = array_filter($allGridOrders, function ($o) use ($gridId) {
-                    return ($o['grids_id'] ?? 0) == $gridId &&
-                        (!isset($o['paired_order_id']) || (int)($o['paired_order_id'] ?? 0) === 0);
+                    return ($o['grids_id'] ?? 0) == $gridId;
+                });
+
+                // Filtrar apenas ordens abertas (NEW ou PARTIALLY_FILLED)
+                $openGridOrders = array_filter($allGridOrdersForGrid, function ($o) {
+                    $status = $o['orders'][0]['status'] ?? '';
+                    return in_array($status, ['NEW', 'PARTIALLY_FILLED']);
                 });
 
                 // Deduplicar: manter apenas a ordem mais recente por (grid_level, side)
+                // Usar order idx como fallback quando grid_level é 0 para evitar colisões
                 $latestPerLevelSide = [];
-                foreach ($allGridOrdersForGrid as $gridOrder) {
+                foreach ($openGridOrders as $gridOrder) {
                     $order = $gridOrder['orders'][0] ?? null;
                     if (!$order) continue;
                     $side = $order['side'] ?? 'UNKNOWN';
                     $level = (int)($gridOrder['grid_level'] ?? 0);
-                    $key = $level . '_' . $side;
+                    $key = ($level > 0 ? $level : 'oid_' . ($gridOrder['idx'] ?? 0)) . '_' . $side;
                     $currentIdx = (int)($gridOrder['idx'] ?? 0);
                     if (!isset($latestPerLevelSide[$key]) || $currentIdx > $latestPerLevelSide[$key]['idx']) {
                         $latestPerLevelSide[$key] = $gridOrder;
                     }
                 }
-                $gridOrders = array_values($latestPerLevelSide);
-
-                // Filtrar apenas ordens abertas (NEW ou PARTIALLY_FILLED)
-                $openGridOrders = array_filter($gridOrders, function ($o) {
-                    $status = $o['orders'][0]['status'] ?? '';
-                    return in_array($status, ['NEW', 'PARTIALLY_FILLED']);
-                });
+                $openGridOrders = array_values($latestPerLevelSide);
 
                 $buyLevels = [];
                 $sellLevels = [];
