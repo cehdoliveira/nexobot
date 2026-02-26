@@ -700,33 +700,9 @@ class setup_controller
                         }
                     }
 
-                    // Cancelar QUALQUER SELL que fica NEW (não vai executar)
-                    if ($side === 'SELL' && $status === 'NEW') {
-                        $this->log(
-                            "⚠️ SELL ID={$dbOrderIdx} ficou NEW. Cancelando...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
-
-                        try {
-                            $this->client->deleteOrder($symbol, $binanceOrderId);
-                            $ordersModel->load_byIdx($dbOrderIdx);
-                            $ordersModel->populate(['status' => 'CANCELED']);
-                            $ordersModel->save();
-                            $this->log(
-                                "✅ SELL cancelada",
-                                'SUCCESS',
-                                'SYSTEM'
-                            );
-                            $canceledCount++;
-                        } catch (Exception $e) {
-                            $this->log(
-                                "❌ Erro ao cancelar SELL: " . $e->getMessage(),
-                                'ERROR',
-                                'SYSTEM'
-                            );
-                        }
-                    }
+                    // NOTA: NÃO cancelar SELLs NEW indiscriminadamente!
+                    // SELLs NEW são ordens válidas esperando execução (BTC bloqueado).
+                    // Apenas o bloco anterior (> 15 min) lida com ordens que ficaram paradas tempo demais.
                 } catch (Exception $e) {
                     continue;
                 }
@@ -1162,21 +1138,33 @@ class setup_controller
                             continue;
                         }
 
-                        // SE A SELL ESTÁ EM UM STATUS DIFERENTE DE FILLED E AINDA PRECISA DE MAIS VENDA
-                        if (in_array($sellStatus, ['NEW', 'PARTIALLY_FILLED']) && $sellQty < $buyQty) {
-                            $orphanedQty = round($buyQty - $sellQty, 8);
+                        // SE A SELL ESTÁ NEW ou PARTIALLY_FILLED, o BTC está BLOQUEADO na ordem
+                        // na Binance. NÃO é órfão — está apenas esperando execução.
+                        // executed_qty=0 para NEW é NORMAL (nada executou ainda, BTC travado)
+                        if (in_array($sellStatus, ['NEW', 'PARTIALLY_FILLED'])) {
+                            $alreadyPairedCount++;
+                            continue;
+                        }
 
-                            // BTC ÓRFÃO DETECTADO (diferença entre comprado e vendido)
+                        // SE A SELL FOI CANCELED/EXPIRED/REJECTED, o BTC foi devolvido ao saldo
+                        // Precisa criar nova SELL para recuperar o BTC órfão
+                        if (in_array($sellStatus, ['CANCELED', 'EXPIRED', 'REJECTED'])) {
                             $orphanedBuys[] = [
                                 'grids_orders_idx' => $gridOrder['idx'],
                                 'grid_level' => $gridOrder['grid_level'],
                                 'buy_price' => (float)$order['price'],
-                                'executed_qty' => $orphanedQty,
+                                'executed_qty' => (float)$order['executed_qty'],
                                 'symbol' => $order['symbol']
                             ];
+                            $this->log(
+                                "[RecoverOrphanedBtc] BUY idx={$gridOrder['idx']} tem SELL pareada com status={$sellStatus}. BTC devolvido, criando nova SELL.",
+                                'WARNING',
+                                'SYSTEM'
+                            );
                             continue;
                         }
 
+                        // Qualquer outro status desconhecido: considerar como pareada por segurança
                         $alreadyPairedCount++;
                         continue;
                     }
@@ -1235,30 +1223,16 @@ class setup_controller
 
                 if ($freeBtc < $totalOrphanedQty) {
                     $this->log(
-                        "⚠️ Saldo livre insuficiente! Livre=$freeBtc, Necessário=$totalOrphanedQty. " .
-                            "Há " . number_format($lockedBtc, 8) . " $baseAsset bloqueado em outras ordens. " .
-                            "Sincronizando ordens abertas com Binance...",
+                        "⚠️ Saldo livre insuficiente para recuperar BTC órfão! " .
+                            "Livre=" . number_format($freeBtc, 8) . ", Necessário=" . number_format($totalOrphanedQty, 8) . ". " .
+                            "Há " . number_format($lockedBtc, 8) . " $baseAsset bloqueado em ordens ativas. " .
+                            "Aguardando execução ou cancelamento de ordens existentes antes de criar recovery SELLs.",
                         'WARNING',
                         'SYSTEM'
                     );
-
-                    // Tentar liberar BTC cancelando ordens obsoletas
-                    $this->cancelObsoleteOrders($gridId, $symbol);
-
-                    // Re-verificar saldo após cancelamento
-                    $accountInfo = $this->getAccountInfo(true);
-                    foreach ($accountInfo['balances'] as $balance) {
-                        if ($balance['asset'] === $baseAsset) {
-                            $freeBtc = (float)$balance['free'];
-                            break;
-                        }
-                    }
-
-                    $this->log(
-                        "[RecoverOrphanedBtc] Saldo após cancelamento: " . number_format($freeBtc, 8) . " $baseAsset",
-                        'INFO',
-                        'SYSTEM'
-                    );
+                    // NÃO cancelar ordens existentes! O BTC bloqueado está em SELLs válidas.
+                    // A recuperação será tentada novamente no próximo ciclo quando houver saldo livre.
+                    return;
                 }
             } catch (Exception $e) {
                 $this->log(
