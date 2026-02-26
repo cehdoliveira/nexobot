@@ -168,3 +168,323 @@ body.theme-dark .table-responsive {
 body.theme-dark .card-body {
   background-color: #151923 !important;
 }
+
+/* ============================================
+   NEXO DESIGN SYSTEM - Shared Components
+   ============================================ */
+
+/* === Page Wrappers === */
+.nexo-page-wrapper {
+  background-color: var(--dash-bg, #f5f7fa);
+  min-height: calc(100vh - 80px);
+}
+
+.nexo-page-centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 120px);
+  padding: 1.5rem 1rem;
+}
+
+/* === Login Page === */
+.nexo-login-container {
+  width: 100%;
+  max-width: 420px;
+}
+
+.nexo-login-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--dash-info, #3b82f6), #6366f1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 1.75rem;
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.25);
+}
+
+/* === Form Components === */
+.nexo-form-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--dash-text, #2d3748);
+  margin-bottom: 0.35rem;
+}
+
+.nexo-form-input {
+  display: block;
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--dash-text, #2d3748);
+  background-color: var(--dash-card-bg, #fff);
+  border: 1px solid var(--dash-border, #e2e8f0);
+  border-radius: var(--dash-radius-sm, 0.5rem);
+  transition: border-color 0.2s, box-shadow 0.2s;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.nexo-form-input:focus {
+  border-color: var(--dash-info, #3b82f6);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.nexo-form-input::placeholder {
+  color: var(--dash-text-secondary, #a0aec0);
+}
+
+.nexo-form-input.is-invalid {
+  border-color: var(--dash-danger, #ef4444);
+}
+
+.nexo-form-input.is-invalid:focus {
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+}
+
+.nexo-form-input.font-mono {
+  font-family: var(--dash-font-mono, 'Consolas', monospace);
+  font-size: 0.8rem;
+}
+
+/* Input Group */
+.nexo-input-group {
+  display: flex;
+  position: relative;
+}
+
+.nexo-input-group .nexo-form-input {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  flex: 1;
+}
+
+.nexo-input-addon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.75rem;
+  background: var(--dash-card-bg, #fff);
+  border: 1px solid var(--dash-border, #e2e8f0);
+  border-left: none;
+  border-radius: 0 var(--dash-radius-sm, 0.5rem) var(--dash-radius-sm, 0.5rem) 0;
+  color: var(--dash-text-muted, #718096);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  font-size: 0.9rem;
+}
+
+.nexo-input-addon:hover {
+  background: var(--dash-bg, #f5f7fa);
+  color: var(--dash-text, #2d3748);
+}
+
+/* === Buttons === */
+.nexo-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, var(--dash-info, #3b82f6), #2563eb);
+  border: none;
+  border-radius: var(--dash-radius-sm, 0.5rem);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.nexo-btn-primary:hover {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
+  transform: translateY(-1px);
+  color: #fff;
+}
+
+.nexo-btn-primary:active {
+  transform: translateY(0);
+}
+
+.nexo-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.nexo-btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--dash-text-muted, #718096);
+  background: transparent;
+  border: 1px solid var(--dash-border, #e2e8f0);
+  border-radius: var(--dash-radius-sm, 0.5rem);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.nexo-btn-outline:hover {
+  color: var(--dash-text, #2d3748);
+  border-color: var(--dash-text-muted, #718096);
+  background: var(--dash-card-bg, #fff);
+}
+
+/* === Alerts === */
+.nexo-alert {
+  padding: 0.75rem 1rem;
+  border-radius: var(--dash-radius-sm, 0.5rem);
+  font-size: 0.85rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.nexo-alert i {
+  margin-top: 0.1rem;
+  flex-shrink: 0;
+}
+
+.nexo-alert-danger {
+  background: var(--dash-danger-bg, rgba(239, 68, 68, 0.1));
+  color: var(--dash-danger, #ef4444);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.nexo-alert-success {
+  background: var(--dash-success-bg, rgba(16, 185, 129, 0.1));
+  color: var(--dash-success, #10b981);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.nexo-alert-warning {
+  background: var(--dash-warning-bg, rgba(245, 158, 11, 0.1));
+  color: var(--dash-warning, #f59e0b);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+/* === Environment Selector (Config Page) === */
+.nexo-env-selector {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.nexo-env-option {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border: 2px solid var(--dash-border, #e2e8f0);
+  border-radius: var(--dash-radius, 0.75rem);
+  cursor: pointer;
+  transition: all 0.2s;
+  flex: 1;
+  min-width: 180px;
+  background: var(--dash-card-bg, #fff);
+}
+
+.nexo-env-option:hover {
+  border-color: var(--dash-info, #3b82f6);
+  box-shadow: var(--dash-shadow, 0 1px 3px rgba(0,0,0,0.06));
+}
+
+.nexo-env-option.active {
+  border-color: var(--dash-info, #3b82f6);
+  background: var(--dash-info-bg, rgba(59, 130, 246, 0.1));
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.nexo-env-option input[type="radio"] {
+  display: none;
+}
+
+.nexo-env-option i {
+  font-size: 1.25rem;
+  color: var(--dash-text-muted, #718096);
+}
+
+.nexo-env-option.active i {
+  color: var(--dash-info, #3b82f6);
+}
+
+/* === Dark Theme Overhauls for Shared Components === */
+body.theme-dark .nexo-page-wrapper {
+  background-color: var(--dash-bg);
+}
+
+body.theme-dark .nexo-form-input {
+  background-color: var(--dash-card-bg);
+  border-color: var(--dash-border);
+  color: var(--dash-text);
+}
+
+body.theme-dark .nexo-input-addon {
+  background-color: var(--dash-card-bg);
+  border-color: var(--dash-border);
+  color: var(--dash-text-muted);
+}
+
+body.theme-dark .nexo-input-addon:hover {
+  background-color: var(--dash-bg);
+}
+
+body.theme-dark .nexo-env-option {
+  background: var(--dash-card-bg);
+  border-color: var(--dash-border);
+}
+
+body.theme-dark .nexo-env-option:hover {
+  border-color: var(--dash-info);
+}
+
+body.theme-dark .nexo-btn-outline {
+  color: var(--dash-text-muted);
+  border-color: var(--dash-border);
+}
+
+body.theme-dark .nexo-btn-outline:hover {
+  color: var(--dash-text);
+  border-color: var(--dash-text-muted);
+  background: var(--dash-card-bg);
+}
+
+/* === Mobile Adjustments for Login/Config === */
+@media (max-width: 576px) {
+  .nexo-page-centered {
+    padding: 1rem 0.75rem;
+    align-items: flex-start;
+    padding-top: 2rem;
+  }
+
+  .nexo-login-container {
+    max-width: 100%;
+  }
+
+  .nexo-login-icon {
+    width: 52px;
+    height: 52px;
+    font-size: 1.4rem;
+  }
+
+  .nexo-env-selector {
+    flex-direction: column;
+  }
+
+  .nexo-env-option {
+    min-width: 100%;
+  }
+}
