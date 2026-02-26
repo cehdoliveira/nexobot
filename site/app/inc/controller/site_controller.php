@@ -48,6 +48,10 @@ class site_controller
                         $this->ajaxGetGridDashboardData();
                         exit;
 
+                    case 'getGridLevels':
+                        $this->ajaxGetGridLevels();
+                        exit;
+
                     case 'clearCache':
                         $this->clearCache();
                         exit;
@@ -214,9 +218,9 @@ class site_controller
             // Buscar ordens deste grid (apenas as ORIGINAIS, sem paired_order_id)
             // Ordens originais = criadas quando o grid foi montado
             // Ordens pareadas = criadas dinamicamente após execução de compra
-            $allGridOrdersForGrid = array_filter($allGridOrders, function($o) use ($gridId) {
-                return ($o['grids_id'] ?? 0) == $gridId && 
-                       (!isset($o['paired_order_id']) || (int)($o['paired_order_id'] ?? 0) === 0);
+            $allGridOrdersForGrid = array_filter($allGridOrders, function ($o) use ($gridId) {
+                return ($o['grids_id'] ?? 0) == $gridId &&
+                    (!isset($o['paired_order_id']) || (int)($o['paired_order_id'] ?? 0) === 0);
             });
 
             // Para cada par (grid_level, side) manter apenas a ordem mais recente (maior idx).
@@ -500,7 +504,7 @@ class site_controller
         $totalOrders = count($allOrdersforDisplay);
         $totalPages = ceil($totalOrders / $itemsPerPage);
         $currentPage = min($currentPage, max(1, $totalPages)); // Ajustar página se exceder total
-        
+
         $startIndex = ($currentPage - 1) * $itemsPerPage;
         $ordersForDisplay = array_slice($allOrdersforDisplay, $startIndex, $itemsPerPage);
 
@@ -1700,6 +1704,179 @@ class site_controller
             echo json_encode([
                 'success' => false,
                 'message' => 'Erro ao buscar dados: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Retorna níveis do grid (buy/sell) filtrados para only ordens abertas (NEW/PARTIALLY_FILLED)
+     * Usado para atualização dinâmica do price ladder via AJAX polling
+     */
+    private function ajaxGetGridLevels(): void
+    {
+        try {
+            // Buscar grids ativos
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["active = 'yes'"]);
+            $gridsModel->load_data();
+            $allGrids = $gridsModel->data;
+
+            if (empty($allGrids)) {
+                echo json_encode(['success' => true, 'data' => ['grids' => [], 'currentPrice' => 0]], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            // Buscar preço atual da Binance
+            $firstGrid = $allGrids[0] ?? null;
+            $symbol = $firstGrid['symbol'] ?? 'BTCUSDC';
+            $currentPrice = 0;
+            try {
+                $binanceConfig = BinanceConfig::getActiveCredentials();
+                $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+                $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+                $configurationBuilder->url($binanceConfig['baseUrl']);
+                $api = new SpotRestApi($configurationBuilder->build());
+
+                $priceResponse = $api->tickerPrice($symbol);
+                $priceData = $priceResponse->getData();
+
+                if ($priceData && method_exists($priceData, 'getTickerPriceResponse1')) {
+                    $tickerData = $priceData->getTickerPriceResponse1();
+                    $currentPrice = $tickerData && method_exists($tickerData, 'getPrice') ? (float)$tickerData->getPrice() : 0;
+                } elseif (is_array($priceData) && isset($priceData['price'])) {
+                    $currentPrice = (float)$priceData['price'];
+                }
+            } catch (Exception $e) {
+                $currentPrice = $firstGrid ? (float)($firstGrid['current_price'] ?? 0) : 0;
+            }
+
+            // Buscar ordens de grid
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter(["1=1"]);
+            $gridsOrdersModel->load_data();
+            $gridOrdersData = $gridsOrdersModel->data;
+
+            // Carregar ordens relacionadas
+            $allGridOrders = [];
+            if (!empty($gridOrdersData)) {
+                $orderIds = array_column($gridOrdersData, 'orders_id');
+                $ordersModel = new orders_model();
+                $ordersModel->set_filter([
+                    "1=1",
+                    "idx IN (" . implode(',', array_map('intval', $orderIds)) . ")"
+                ]);
+                $ordersModel->load_data();
+
+                $ordersMap = [];
+                foreach ($ordersModel->data as $order) {
+                    $ordersMap[$order['idx']] = $order;
+                }
+
+                foreach ($gridOrdersData as $gridOrder) {
+                    if (isset($ordersMap[$gridOrder['orders_id']])) {
+                        $gridOrder['orders'] = [$ordersMap[$gridOrder['orders_id']]];
+                        $allGridOrders[] = $gridOrder;
+                    }
+                }
+            }
+
+            // Preparar níveis por grid (mesmo algoritmo do dashboard, filtrado para ordens abertas)
+            $gridsResult = [];
+            foreach ($allGrids as $grid) {
+                $gridId = $grid['idx'];
+
+                // Filtrar ordens deste grid (originais, sem paired_order_id)
+                $allGridOrdersForGrid = array_filter($allGridOrders, function ($o) use ($gridId) {
+                    return ($o['grids_id'] ?? 0) == $gridId &&
+                        (!isset($o['paired_order_id']) || (int)($o['paired_order_id'] ?? 0) === 0);
+                });
+
+                // Deduplicar: manter apenas a ordem mais recente por (grid_level, side)
+                $latestPerLevelSide = [];
+                foreach ($allGridOrdersForGrid as $gridOrder) {
+                    $order = $gridOrder['orders'][0] ?? null;
+                    if (!$order) continue;
+                    $side = $order['side'] ?? 'UNKNOWN';
+                    $level = (int)($gridOrder['grid_level'] ?? 0);
+                    $key = $level . '_' . $side;
+                    $currentIdx = (int)($gridOrder['idx'] ?? 0);
+                    if (!isset($latestPerLevelSide[$key]) || $currentIdx > $latestPerLevelSide[$key]['idx']) {
+                        $latestPerLevelSide[$key] = $gridOrder;
+                    }
+                }
+                $gridOrders = array_values($latestPerLevelSide);
+
+                // Filtrar apenas ordens abertas (NEW ou PARTIALLY_FILLED)
+                $openGridOrders = array_filter($gridOrders, function ($o) {
+                    $status = $o['orders'][0]['status'] ?? '';
+                    return in_array($status, ['NEW', 'PARTIALLY_FILLED']);
+                });
+
+                $buyLevels = [];
+                $sellLevels = [];
+
+                foreach ($openGridOrders as $gridOrder) {
+                    $order = $gridOrder['orders'][0] ?? null;
+                    if (!$order) continue;
+
+                    $orderSide = $order['side'] ?? 'UNKNOWN';
+                    $orderLevel = (int)($gridOrder['grid_level'] ?? 0);
+                    $orderPrice = (float)($order['price'] ?? 0);
+                    $orderQty = (float)($order['quantity'] ?? 0);
+                    $orderStatus = $order['status'] ?? 'NEW';
+
+                    $levelData = [
+                        'level' => $orderLevel,
+                        'price' => $orderPrice,
+                        'quantity' => $orderQty,
+                        'side' => $orderSide,
+                        'status' => $orderStatus,
+                        'order_id' => (int)($order['idx'] ?? 0),
+                        'has_order' => true,
+                        'created_at' => $order['created_at'] ?? null
+                    ];
+
+                    if ($orderSide === 'BUY') {
+                        $buyLevels[] = $levelData;
+                    } elseif ($orderSide === 'SELL') {
+                        $sellLevels[] = $levelData;
+                    }
+                }
+
+                // Ordenar
+                usort($sellLevels, fn($a, $b) => $b['price'] <=> $a['price']); // Descendente (mais alto primeiro)
+                usort($buyLevels, fn($a, $b) => $b['price'] <=> $a['price']);  // Descendente (mais próximo do preço primeiro)
+
+                $gridsResult[] = [
+                    'grid' => [
+                        'idx' => $grid['idx'],
+                        'symbol' => $grid['symbol'] ?? 'BTCUSDC',
+                        'status' => $grid['status'] ?? 'inactive',
+                        'grid_levels' => (int)($grid['grid_levels'] ?? 0),
+                        'grid_spacing_percent' => (float)($grid['grid_spacing_percent'] ?? 0),
+                        'capital_allocated_usdc' => (float)($grid['capital_allocated_usdc'] ?? 0),
+                        'lower_price' => (float)($grid['lower_price'] ?? 0),
+                        'upper_price' => (float)($grid['upper_price'] ?? 0),
+                    ],
+                    'sell_levels' => array_values($sellLevels),
+                    'buy_levels' => array_values($buyLevels),
+                    'total_open' => count($sellLevels) + count($buyLevels),
+                ];
+            }
+
+            echo json_encode([
+                'success' => true,
+                'data' => [
+                    'grids' => $gridsResult,
+                    'currentPrice' => $currentPrice,
+                    'symbol' => $symbol,
+                    'timestamp' => time()
+                ]
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao buscar níveis: ' . $e->getMessage()
             ], JSON_UNESCAPED_UNICODE);
         }
     }

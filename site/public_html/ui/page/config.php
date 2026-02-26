@@ -2,10 +2,10 @@
     <div class="container-fluid px-3 px-md-4 py-4" style="max-width: 1100px;">
 
         <?php
-            $stored = $configData['stored'] ?? [];
-            $active = $configData['active'] ?? [];
-            $flash = $configData['flash'] ?? null;
-            $currentMode = $active['mode'] ?? 'dev';
+        $stored = $configData['stored'] ?? [];
+        $active = $configData['active'] ?? [];
+        $flash = $configData['flash'] ?? null;
+        $currentMode = $active['mode'] ?? 'dev';
         ?>
 
         <!-- Page Header -->
@@ -50,8 +50,8 @@
                                 <div class="nexo-env-selector">
                                     <label class="nexo-env-option <?php echo ($stored['mode'] ?? 'dev') === 'dev' ? 'active' : ''; ?>">
                                         <input type="radio" name="mode" value="dev"
-                                               <?php echo ($stored['mode'] ?? 'dev') === 'dev' ? 'checked' : ''; ?>
-                                               onchange="toggleCredentialFields(); this.closest('.nexo-env-selector').querySelectorAll('.nexo-env-option').forEach(e => e.classList.remove('active')); this.closest('.nexo-env-option').classList.add('active');">
+                                            <?php echo ($stored['mode'] ?? 'dev') === 'dev' ? 'checked' : ''; ?>
+                                            onchange="toggleCredentialFields(); this.closest('.nexo-env-selector').querySelectorAll('.nexo-env-option').forEach(e => e.classList.remove('active')); this.closest('.nexo-env-option').classList.add('active');">
                                         <i class="bi bi-shield-check"></i>
                                         <div>
                                             <span class="d-block fw-semibold" style="font-size: 0.85rem;">Testnet</span>
@@ -60,8 +60,8 @@
                                     </label>
                                     <label class="nexo-env-option <?php echo ($stored['mode'] ?? '') === 'prod' ? 'active' : ''; ?>">
                                         <input type="radio" name="mode" value="prod"
-                                               <?php echo ($stored['mode'] ?? '') === 'prod' ? 'checked' : ''; ?>
-                                               onchange="toggleCredentialFields(); this.closest('.nexo-env-selector').querySelectorAll('.nexo-env-option').forEach(e => e.classList.remove('active')); this.closest('.nexo-env-option').classList.add('active');">
+                                            <?php echo ($stored['mode'] ?? '') === 'prod' ? 'checked' : ''; ?>
+                                            onchange="toggleCredentialFields(); this.closest('.nexo-env-selector').querySelectorAll('.nexo-env-option').forEach(e => e.classList.remove('active')); this.closest('.nexo-env-option').classList.add('active');">
                                         <i class="bi bi-lightning-charge-fill" style="color: var(--dash-danger);"></i>
                                         <div>
                                             <span class="d-block fw-semibold" style="font-size: 0.85rem;">Produção</span>
@@ -82,15 +82,15 @@
                                 <div class="mb-3">
                                     <label for="devApiKey" class="nexo-form-label">API Key</label>
                                     <input type="text" class="nexo-form-input font-mono" id="devApiKey" name="dev_api_key"
-                                           placeholder="Insira a API Key de Testnet"
-                                           value="<?php echo htmlspecialchars($stored['dev_api_key'] ?? ''); ?>">
+                                        placeholder="Insira a API Key de Testnet"
+                                        value="<?php echo htmlspecialchars($stored['dev_api_key'] ?? ''); ?>">
                                     <small style="color: var(--dash-text-muted); font-size: 0.7rem;">Se vazio, usará as chaves do kernel.</small>
                                 </div>
 
                                 <div class="mb-3">
                                     <label for="devApiSecret" class="nexo-form-label">API Secret</label>
                                     <input type="password" class="nexo-form-input" id="devApiSecret" name="dev_api_secret"
-                                           placeholder="Insira o API Secret de Testnet" value="">
+                                        placeholder="Insira o API Secret de Testnet" value="">
                                     <small style="color: var(--dash-text-muted); font-size: 0.7rem;">Deixe em branco para manter o atual.</small>
                                 </div>
                             </div>
@@ -109,15 +109,15 @@
                                 <div class="mb-3">
                                     <label for="prodApiKey" class="nexo-form-label">API Key</label>
                                     <input type="text" class="nexo-form-input font-mono" id="prodApiKey" name="prod_api_key"
-                                           placeholder="Insira a API Key de produção"
-                                           value="<?php echo htmlspecialchars($stored['prod_api_key'] ?? ''); ?>">
+                                        placeholder="Insira a API Key de produção"
+                                        value="<?php echo htmlspecialchars($stored['prod_api_key'] ?? ''); ?>">
                                     <small style="color: var(--dash-text-muted); font-size: 0.7rem;">Chave gerada na sua conta Binance.</small>
                                 </div>
 
                                 <div class="mb-3">
                                     <label for="prodApiSecret" class="nexo-form-label">API Secret</label>
                                     <input type="password" class="nexo-form-input" id="prodApiSecret" name="prod_api_secret"
-                                           placeholder="Insira o API Secret de produção" value="">
+                                        placeholder="Insira o API Secret de produção" value="">
                                     <small style="color: var(--dash-text-muted); font-size: 0.7rem;">Deixe em branco para manter o atual.</small>
                                 </div>
                             </div>
@@ -181,17 +181,17 @@
 </div>
 
 <script>
-function toggleCredentialFields() {
-    const devCreds = document.getElementById('devCredentials');
-    const prodCreds = document.getElementById('prodCredentials');
-    const mode = document.querySelector('input[name="mode"]:checked').value;
+    function toggleCredentialFields() {
+        const devCreds = document.getElementById('devCredentials');
+        const prodCreds = document.getElementById('prodCredentials');
+        const mode = document.querySelector('input[name="mode"]:checked').value;
 
-    if (mode === 'prod') {
-        devCreds.style.display = 'none';
-        prodCreds.style.display = 'block';
-    } else {
-        devCreds.style.display = 'block';
-        prodCreds.style.display = 'none';
+        if (mode === 'prod') {
+            devCreds.style.display = 'none';
+            prodCreds.style.display = 'block';
+        } else {
+            devCreds.style.display = 'block';
+            prodCreds.style.display = 'none';
+        }
     }
-}
 </script>

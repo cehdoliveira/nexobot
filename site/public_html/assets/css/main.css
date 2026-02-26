@@ -10,8 +10,9 @@ body {
 body {
   display: flex;
   flex-direction: column;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
 }
 
 main {
@@ -225,7 +226,9 @@ body.theme-dark .card-body {
   background-color: var(--dash-card-bg, #fff);
   border: 1px solid var(--dash-border, #e2e8f0);
   border-radius: var(--dash-radius-sm, 0.5rem);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
   outline: none;
   box-sizing: border-box;
 }
@@ -248,7 +251,7 @@ body.theme-dark .card-body {
 }
 
 .nexo-form-input.font-mono {
-  font-family: var(--dash-font-mono, 'Consolas', monospace);
+  font-family: var(--dash-font-mono, "Consolas", monospace);
   font-size: 0.8rem;
 }
 
@@ -275,7 +278,9 @@ body.theme-dark .card-body {
   border-radius: 0 var(--dash-radius-sm, 0.5rem) var(--dash-radius-sm, 0.5rem) 0;
   color: var(--dash-text-muted, #718096);
   cursor: pointer;
-  transition: background 0.2s, color 0.2s;
+  transition:
+    background 0.2s,
+    color 0.2s;
   font-size: 0.9rem;
 }
 
@@ -399,7 +404,7 @@ body.theme-dark .card-body {
 
 .nexo-env-option:hover {
   border-color: var(--dash-info, #3b82f6);
-  box-shadow: var(--dash-shadow, 0 1px 3px rgba(0,0,0,0.06));
+  box-shadow: var(--dash-shadow, 0 1px 3px rgba(0, 0, 0, 0.06));
 }
 
 .nexo-env-option.active {
