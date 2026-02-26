@@ -2,30 +2,30 @@
  * Grid Dashboard Controller - Enhanced (Alpine.js)
  * Real-time data updates, responsive interactions, bot controls
  */
-document.addEventListener("alpine:init", () => {
-  Alpine.data("gridDashboardController", () => ({
+document.addEventListener('alpine:init', () => {
+  Alpine.data('gridDashboardController', () => ({
     // === State ===
     isLoading: false,
     isRefreshing: false,
     isConnected: true,
     connectionRetries: 0,
     lastUpdate: null,
-    lastUpdateFormatted: "--",
+    lastUpdateFormatted: '--',
     autoRefresh: false,
     refreshInterval: null,
     priceInterval: null,
     refreshSeconds: 30,
     currentPrice: 0,
     previousPrice: 0,
-    priceDirection: "",
+    priceDirection: '',
 
     // Active tab
-    activeTab: "overview",
+    activeTab: 'overview',
 
     // Orders state
-    ordersSortField: "grid_level",
-    ordersSortDir: "asc",
-    ordersFilter: "all",
+    ordersSortField: 'grid_level',
+    ordersSortDir: 'asc',
+    ordersFilter: 'all',
 
     // Logs state
     logsExpanded: false,
@@ -38,10 +38,6 @@ document.addEventListener("alpine:init", () => {
 
     // Grid data (updated via AJAX)
     gridData: null,
-
-    // Grid levels (dynamic ladder)
-    gridLevels: [],
-    ladderInterval: null,
 
     // Desktop viewport detection
     isDesktop: window.innerWidth >= 1025,
@@ -59,19 +55,16 @@ document.addEventListener("alpine:init", () => {
       // Start auto-refresh
       this.startAutoRefresh();
 
-      // Start grid levels polling (every 20s)
-      this.startLadderPolling();
-
       // Viewport detection
       this.handleResize = this.debounce(() => {
         this.isDesktop = window.innerWidth >= 1025;
         this.isTablet = window.innerWidth >= 768 && window.innerWidth < 1025;
         this.isMobile = window.innerWidth < 768;
       }, 200);
-      window.addEventListener("resize", this.handleResize);
+      window.addEventListener('resize', this.handleResize);
 
       // Cleanup on unload
-      window.addEventListener("beforeunload", () => this.destroy());
+      window.addEventListener('beforeunload', () => this.destroy());
 
       // Update relative time every minute
       this.timeInterval = setInterval(() => this.updateRelativeTime(), 60000);
@@ -82,25 +75,16 @@ document.addEventListener("alpine:init", () => {
 
     // === Data Management ===
     parseInitialData() {
-      const el = document.getElementById("dashboardData");
+      const el = document.getElementById('dashboardData');
       if (el) {
         try {
           this.gridData = JSON.parse(el.textContent);
           this.currentPrice = parseFloat(this.gridData?.currentPrice) || 0;
           this.previousPrice = this.currentPrice;
-
-          // Parse initial grid levels
-          if (
-            this.gridData?.gridLevels &&
-            Array.isArray(this.gridData.gridLevels)
-          ) {
-            this.gridLevels = this.gridData.gridLevels;
-          }
-
           this.lastUpdate = new Date();
           this.updateRelativeTime();
         } catch (e) {
-          console.warn("Failed to parse dashboard data:", e);
+          console.warn('Failed to parse dashboard data:', e);
         }
       }
     },
@@ -108,10 +92,10 @@ document.addEventListener("alpine:init", () => {
     async fetchDashboardData() {
       try {
         const response = await fetch(window.location.pathname, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "getGridDashboardData" }),
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'getGridDashboardData' })
         });
 
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -120,19 +104,16 @@ document.addEventListener("alpine:init", () => {
         if (data.success) {
           this.gridData = data.data;
           this.previousPrice = this.currentPrice;
-          this.currentPrice =
-            parseFloat(data.data?.currentPrice) || this.currentPrice;
+          this.currentPrice = parseFloat(data.data?.currentPrice) || this.currentPrice;
 
           if (this.currentPrice > this.previousPrice) {
-            this.priceDirection = "up";
+            this.priceDirection = 'up';
           } else if (this.currentPrice < this.previousPrice) {
-            this.priceDirection = "down";
+            this.priceDirection = 'down';
           } else {
-            this.priceDirection = "";
+            this.priceDirection = '';
           }
-          setTimeout(() => {
-            this.priceDirection = "";
-          }, 600);
+          setTimeout(() => { this.priceDirection = ''; }, 600);
 
           this.lastUpdate = new Date();
           this.updateRelativeTime();
@@ -141,7 +122,7 @@ document.addEventListener("alpine:init", () => {
         }
         return false;
       } catch (error) {
-        console.error("Fetch error:", error);
+        console.error('Fetch error:', error);
         this.updateConnectionStatus(false);
         return false;
       }
@@ -155,28 +136,25 @@ document.addEventListener("alpine:init", () => {
       try {
         // Clear cache first
         await fetch(window.location.pathname, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "clearCache" }),
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'clearCache' })
         });
 
         // Fetch fresh data via AJAX
         const success = await this.fetchDashboardData();
 
-        // Also refresh grid levels
-        await this.fetchGridLevels();
-
         if (success) {
-          this.showToast("Dados atualizados", "success");
+          this.showToast('Dados atualizados', 'success');
         } else {
           // Fallback: reload page if AJAX fetch failed
           window.location.reload();
           return;
         }
       } catch (e) {
-        console.error("Refresh error:", e);
-        this.showToast("Erro ao atualizar", "error");
+        console.error('Refresh error:', e);
+        this.showToast('Erro ao atualizar', 'error');
       } finally {
         this.isRefreshing = false;
       }
@@ -201,10 +179,10 @@ document.addEventListener("alpine:init", () => {
     toggleAutoRefresh() {
       if (this.autoRefresh) {
         this.stopAutoRefresh();
-        this.showToast("Auto-atualização desativada", "info");
+        this.showToast('Auto-atualização desativada', 'info');
       } else {
         this.startAutoRefresh();
-        this.showToast("Auto-atualização ativada (30s)", "success");
+        this.showToast('Auto-atualização ativada (30s)', 'success');
       }
     },
 
@@ -213,10 +191,10 @@ document.addEventListener("alpine:init", () => {
       this.priceInterval = setInterval(async () => {
         try {
           const response = await fetch(window.location.pathname, {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "getCurrentPrice" }),
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'getCurrentPrice' })
           });
           if (!response.ok) return;
           const data = await response.json();
@@ -224,13 +202,11 @@ document.addEventListener("alpine:init", () => {
             this.previousPrice = this.currentPrice;
             this.currentPrice = parseFloat(data.price);
             if (this.currentPrice > this.previousPrice) {
-              this.priceDirection = "up";
+              this.priceDirection = 'up';
             } else if (this.currentPrice < this.previousPrice) {
-              this.priceDirection = "down";
+              this.priceDirection = 'down';
             }
-            setTimeout(() => {
-              this.priceDirection = "";
-            }, 600);
+            setTimeout(() => { this.priceDirection = ''; }, 600);
             this.updateConnectionStatus(true);
           }
         } catch (e) {
@@ -239,79 +215,30 @@ document.addEventListener("alpine:init", () => {
       }, 15000);
     },
 
-    // === Grid Ladder Polling ===
-    startLadderPolling() {
-      // Fetch immediately after init (after a small delay to let initial render happen)
-      setTimeout(() => this.fetchGridLevels(), 3000);
-
-      this.ladderInterval = setInterval(() => {
-        this.fetchGridLevels();
-      }, 20000); // Every 20 seconds
-    },
-
-    async fetchGridLevels() {
-      try {
-        const response = await fetch(window.location.pathname, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "getGridLevels" }),
-        });
-        if (!response.ok) return;
-        const data = await response.json();
-        if (data.success && data.data) {
-          // Update grid levels
-          if (Array.isArray(data.data.grids)) {
-            this.gridLevels = data.data.grids;
-          }
-
-          // Also update price from this response
-          if (data.data.currentPrice) {
-            this.previousPrice = this.currentPrice;
-            this.currentPrice = parseFloat(data.data.currentPrice);
-            if (this.currentPrice > this.previousPrice) {
-              this.priceDirection = "up";
-            } else if (this.currentPrice < this.previousPrice) {
-              this.priceDirection = "down";
-            }
-            setTimeout(() => {
-              this.priceDirection = "";
-            }, 600);
-          }
-        }
-      } catch (e) {
-        // Silent - ladder polling failure shouldn't affect UX
-        console.warn("Ladder poll error:", e);
-      }
-    },
-
     // === Bot Control Actions ===
     async executeAction(action, confirmTitle, confirmText) {
       const confirm = await Swal.fire({
         title: confirmTitle,
         html: confirmText,
-        icon: "warning",
+        icon: 'warning',
         showCancelButton: true,
-        confirmButtonColor:
-          action === "emergencyShutdown" ? "#dc2626" : "#3b82f6",
-        cancelButtonColor: "#6c757d",
-        confirmButtonText: "Sim, confirmar",
-        cancelButtonText: "Cancelar",
+        confirmButtonColor: action === 'emergencyShutdown' ? '#dc2626' : '#3b82f6',
+        cancelButtonColor: '#6c757d',
+        confirmButtonText: 'Sim, confirmar',
+        cancelButtonText: 'Cancelar'
       });
 
       if (!confirm.isConfirmed) return;
 
-      if (
-        ["emergencyShutdown", "closeAllPositions", "resetGrid"].includes(action)
-      ) {
+      if (['emergencyShutdown', 'closeAllPositions', 'resetGrid'].includes(action)) {
         const confirm2 = await Swal.fire({
-          title: "Confirmação Final",
-          text: "Esta ação é irreversível. Tem certeza absoluta?",
-          icon: "error",
+          title: 'Confirmação Final',
+          text: 'Esta ação é irreversível. Tem certeza absoluta?',
+          icon: 'error',
           showCancelButton: true,
-          confirmButtonColor: "#dc2626",
-          confirmButtonText: "SIM, EXECUTAR",
-          cancelButtonText: "Não, cancelar",
+          confirmButtonColor: '#dc2626',
+          confirmButtonText: 'SIM, EXECUTAR',
+          cancelButtonText: 'Não, cancelar'
         });
         if (!confirm2.isConfirmed) return;
       }
@@ -320,25 +247,22 @@ document.addEventListener("alpine:init", () => {
 
       try {
         const response = await fetch(window.location.pathname, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action }),
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action })
         });
 
         const data = await response.json();
 
         if (data.success) {
-          this.showToast(
-            data.message || "Ação executada com sucesso",
-            "success",
-          );
+          this.showToast(data.message || 'Ação executada com sucesso', 'success');
           setTimeout(() => window.location.reload(), 1500);
         } else {
-          this.showToast(data.message || "Erro ao executar ação", "error");
+          this.showToast(data.message || 'Erro ao executar ação', 'error');
         }
       } catch (error) {
-        this.showToast("Erro de comunicação com o servidor", "error");
+        this.showToast('Erro de comunicação com o servidor', 'error');
       } finally {
         this.actionLoading = null;
       }
@@ -346,33 +270,33 @@ document.addEventListener("alpine:init", () => {
 
     stopBot() {
       this.executeAction(
-        "stopBot",
-        "Parar Bot",
-        "O bot será parado. As ordens existentes serão mantidas na Binance.",
+        'stopBot',
+        'Parar Bot',
+        'O bot será parado. As ordens existentes serão mantidas na Binance.'
       );
     },
 
     emergencyShutdown() {
       this.executeAction(
-        "emergencyShutdown",
-        "⚠️ DESLIGAMENTO DE EMERGÊNCIA",
-        '<p class="text-danger fw-bold">Isso irá:</p><ul class="text-start"><li>Cancelar TODAS as ordens abertas</li><li>Parar o bot imediatamente</li><li>Marcar grid como cancelado</li></ul>',
+        'emergencyShutdown',
+        '⚠️ DESLIGAMENTO DE EMERGÊNCIA',
+        '<p class="text-danger fw-bold">Isso irá:</p><ul class="text-start"><li>Cancelar TODAS as ordens abertas</li><li>Parar o bot imediatamente</li><li>Marcar grid como cancelado</li></ul>'
       );
     },
 
     cancelAllOrders() {
       this.executeAction(
-        "closeAllPositions",
-        "Encerrar Todas as Posições",
-        "Cancelar todas as ordens abertas e vender ativos. Esta ação é irreversível.",
+        'closeAllPositions',
+        'Encerrar Todas as Posições',
+        'Cancelar todas as ordens abertas e vender ativos. Esta ação é irreversível.'
       );
     },
 
     resetGrid() {
       this.executeAction(
-        "resetGrid",
-        "Resetar Grid",
-        "O grid atual será encerrado e todas as ordens canceladas.",
+        'resetGrid',
+        'Resetar Grid',
+        'O grid atual será encerrado e todas as ordens canceladas.'
       );
     },
 
@@ -389,13 +313,13 @@ document.addEventListener("alpine:init", () => {
     // === Time Helpers ===
     updateRelativeTime() {
       if (!this.lastUpdate) {
-        this.lastUpdateFormatted = "--";
+        this.lastUpdateFormatted = '--';
         return;
       }
       const diffMs = Date.now() - this.lastUpdate.getTime();
       const diffSec = Math.floor(diffMs / 1000);
       if (diffSec < 10) {
-        this.lastUpdateFormatted = "agora";
+        this.lastUpdateFormatted = 'agora';
       } else if (diffSec < 60) {
         this.lastUpdateFormatted = `${diffSec}s atrás`;
       } else {
@@ -407,13 +331,10 @@ document.addEventListener("alpine:init", () => {
     // === Format Helpers ===
     formatUSD(value) {
       const num = parseFloat(value) || 0;
-      return (
-        "$" +
-        new Intl.NumberFormat("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        }).format(num)
-      );
+      return '$' + new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(num);
     },
 
     formatBTC(value) {
@@ -423,36 +344,29 @@ document.addEventListener("alpine:init", () => {
 
     formatPercent(value) {
       const num = parseFloat(value) || 0;
-      return (num >= 0 ? "+" : "") + num.toFixed(2) + "%";
+      return (num >= 0 ? '+' : '') + num.toFixed(2) + '%';
     },
 
     formatPrice(value) {
       const num = parseFloat(value) || 0;
-      return (
-        "$" +
-        new Intl.NumberFormat("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        }).format(num)
-      );
+      return '$' + new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(num);
     },
 
     formatDate(dateStr) {
-      if (!dateStr) return "N/A";
+      if (!dateStr) return 'N/A';
       const d = new Date(dateStr);
-      return (
-        d.toLocaleDateString("pt-BR") +
-        " " +
-        d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
-      );
+      return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     },
 
     formatTimeAgo(dateStr) {
-      if (!dateStr) return "N/A";
+      if (!dateStr) return 'N/A';
       const d = new Date(dateStr);
       const diffMs = Date.now() - d.getTime();
       const diffMin = Math.floor(diffMs / 60000);
-      if (diffMin < 1) return "agora";
+      if (diffMin < 1) return 'agora';
       if (diffMin < 60) return `${diffMin}min`;
       const diffHours = Math.floor(diffMin / 60);
       if (diffHours < 24) return `${diffHours}h`;
@@ -463,16 +377,16 @@ document.addEventListener("alpine:init", () => {
     // === Sorting ===
     sortOrders(field) {
       if (this.ordersSortField === field) {
-        this.ordersSortDir = this.ordersSortDir === "asc" ? "desc" : "asc";
+        this.ordersSortDir = this.ordersSortDir === 'asc' ? 'desc' : 'asc';
       } else {
         this.ordersSortField = field;
-        this.ordersSortDir = "asc";
+        this.ordersSortDir = 'asc';
       }
     },
 
     getSortIcon(field) {
-      if (this.ordersSortField !== field) return "bi-chevron-expand";
-      return this.ordersSortDir === "asc" ? "bi-chevron-up" : "bi-chevron-down";
+      if (this.ordersSortField !== field) return 'bi-chevron-expand';
+      return this.ordersSortDir === 'asc' ? 'bi-chevron-up' : 'bi-chevron-down';
     },
 
     // === Tab Management ===
@@ -481,74 +395,53 @@ document.addEventListener("alpine:init", () => {
     },
 
     // === UI Helpers ===
-    showToast(message, type = "info") {
-      if (typeof Swal !== "undefined") {
+    showToast(message, type = 'info') {
+      if (typeof Swal !== 'undefined') {
         Swal.fire({
-          icon:
-            type === "error"
-              ? "error"
-              : type === "success"
-                ? "success"
-                : "info",
+          icon: type === 'error' ? 'error' : type === 'success' ? 'success' : 'info',
           title: message,
           toast: true,
-          position: this.isMobile ? "top" : "top-end",
+          position: this.isMobile ? 'top' : 'top-end',
           showConfirmButton: false,
           timer: 3000,
-          timerProgressBar: true,
+          timerProgressBar: true
         });
       }
     },
 
     getStatusBadgeClass(status) {
       switch (status) {
-        case "NEW":
-          return "badge-new";
-        case "FILLED":
-          return "badge-filled";
-        case "CANCELED":
-        case "CANCELLED":
-          return "badge-canceled";
-        case "PARTIALLY_FILLED":
-          return "badge-partial";
-        default:
-          return "badge-canceled";
+        case 'NEW': return 'badge-new';
+        case 'FILLED': return 'badge-filled';
+        case 'CANCELED': case 'CANCELLED': return 'badge-canceled';
+        case 'PARTIALLY_FILLED': return 'badge-partial';
+        default: return 'badge-canceled';
       }
     },
 
     getStatusLabel(status) {
       switch (status) {
-        case "NEW":
-          return "Aguardando";
-        case "FILLED":
-          return "Executada";
-        case "CANCELED":
-        case "CANCELLED":
-          return "Cancelada";
-        case "PARTIALLY_FILLED":
-          return "Parcial";
-        default:
-          return status || "N/A";
+        case 'NEW': return 'Aguardando';
+        case 'FILLED': return 'Executada';
+        case 'CANCELED': case 'CANCELLED': return 'Cancelada';
+        case 'PARTIALLY_FILLED': return 'Parcial';
+        default: return status || 'N/A';
       }
     },
 
     getLogDotClass(logType) {
       switch (logType) {
-        case "error":
-          return "dot-danger";
-        case "success":
-          return "dot-success";
-        case "warning":
-          return "dot-warning";
-        default:
-          return "dot-info";
+        case 'error': return 'dot-danger';
+        case 'success': return 'dot-success';
+        case 'warning': return 'dot-warning';
+        default: return 'dot-info';
       }
     },
 
     getDrawdownLevel(percent) {
-      if (percent < 10) return "safe";
-      if (percent < 15) return "caution";
-      return "critical";
+      if (percent < 10) return 'safe';
+      if (percent < 15) return 'caution';
+      return 'critical';
     },
 
     // === Utility ===
@@ -564,11 +457,10 @@ document.addEventListener("alpine:init", () => {
     destroy() {
       if (this.refreshInterval) clearInterval(this.refreshInterval);
       if (this.priceInterval) clearInterval(this.priceInterval);
-      if (this.ladderInterval) clearInterval(this.ladderInterval);
       if (this.timeInterval) clearInterval(this.timeInterval);
       if (this.handleResize) {
-        window.removeEventListener("resize", this.handleResize);
+        window.removeEventListener('resize', this.handleResize);
       }
-    },
+    }
   }));
 });
