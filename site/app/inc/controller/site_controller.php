@@ -542,6 +542,78 @@ class site_controller
             $btcBalance  = 0;
         }
 
+        // === PREPARAR NÍVEIS ABERTOS PARA O LADDER DINÂMICO ===
+        // Lógica simples: direto das ordens abertas reais (incluindo pareadas)
+        // Sem intermediários planejados para evitar perda de sells pareadas
+        $gridsOpenLevels = [];
+        foreach ($allGrids as $gridForLadder) {
+            $gridIdForLadder = $gridForLadder['idx'];
+
+            // Todas as ordens deste grid (incluindo pareadas)
+            $gridOrdersForLadder = array_filter($allGridOrders, function($o) use ($gridIdForLadder) {
+                return ($o['grids_id'] ?? 0) == $gridIdForLadder;
+            });
+
+            // Filtrar apenas abertas
+            $openForLadder = array_filter($gridOrdersForLadder, function($o) {
+                $status = $o['orders'][0]['status'] ?? '';
+                return in_array($status, ['NEW', 'PARTIALLY_FILLED']);
+            });
+
+            // Deduplicar por (grid_level, side), manter mais recente
+            $dedupLadder = [];
+            foreach ($openForLadder as $go) {
+                $order = $go['orders'][0] ?? null;
+                if (!$order) continue;
+                $side = $order['side'] ?? 'UNKNOWN';
+                $level = (int)($go['grid_level'] ?? 0);
+                $key = ($level > 0 ? $level : 'oid_' . ($go['idx'] ?? 0)) . '_' . $side;
+                $idx = (int)($go['idx'] ?? 0);
+                if (!isset($dedupLadder[$key]) || $idx > $dedupLadder[$key]['idx']) {
+                    $dedupLadder[$key] = $go;
+                }
+            }
+
+            $ladderBuys = [];
+            $ladderSells = [];
+            foreach (array_values($dedupLadder) as $go) {
+                $order = $go['orders'][0] ?? null;
+                if (!$order) continue;
+                $ld = [
+                    'level' => (int)($go['grid_level'] ?? 0),
+                    'price' => (float)($order['price'] ?? 0),
+                    'quantity' => (float)($order['quantity'] ?? 0),
+                    'side' => $order['side'] ?? 'UNKNOWN',
+                    'status' => $order['status'] ?? 'NEW',
+                    'order_id' => (int)($order['idx'] ?? 0),
+                    'has_order' => true,
+                    'created_at' => $order['created_at'] ?? null
+                ];
+                if ($ld['side'] === 'BUY') {
+                    $ladderBuys[] = $ld;
+                } elseif ($ld['side'] === 'SELL') {
+                    $ladderSells[] = $ld;
+                }
+            }
+
+            usort($ladderSells, fn($a, $b) => $b['price'] <=> $a['price']);
+            usort($ladderBuys, fn($a, $b) => $b['price'] <=> $a['price']);
+
+            $gridsOpenLevels[] = [
+                'grid' => [
+                    'idx' => $gridForLadder['idx'],
+                    'symbol' => $gridForLadder['symbol'] ?? 'BTCUSDC',
+                    'status' => $gridForLadder['status'] ?? 'inactive',
+                    'grid_levels' => (int)($gridForLadder['grid_levels'] ?? 0),
+                    'grid_spacing_percent' => (float)($gridForLadder['grid_spacing_percent'] ?? 0),
+                    'capital_allocated_usdc' => (float)($gridForLadder['capital_allocated_usdc'] ?? 0),
+                ],
+                'sell_levels' => array_values($ladderSells),
+                'buy_levels' => array_values($ladderBuys),
+                'total_open' => count($ladderSells) + count($ladderBuys),
+            ];
+        }
+
         $gridDashboardData = [
             'stats' => [
                 'grids' => [
@@ -568,6 +640,7 @@ class site_controller
             ],
             'grids' => $allGrids,
             'grids_with_levels' => $gridsWithLevels,
+            'grids_open_levels' => $gridsOpenLevels,
             'open_orders' => array_values($ordersForDisplay),
             'orders_pagination' => [
                 'current_page' => $currentPage,

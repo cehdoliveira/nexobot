@@ -63,42 +63,14 @@ $currentPage  = (int)($pagination['current_page'] ?? 1);
 $totalPages   = (int)($pagination['total_pages'] ?? 1);
 $totalItems   = (int)($pagination['total_items'] ?? 0);
 
+// Grid open levels for dynamic ladder (built directly from open orders, no planned intermediary)
+$gridsOpenLevels = $gridDashboardData['grids_open_levels'] ?? [];
+
 // JSON for Alpine.js hydration
-$initialGridLevels = [];
-foreach ($gridsLevels as $gridData) {
-    $grid = $gridData['grid'];
-    $bLevels = $gridData['buy_levels'] ?? [];
-    $sLevels = $gridData['sell_levels'] ?? [];
-
-    // Filtrar apenas ordens abertas (NEW/PARTIALLY_FILLED) com has_order
-    $filteredBuys = array_values(array_filter($bLevels, function ($l) {
-        return ($l['has_order'] ?? false) && in_array($l['status'] ?? '', ['NEW', 'PARTIALLY_FILLED']);
-    }));
-    $filteredSells = array_values(array_filter($sLevels, function ($l) {
-        return ($l['has_order'] ?? false) && in_array($l['status'] ?? '', ['NEW', 'PARTIALLY_FILLED']);
-    }));
-
-    usort($filteredSells, fn($a, $b) => $b['price'] <=> $a['price']);
-    usort($filteredBuys, fn($a, $b) => $b['price'] <=> $a['price']);
-
-    $initialGridLevels[] = [
-        'grid' => [
-            'idx' => $grid['idx'] ?? 0,
-            'symbol' => $grid['symbol'] ?? 'BTCUSDC',
-            'status' => $grid['status'] ?? 'inactive',
-            'grid_levels' => (int)($grid['grid_levels'] ?? 0),
-            'grid_spacing_percent' => (float)($grid['grid_spacing_percent'] ?? 0),
-            'capital_allocated_usdc' => (float)($grid['capital_allocated_usdc'] ?? 0),
-        ],
-        'sell_levels' => $filteredSells,
-        'buy_levels' => $filteredBuys,
-        'total_open' => count($filteredSells) + count($filteredBuys),
-    ];
-}
 $dashboardJson = json_encode([
     'currentPrice' => $currentPrice,
     'symbol' => $gridSymbol,
-    'gridLevels' => $initialGridLevels
+    'gridLevels' => $gridsOpenLevels
 ], JSON_UNESCAPED_UNICODE);
 ?>
 
