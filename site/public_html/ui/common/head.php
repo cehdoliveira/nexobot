@@ -18,3 +18,6 @@
 
     <!-- Custom CSS -->
     <link rel="stylesheet" href="<?php printf("%s%s", constant("cFrontend"), "assets/css/main.css"); ?>">
+
+    <!-- Dashboard CSS -->
+    <link rel="stylesheet" href="<?php printf("%s%s", constant("cFrontend"), "assets/css/dashboard.css"); ?>">

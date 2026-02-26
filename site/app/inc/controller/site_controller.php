@@ -32,13 +32,46 @@ class site_controller
             }
 
             if (!empty($input['action'])) {
-                if ($input['action'] === 'refreshGridData') {
-                    echo json_encode([
-                        'success' => true,
-                        'message' => 'Dados atualizados com sucesso'
-                    ]);
+                $action = $input['action'];
+
+                // Route AJAX actions
+                switch ($action) {
+                    case 'refreshGridData':
+                        echo json_encode(['success' => true, 'message' => 'Dados atualizados com sucesso']);
+                        exit;
+
+                    case 'getCurrentPrice':
+                        $this->ajaxGetCurrentPrice();
+                        exit;
+
+                    case 'getGridDashboardData':
+                        $this->ajaxGetGridDashboardData();
+                        exit;
+
+                    case 'clearCache':
+                        $this->clearCache();
+                        exit;
+
+                    case 'closeAllPositions':
+                        $this->closeAllPositions();
+                        exit;
+
+                    case 'stopBot':
+                        $this->ajaxStopBot();
+                        exit;
+
+                    case 'emergencyShutdown':
+                        $this->ajaxEmergencyShutdown();
+                        exit;
+
+                    case 'resetGrid':
+                        $this->ajaxResetGrid();
+                        exit;
+
+                    default:
+                        echo json_encode(['success' => false, 'message' => 'Ação não encontrada']);
+                        exit;
                 }
-                exit;
             }
         }
 
@@ -1558,5 +1591,277 @@ class site_controller
                 'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
             ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         }
+    }
+
+    // ====================================================
+    // AJAX ENDPOINTS - Dashboard Enhancement
+    // ====================================================
+
+    /**
+     * Retorna o preço atual do primeiro grid ativo (para price ticker)
+     */
+    private function ajaxGetCurrentPrice(): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["active = 'yes'", "status = 'active'"]);
+            $gridsModel->load_data();
+
+            $symbol = 'BTCUSDC';
+            if (!empty($gridsModel->data)) {
+                $symbol = $gridsModel->data[0]['symbol'] ?? 'BTCUSDC';
+            }
+
+            $binanceConfig = BinanceConfig::getActiveCredentials();
+            $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+            $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+            $configurationBuilder->url($binanceConfig['baseUrl']);
+            $api = new SpotRestApi($configurationBuilder->build());
+
+            $priceResponse = $api->tickerPrice($symbol);
+            $priceData = $priceResponse->getData();
+
+            $price = 0;
+            if ($priceData && method_exists($priceData, 'getTickerPriceResponse1')) {
+                $tickerData = $priceData->getTickerPriceResponse1();
+                $price = $tickerData && method_exists($tickerData, 'getPrice') ? (float)$tickerData->getPrice() : 0;
+            } elseif (is_array($priceData) && isset($priceData['price'])) {
+                $price = (float)$priceData['price'];
+            }
+
+            echo json_encode([
+                'success' => true,
+                'price' => $price,
+                'symbol' => $symbol,
+                'timestamp' => time()
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao buscar preço: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Retorna dados completos do dashboard em formato JSON (para AJAX polling)
+     */
+    private function ajaxGetGridDashboardData(): void
+    {
+        try {
+            // Buscar grids
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["active = 'yes'"]);
+            $gridsModel->load_data();
+            $allGrids = $gridsModel->data;
+
+            $activeGrids = array_filter($allGrids, fn($g) => $g['status'] === 'active');
+            $firstGrid = $allGrids[0] ?? null;
+
+            // Estatísticas rápidas
+            $totalProfit = 0;
+            $totalAllocated = 0;
+            foreach ($allGrids as $grid) {
+                $totalProfit += (float)($grid['accumulated_profit_usdc'] ?? 0);
+                $totalAllocated += (float)($grid['capital_allocated_usdc'] ?? 0);
+            }
+
+            // Buscar preço atual
+            $currentPrice = 0;
+            $symbol = $firstGrid['symbol'] ?? 'BTCUSDC';
+            try {
+                $binanceConfig = BinanceConfig::getActiveCredentials();
+                $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+                $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+                $configurationBuilder->url($binanceConfig['baseUrl']);
+                $api = new SpotRestApi($configurationBuilder->build());
+
+                $priceResponse = $api->tickerPrice($symbol);
+                $priceData = $priceResponse->getData();
+
+                if ($priceData && method_exists($priceData, 'getTickerPriceResponse1')) {
+                    $tickerData = $priceData->getTickerPriceResponse1();
+                    $currentPrice = $tickerData && method_exists($tickerData, 'getPrice') ? (float)$tickerData->getPrice() : 0;
+                } elseif (is_array($priceData) && isset($priceData['price'])) {
+                    $currentPrice = (float)$priceData['price'];
+                }
+            } catch (Exception $e) {
+                // Use grid stored price as fallback
+                $currentPrice = $firstGrid ? (float)($firstGrid['current_price'] ?? 0) : 0;
+            }
+
+            echo json_encode([
+                'success' => true,
+                'data' => [
+                    'currentPrice' => $currentPrice,
+                    'symbol' => $symbol,
+                    'activeGrids' => count($activeGrids),
+                    'totalProfit' => $totalProfit,
+                    'totalAllocated' => $totalAllocated,
+                    'gridStatus' => $firstGrid['status'] ?? 'inactive',
+                    'timestamp' => time()
+                ]
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao buscar dados: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Para o bot: marca grid como 'stopped' sem cancelar ordens
+     */
+    private function ajaxStopBot(): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["active = 'yes'", "status = 'active'"]);
+            $gridsModel->load_data();
+
+            $stoppedCount = 0;
+            foreach ($gridsModel->data as $grid) {
+                $gridsModel->load_byIdx($grid['idx']);
+                $gridsModel->populate(['status' => 'stopped']);
+                $gridsModel->save();
+                $stoppedCount++;
+
+                // Log
+                $logModel = new grid_logs_model();
+                $logModel->populate([
+                    'grids_id' => $grid['idx'],
+                    'log_type' => 'bot_stopped',
+                    'event' => 'Bot parado via dashboard',
+                    'message' => 'Grid parado manualmente. Ordens existentes foram mantidas.',
+                    'data' => json_encode(['stopped_at' => date('Y-m-d H:i:s')]),
+                    'created_at' => date('Y-m-d H:i:s')
+                ]);
+                $logModel->save();
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => "$stoppedCount grid(s) parado(s). Ordens existentes mantidas na Binance."
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao parar bot: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Desligamento de emergência: cancela todas as ordens e marca grids como cancelled
+     */
+    private function ajaxEmergencyShutdown(): void
+    {
+        try {
+            $binanceConfig = BinanceConfig::getActiveCredentials();
+            $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+            $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+            $configurationBuilder->url($binanceConfig['baseUrl']);
+            $api = new SpotRestApi($configurationBuilder->build());
+
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["active = 'yes'", "status IN ('active', 'stopped')"]);
+            $gridsModel->load_data();
+
+            $cancelledOrders = [];
+            $errors = [];
+
+            foreach ($gridsModel->data as $grid) {
+                $symbol = $grid['symbol'];
+
+                // Cancelar todas as ordens abertas na Binance
+                try {
+                    $openOrdersResp = $api->getOpenOrders($symbol);
+                    $openOrdersData = $openOrdersResp->getData();
+
+                    $orders = [];
+                    if (is_array($openOrdersData)) {
+                        $orders = $openOrdersData;
+                    } elseif (is_object($openOrdersData) && method_exists($openOrdersData, 'getItems')) {
+                        $orders = $openOrdersData->getItems();
+                    }
+
+                    foreach ($orders as $binanceOrder) {
+                        if (!is_array($binanceOrder)) {
+                            $binanceOrder = json_decode(json_encode($binanceOrder), true);
+                        }
+                        $orderId = $binanceOrder['orderId'] ?? null;
+                        if ($orderId) {
+                            try {
+                                $api->deleteOrder($symbol, $orderId);
+                                $cancelledOrders[] = $orderId;
+                            } catch (Exception $ce) {
+                                $errors[] = "Erro ao cancelar ordem $orderId: " . $ce->getMessage();
+                            }
+                        }
+                    }
+                } catch (Exception $e) {
+                    $errors[] = "Erro ao buscar ordens de $symbol: " . $e->getMessage();
+                }
+
+                // Marcar grid como cancelled
+                $gridsModel->load_byIdx($grid['idx']);
+                $gridsModel->populate([
+                    'status' => 'cancelled',
+                    'stop_loss_triggered' => 'yes',
+                    'stop_loss_triggered_at' => date('Y-m-d H:i:s')
+                ]);
+                $gridsModel->save();
+
+                // Log
+                $logModel = new grid_logs_model();
+                $logModel->populate([
+                    'grids_id' => $grid['idx'],
+                    'log_type' => 'emergency_shutdown',
+                    'event' => 'Desligamento de emergência via dashboard',
+                    'message' => 'Grid cancelado e ' . count($cancelledOrders) . ' ordens canceladas.',
+                    'data' => json_encode([
+                        'cancelled_orders' => $cancelledOrders,
+                        'errors' => $errors,
+                        'shutdown_at' => date('Y-m-d H:i:s')
+                    ]),
+                    'created_at' => date('Y-m-d H:i:s')
+                ]);
+                $logModel->save();
+            }
+
+            // Atualizar ordens no DB
+            foreach ($cancelledOrders as $binanceOrderId) {
+                $ordersModel = new orders_model();
+                $ordersModel->set_filter(["binance_order_id = '$binanceOrderId'"]);
+                $ordersModel->load_data();
+                if (!empty($ordersModel->data)) {
+                    $ordersModel->load_byIdx($ordersModel->data[0]['idx']);
+                    $ordersModel->populate(['status' => 'CANCELED']);
+                    $ordersModel->save();
+                }
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => 'Desligamento de emergência executado. ' . count($cancelledOrders) . ' ordens canceladas.',
+                'cancelled_orders' => $cancelledOrders,
+                'errors' => $errors
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro no desligamento de emergência: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Reset do grid: cancela ordens e marca grid como cancelled
+     */
+    private function ajaxResetGrid(): void
+    {
+        // Usa a mesma lógica do emergency shutdown
+        $this->ajaxEmergencyShutdown();
     }
 }
