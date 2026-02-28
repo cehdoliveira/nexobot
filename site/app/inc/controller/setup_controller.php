@@ -549,20 +549,30 @@ class setup_controller
                         ? $binanceOrder->getExecutedQty()
                         : ($binanceOrder['executedQty'] ?? 0);
 
-                    // Atualizar ordem se status mudou
-                    if ($newStatus && $newStatus !== $order['status']) {
+                    // Atualizar ordem se status mudou OU se executed_qty diverge
+                    $dbExecutedQty = (float)($order['executed_qty'] ?? 0);
+                    $binanceExecutedQty = (float)$executedQty;
+                    $statusChanged = ($newStatus && $newStatus !== $order['status']);
+                    $qtyChanged = (abs($binanceExecutedQty - $dbExecutedQty) > 0.00000001 && $binanceExecutedQty > 0);
+
+                    if ($statusChanged || $qtyChanged) {
+                        $updateData = [
+                            'executed_qty' => $binanceExecutedQty
+                        ];
+                        if ($statusChanged) {
+                            $updateData['status'] = $newStatus;
+                        }
+
                         $ordersModel = new orders_model();
                         $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
-                        $ordersModel->populate([
-                            'status' => $newStatus,
-                            'executed_qty' => (float)$executedQty
-                        ]);
+                        $ordersModel->populate($updateData);
                         $ordersModel->save();
 
                         $updatedCount++;
 
+                        $reason = $statusChanged ? "{$order['status']} → {$newStatus}" : "qty corrigida: {$dbExecutedQty} → {$binanceExecutedQty}";
                         $this->log(
-                            "Ordem {$order['binance_order_id']} atualizada: {$order['status']} → {$newStatus}",
+                            "Ordem {$order['binance_order_id']} atualizada: {$reason}",
                             'INFO',
                             'API'
                         );
@@ -576,8 +586,91 @@ class setup_controller
             if ($updatedCount > 0) {
                 $this->log("$updatedCount ordem(ns) sincronizada(s) com a Binance", 'INFO', 'SYSTEM');
             }
+
+            // PASSO 2: Corrigir ordens FILLED com executed_qty=0 (dados corrompidos)
+            $this->fixFilledOrdersWithZeroQty($gridId);
         } catch (Exception $e) {
             $this->log("Erro ao sincronizar ordens: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Corrige ordens FILLED que têm executed_qty=0 no banco — consulta Binance para obter o valor real.
+     * Isso resolve a causa raiz de loops infinitos em handleBuyOrderFilled e recoverOrphanedBtc.
+     */
+    private function fixFilledOrdersWithZeroQty(int $gridId): void
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'",
+                "orders_id IN (SELECT idx FROM orders WHERE status = 'FILLED' AND (executed_qty = 0 OR executed_qty IS NULL))"
+            ]);
+            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            if (empty($gridsOrdersModel->data)) {
+                return;
+            }
+
+            $fixedCount = 0;
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders_attach'][0] ?? null;
+                if (!$order) {
+                    continue;
+                }
+
+                $binanceOrderId = $order['binance_order_id'] ?? null;
+                if (!$binanceOrderId) {
+                    $this->log(
+                        "[FixFilledQty] Ordem idx={$order['idx']} FILLED com qty=0 sem binance_order_id. Não é possível corrigir.",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    continue;
+                }
+
+                try {
+                    $response = $this->client->getOrder($order['symbol'], $binanceOrderId);
+                    $binanceData = $response->getData();
+                    $realQty = method_exists($binanceData, 'getExecutedQty')
+                        ? (float)$binanceData->getExecutedQty()
+                        : (float)($binanceData['executedQty'] ?? 0);
+
+                    if ($realQty > 0) {
+                        $ordersModel = new orders_model();
+                        $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                        $ordersModel->populate(['executed_qty' => $realQty]);
+                        $ordersModel->save();
+                        $fixedCount++;
+                        $this->log(
+                            "[FixFilledQty] ✅ Ordem {$binanceOrderId} (idx={$order['idx']}): executed_qty corrigido 0 → {$realQty}",
+                            'SUCCESS',
+                            'SYSTEM'
+                        );
+                    } else {
+                        $this->log(
+                            "[FixFilledQty] ⚠️ Ordem {$binanceOrderId} (idx={$order['idx']}): Binance também retorna qty=0.",
+                            'WARNING',
+                            'SYSTEM'
+                        );
+                    }
+                } catch (Exception $e) {
+                    $this->log(
+                        "[FixFilledQty] Erro ao consultar Binance para ordem {$binanceOrderId}: " . $e->getMessage(),
+                        'ERROR',
+                        'SYSTEM'
+                    );
+                }
+            }
+
+            if ($fixedCount > 0) {
+                $this->log("[FixFilledQty] {$fixedCount} ordem(ns) FILLED com qty=0 corrigida(s)", 'SUCCESS', 'SYSTEM');
+            }
+        } catch (Exception $e) {
+            $this->log("[FixFilledQty] Erro: " . $e->getMessage(), 'ERROR', 'SYSTEM');
         }
     }
 
@@ -1170,11 +1263,63 @@ class setup_controller
                     }
 
                     // BTC ÓRFÃO ENCONTRADO (compra sem venda pareada)!
+                    $orphanQty = (float)$order['executed_qty'];
+
+                    // CORREÇÃO: Se executed_qty=0 no banco, buscar valor real na Binance
+                    if ($orphanQty <= 0) {
+                        try {
+                            $binanceOrderId = $order['binance_order_id'] ?? null;
+                            if ($binanceOrderId) {
+                                $response = $this->client->getOrder($order['symbol'], $binanceOrderId);
+                                $binanceData = $response->getData();
+                                $realQty = method_exists($binanceData, 'getExecutedQty')
+                                    ? (float)$binanceData->getExecutedQty()
+                                    : (float)($binanceData['executedQty'] ?? 0);
+
+                                if ($realQty > 0) {
+                                    $orphanQty = $realQty;
+                                    // Corrigir no banco permanentemente
+                                    $ordersModel = new orders_model();
+                                    $ordersModel->set_filter(["idx = '{$order['idx']}'"]);
+                                    $ordersModel->populate(['executed_qty' => $realQty]);
+                                    $ordersModel->save();
+                                    $this->log(
+                                        "[RecoverOrphanedBtc] executed_qty corrigido via Binance para ordem {$order['idx']}: $realQty",
+                                        'INFO',
+                                        'SYSTEM'
+                                    );
+                                } else {
+                                    $this->log(
+                                        "[RecoverOrphanedBtc] Binance retorna qty=0 para BUY idx={$gridOrder['idx']}. Pulando órfã.",
+                                        'WARNING',
+                                        'SYSTEM'
+                                    );
+                                    continue; // Pular esta órfã - não pode criar SELL com qty=0
+                                }
+                            } else {
+                                // binance_order_id indisponível — não é possível consultar a Binance
+                                $this->log(
+                                    "[RecoverOrphanedBtc] BUY idx={$gridOrder['idx']} com qty=0 e sem binance_order_id. Pulando órfã.",
+                                    'WARNING',
+                                    'SYSTEM'
+                                );
+                                continue; // Pular — sem ID não há como recuperar a qty real
+                            }
+                        } catch (Exception $e) {
+                            $this->log(
+                                "[RecoverOrphanedBtc] Erro ao consultar Binance: " . $e->getMessage(),
+                                'ERROR',
+                                'SYSTEM'
+                            );
+                            continue; // Pular para evitar loop
+                        }
+                    }
+
                     $orphanedBuys[] = [
                         'grids_orders_idx' => $gridOrder['idx'],
                         'grid_level' => $gridOrder['grid_level'],
                         'buy_price' => (float)$order['price'],
-                        'executed_qty' => (float)$order['executed_qty'],
+                        'executed_qty' => $orphanQty,
                         'symbol' => $order['symbol']
                     ];
                 }
@@ -1375,6 +1520,67 @@ class setup_controller
             $buyQty   = (float)$buyOrder['executed_qty'];
             $gridLevel = $buyOrder['grid_level'];
             $gridsOrdersIdx = $buyOrder['grids_orders_idx'];
+
+            // CORREÇÃO: Se executed_qty=0 no banco mas ordem está FILLED, buscar valor real na Binance
+            if ($buyQty <= 0) {
+                $this->log(
+                    "⚠️ BUY idx=$gridsOrdersIdx tem executed_qty=0 no banco. Consultando Binance...",
+                    'WARNING',
+                    'TRADE'
+                );
+                try {
+                    $binanceOrderId = $buyOrder['binance_order_id'] ?? null;
+                    if ($binanceOrderId) {
+                        $response = $this->client->getOrder($symbol, $binanceOrderId);
+                        $binanceData = $response->getData();
+                        $realQty = method_exists($binanceData, 'getExecutedQty')
+                            ? (float)$binanceData->getExecutedQty()
+                            : (float)($binanceData['executedQty'] ?? 0);
+
+                        if ($realQty > 0) {
+                            $buyQty = $realQty;
+                            // Atualizar banco para corrigir permanently
+                            $ordersModel = new orders_model();
+                            $ordersModel->set_filter(["idx = '{$buyOrder['idx']}'"]);
+                            $ordersModel->populate(['executed_qty' => $realQty]);
+                            $ordersModel->save();
+                            $this->log(
+                                "✅ executed_qty corrigido via Binance: $realQty BTC",
+                                'SUCCESS',
+                                'TRADE'
+                            );
+                        } else {
+                            $this->log(
+                                "❌ Binance também retorna qty=0. Marcando como processada para evitar loop.",
+                                'ERROR',
+                                'TRADE'
+                            );
+                            // Marcar como processada para quebrar o loop infinito
+                            $this->markOrderAsProcessed($gridsOrdersIdx);
+                            return;
+                        }
+                    } else {
+                        // binance_order_id indisponível — impossível consultar Binance
+                        $this->log(
+                            "❌ BUY idx=$gridsOrdersIdx com qty=0 e sem binance_order_id. " .
+                                "Marcando como processada para evitar loop infinito.",
+                            'ERROR',
+                            'TRADE'
+                        );
+                        $this->markOrderAsProcessed($gridsOrdersIdx);
+                        return;
+                    }
+                } catch (Exception $e) {
+                    $this->log(
+                        "❌ Erro ao consultar Binance para BUY idx=$gridsOrdersIdx: " . $e->getMessage(),
+                        'ERROR',
+                        'TRADE'
+                    );
+                    // Marcar como processada para evitar loop eterno
+                    $this->markOrderAsProcessed($gridsOrdersIdx);
+                    return;
+                }
+            }
 
             $this->log(
                 "🔄 Processando BUY FILLED: grids_orders_idx=$gridsOrdersIdx, qty=$buyQty BTC @ $$buyPrice",
@@ -2967,6 +3173,7 @@ class setup_controller
                     $executedOrders[] = [
                         'idx' => $order['idx'],
                         'grids_orders_idx' => $gridOrder['idx'],
+                        'binance_order_id' => $order['binance_order_id'] ?? null,
                         'symbol' => $order['symbol'],
                         'side' => $order['side'],
                         'price' => $order['price'],
