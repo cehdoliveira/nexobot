@@ -47,7 +47,8 @@ class setup_controller
     private const LOCK_TIMEOUT_MINUTES = 2;                // Lock travado após 2 minutos
 
     // Logs aprimorados
-    private const ENABLE_DETAILED_LOGS = true;
+    private const DEBUG_MODE = false;                       // Desativar para reduzir tamanho de logs. INFO/SYSTEM não serão salvos
+    private const ENABLE_DETAILED_LOGS = !self::DEBUG_MODE; // Logs detalhados apenas em DEBUG_MODE
     private const LOG_RETENTION_DAYS = 30;
 
     // Cache TTL
@@ -121,10 +122,19 @@ class setup_controller
     }
 
     /**
-     * Sistema de logging com execution ID para rastreabilidade
+     * Sistema de logging com execution ID e filtro de níveis
+     * Em modo normal (não-DEBUG): apenas WARNING, ERROR, SUCCESS são salvos
+     * Em DEBUG_MODE: todos os logs são salvos
      */
     private function log(string $message, string $level = 'ERROR', string $type = 'SYSTEM'): void
     {
+        // Filtro de níveis: em produção, descartar INFO e SYSTEM (ruído)
+        if (!self::DEBUG_MODE) {
+            if (in_array($level, ['INFO', 'SYSTEM']) && $type === 'SYSTEM') {
+                return; // Não salvar logs de INFO/SYSTEM em produção
+            }
+        }
+
         $basePath = $this->logPath ?: rtrim(sys_get_temp_dir(), '/') . '/';
         $logFile = match ($type) {
             'API' => $basePath . self::API_LOG,
