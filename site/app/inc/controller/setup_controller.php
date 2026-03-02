@@ -25,7 +25,9 @@ class setup_controller
     private const CAPITAL_ALLOCATION = 0.95;     // 95% do capital USDC disponível
     private const MIN_TRADE_USDC = 11;           // Mínimo por trade
     private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
-    private const INITIAL_BTC_ALLOCATION = 0.30; // 30% do capital inicial convertido em BTC para ordens de venda superiores
+    private const INITIAL_BTC_ALLOCATION = 0.40; // 40% do capital inicial convertido em BTC para ordens de venda superiores
+    private const SAFETY_MARGIN = 1.15;          // 15% de margem sobre o mínimo da Binance
+    private const CAPITAL_USAGE_PERCENT = 0.85;   // Usa 85% do USDC disponível como fallback
 
     // Proteção: Stop-Loss Global
     private const MAX_DRAWDOWN_PERCENT = 0.20;    // 20% perda máxima do capital inicial
@@ -246,9 +248,7 @@ class setup_controller
             $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
 
             // Distribui o lucro acumulado entre os 6 níveis do grid
-            // Assim cada nova ordem recebe 1/6 do lucro total reinvestido
             $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
-
             $capitalWithReinvestment = $baseCapital + $profitReinvestmentPerOrder;
 
             if ($profitReinvestmentPerOrder > 0) {
@@ -260,7 +260,39 @@ class setup_controller
                 );
             }
 
-            return $capitalWithReinvestment;
+            // PRIORIDADE 1: Verificar se USDC livre comporta o capital base
+            $availableUsdc = $this->getAvailableUsdcBalance(true);
+
+            if ($availableUsdc >= $capitalWithReinvestment) {
+                return $capitalWithReinvestment; // Capital base disponível — usar normalmente
+            }
+
+            // PRIORIDADE 2: Capital base indisponível — usar 85% do USDC livre como fallback
+            $adjustedCapital = $availableUsdc * self::CAPITAL_USAGE_PERCENT;
+
+            // PRIORIDADE 3: Validar se capital ajustado atinge o mínimo viável
+            $minViable = self::MIN_TRADE_USDC * self::SAFETY_MARGIN;
+
+            if ($adjustedCapital >= $minViable) {
+                $this->log(
+                    "📉 Capital ajustado para BUY: \$" . number_format($adjustedCapital, 2) .
+                        " (base esperado: \$" . number_format($capitalWithReinvestment, 2) .
+                        " | USDC disponível: \$" . number_format($availableUsdc, 2) . ")",
+                    'INFO',
+                    'TRADE'
+                );
+                return $adjustedCapital;
+            }
+
+            // PRIORIDADE 4: USDC insuficiente até para fallback
+            $this->log(
+                "⚠️ USDC insuficiente para BUY: disponível \$" . number_format($availableUsdc, 2) .
+                    " | mínimo viável \$" . number_format($minViable, 2) .
+                    " | base esperado \$" . number_format($capitalWithReinvestment, 2),
+                'WARNING',
+                'TRADE'
+            );
+            return 0.0;
         } catch (Exception $e) {
             $this->log("Erro ao calcular capital com reinvestimento: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return (float)$gridData['capital_per_level'];
@@ -2003,25 +2035,21 @@ class setup_controller
             $gridSpacing = $this->getGridSpacing($symbol);
             $buyPrice = $sellPrice * (1 - $gridSpacing);
 
-            // Calcular capital com reinvestimento de lucros
-            $capitalWithReinvestment = $this->getCapitalForNewBuyOrder($gridId, $gridData);
+            // Calcular capital com fallback flexível (já valida USDC disponível internamente)
+            $capitalForBuy = $this->getCapitalForNewBuyOrder($gridId, $gridData);
 
-            // Validar se há USDC disponível antes de tentar colocar a ordem
-            $availableUsdc = $this->getAvailableUsdcBalance(true);
+            // Se retornou 0, USDC é insuficiente até para fallback — aguardar próximo ciclo
+            if ($capitalForBuy <= 0) {
+                // Log já emitido dentro de getCapitalForNewBuyOrder
+                return;
+            }
 
             // ══════ FEE THRESHOLD VALIDATION ══════
             // Validar se a nova BUY será lucrativa antes de criar
-            if (!$this->isTradeViable($capitalWithReinvestment, $symbol)) {
+            if (!$this->isTradeViable($capitalForBuy, $symbol)) {
                 $this->log(
                     "⚠️ Nova BUY pós-SELL nível {$sellOrder['grid_level']} rejeitada: lucro esperado abaixo do mínimo " .
-                        "(capital: \$" . number_format($capitalWithReinvestment, 4) . ")",
-                    'INFO',
-                    'TRADE'
-                );
-            } elseif ($availableUsdc < $capitalWithReinvestment) {
-                $this->log(
-                    "⚠️ Saldo USDC insuficiente para nova ordem BUY no nível {$sellOrder['grid_level']}: " .
-                        "disponível $availableUsdc USDC, requerido $capitalWithReinvestment USDC",
+                        "(capital: \$" . number_format($capitalForBuy, 4) . ")",
                     'WARNING',
                     'TRADE'
                 );
@@ -2031,7 +2059,7 @@ class setup_controller
                     $symbol,
                     $sellOrder['grid_level'],
                     $buyPrice,
-                    $capitalWithReinvestment
+                    $capitalForBuy
                 );
 
                 if ($newBuyOrderId) {
@@ -2864,6 +2892,18 @@ class setup_controller
         }
 
         try {
+            // Validar capital mínimo com margem de segurança
+            $minCapital = self::MIN_TRADE_USDC * self::SAFETY_MARGIN;
+            if ($capitalUsdc < $minCapital) {
+                $this->log(
+                    "💸 Trade inviável: Capital=\$" . number_format($capitalUsdc, 4) .
+                        " abaixo do mínimo com margem (\$" . number_format($minCapital, 2) . ")",
+                    'WARNING',
+                    'TRADE'
+                );
+                return false;
+            }
+
             $gridSpacing = $this->getGridSpacing($symbol);
             $expectedGrossProfit = $capitalUsdc * $gridSpacing;
             $totalFees = $capitalUsdc * (self::FEE_PERCENT * 2); // buy fee + sell fee
@@ -2881,7 +2921,7 @@ class setup_controller
                         " | Fees=\$" . number_format($totalFees, 6) .
                         " | Lucro líquido=\$" . number_format($expectedNetProfit, 6) .
                         " | Mínimo=\$" . number_format($minProfit, 4),
-                    'INFO',
+                    'WARNING',
                     'TRADE'
                 );
                 return false;
