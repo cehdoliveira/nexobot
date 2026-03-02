@@ -91,10 +91,14 @@ document.addEventListener('alpine:init', () => {
 
     async fetchDashboardData() {
       try {
-        const response = await fetch(window.location.pathname, {
+        const response = await fetch(window.location.pathname + '?_t=' + Date.now(), {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          },
           body: JSON.stringify({ action: 'getGridDashboardData' })
         });
 
@@ -135,10 +139,14 @@ document.addEventListener('alpine:init', () => {
 
       try {
         // Clear cache first
-        await fetch(window.location.pathname, {
+        await fetch(window.location.pathname + '?_t=' + Date.now(), {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          },
           body: JSON.stringify({ action: 'clearCache' })
         });
 
@@ -190,10 +198,14 @@ document.addEventListener('alpine:init', () => {
     startPriceTicker() {
       this.priceInterval = setInterval(async () => {
         try {
-          const response = await fetch(window.location.pathname, {
+          const response = await fetch(window.location.pathname + '?_t=' + Date.now(), {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache'
+            },
             body: JSON.stringify({ action: 'getCurrentPrice' })
           });
           if (!response.ok) return;
@@ -246,10 +258,14 @@ document.addEventListener('alpine:init', () => {
       this.actionLoading = action;
 
       try {
-        const response = await fetch(window.location.pathname, {
+        const response = await fetch(window.location.pathname + '?_t=' + Date.now(), {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          },
           body: JSON.stringify({ action })
         });
 
