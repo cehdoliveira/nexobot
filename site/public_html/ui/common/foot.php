@@ -8,8 +8,10 @@
     <?php
     // Verificar se existem controllers definidos para esta página
     if (isset($alpineControllers) && is_array($alpineControllers) && count($alpineControllers) > 0) {
+        // Cache busting: adiciona timestamp para forçar reload em desenvolvimento
+        $cacheBust = '?v=' . time();
         foreach ($alpineControllers as $controller) {
-            print('<script src="' . constant('cFrontend') . 'assets/js/alpine/' . $controller . 'Controller.js"></script>' . "\n    ");
+            print('<script src="' . constant('cFrontend') . 'assets/js/alpine/' . $controller . 'Controller.js' . $cacheBust . '"></script>' . "\n    ");
         }
     }
     ?>

@@ -2006,7 +2006,7 @@ class site_controller
 
                 // 4. Desativar ordens do grid no banco
                 $gridsOrdersModel = new grids_orders_model();
-                $gridsOrdersModel->set_filter(["grid_id = '$gridId'", "active = 'yes'"]);
+                $gridsOrdersModel->set_filter(["grids_id = '$gridId'", "active = 'yes'"]);
                 $gridsOrdersModel->load_data();
                 foreach ($gridsOrdersModel->data as $gridOrder) {
                     $gridsOrdersModel->load_byIdx($gridOrder['idx']);

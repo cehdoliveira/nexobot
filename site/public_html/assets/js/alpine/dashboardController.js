@@ -1,7 +1,10 @@
 /**
  * Grid Dashboard Controller - Enhanced (Alpine.js)
  * Real-time data updates, responsive interactions, bot controls
+ * Version: 2.0.1 (2026-03-04 08:40 - Fixed body stream read)
  */
+console.log('📦 Dashboard Controller loaded - v2.0.1');
+
 document.addEventListener('alpine:init', () => {
   Alpine.data('gridDashboardController', () => ({
     // === State ===
@@ -229,6 +232,8 @@ document.addEventListener('alpine:init', () => {
 
     // === Bot Control Actions ===
     async executeAction(action, confirmTitle, confirmText) {
+      console.log(`🔧 executeAction called - v2.0.1 - action: ${action}`);
+      
       const confirm = await Swal.fire({
         title: confirmTitle,
         html: confirmText,
