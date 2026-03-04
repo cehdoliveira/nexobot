@@ -1755,6 +1755,8 @@ class site_controller
     private function ajaxEmergencyShutdown(): void
     {
         try {
+            error_log("🔴 [ajaxEmergencyShutdown] Iniciando shutdown de emergência");
+            
             $binanceConfig = BinanceConfig::getActiveCredentials();
             $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
             $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
@@ -1766,12 +1768,16 @@ class site_controller
             $gridsModel->load_data();
 
             $cancelledOrders = [];
+            $soldAssets = [];
             $errors = [];
 
             foreach ($gridsModel->data as $grid) {
+                $gridId = $grid['idx'];
                 $symbol = $grid['symbol'];
+                
+                error_log("🔴 [ajaxEmergencyShutdown] Processando grid #$gridId ($symbol)");
 
-                // Cancelar todas as ordens abertas na Binance
+                // 1. Cancelar todas as ordens abertas na Binance
                 try {
                     $openOrdersResp = $api->getOpenOrders($symbol);
                     $openOrdersData = $openOrdersResp->getData();
@@ -1793,7 +1799,10 @@ class site_controller
                                 $api->deleteOrder($symbol, $orderId);
                                 $cancelledOrders[] = $orderId;
                             } catch (Exception $ce) {
-                                $errors[] = "Erro ao cancelar ordem $orderId: " . $ce->getMessage();
+                                // Ignorar erro -2011 (ordem já cancelada/executada)
+                                if (strpos($ce->getMessage(), '-2011') === false) {
+                                    $errors[] = "Erro ao cancelar ordem $orderId: " . $ce->getMessage();
+                                }
                             }
                         }
                     }
@@ -1801,8 +1810,57 @@ class site_controller
                     $errors[] = "Erro ao buscar ordens de $symbol: " . $e->getMessage();
                 }
 
-                // Marcar grid como cancelled
-                $gridsModel->load_byIdx($grid['idx']);
+                // 2. VENDER TODO O BTC A MERCADO (EMERGÊNCIA = LIQUIDAR TUDO)
+                try {
+                    $asset = str_replace('USDC', '', $symbol); // BTCUSDC -> BTC
+                    $accountInfo = $api->getAccount();
+                    $accountData = $accountInfo->getData();
+
+                    if ($accountData && isset($accountData['balances'])) {
+                        foreach ($accountData['balances'] as $balance) {
+                            if ($balance['asset'] === $asset) {
+                                $free = (float)($balance['free'] ?? 0);
+
+                                if ($free > 0.00001) { // Mínimo de 0.00001 BTC
+                                    error_log("🔴 [ajaxEmergencyShutdown] Vendendo $free BTC a mercado");
+                                    
+                                    // Arredondar para 5 casas decimais (padrão BTC)
+                                    $finalQty = number_format($free, 5, '.', '');
+
+                                    $newOrderReq = new NewOrderRequest();
+                                    $newOrderReq->setSymbol($symbol);
+                                    $newOrderReq->setSide(Side::SELL);
+                                    $newOrderReq->setType(OrderType::MARKET);
+                                    $newOrderReq->setQuantity($finalQty);
+
+                                    $response = $api->newOrder($newOrderReq);
+                                    $orderData = $response->getData();
+                                    
+                                    $sellOrderId = method_exists($orderData, 'getOrderId') 
+                                        ? $orderData->getOrderId() 
+                                        : ($orderData['orderId'] ?? null);
+
+                                    $soldAssets[] = [
+                                        'grid_id' => $gridId,
+                                        'symbol' => $symbol,
+                                        'asset' => $asset,
+                                        'quantity' => $finalQty,
+                                        'order_id' => $sellOrderId
+                                    ];
+                                    
+                                    error_log("✅ [ajaxEmergencyShutdown] BTC vendido: $finalQty @ mercado");
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception $e) {
+                    $errors[] = "Erro ao vender $asset: " . $e->getMessage();
+                    error_log("❌ [ajaxEmergencyShutdown] Erro ao vender BTC: " . $e->getMessage());
+                }
+
+                // 3. Marcar grid como cancelled
+                $gridsModel->load_byIdx($gridId);
                 $gridsModel->populate([
                     'status' => 'cancelled',
                     'stop_loss_triggered' => 'yes',
@@ -1810,15 +1868,16 @@ class site_controller
                 ]);
                 $gridsModel->save();
 
-                // Log
+                // 4. Log
                 $logModel = new grid_logs_model();
                 $logModel->populate([
-                    'grids_id' => $grid['idx'],
+                    'grids_id' => $gridId,
                     'log_type' => 'emergency_shutdown',
                     'event' => 'Desligamento de emergência via dashboard',
-                    'message' => 'Grid cancelado e ' . count($cancelledOrders) . ' ordens canceladas.',
+                    'message' => 'Grid cancelado: ' . count($cancelledOrders) . ' ordens canceladas, ' . count($soldAssets) . ' ativo(s) vendido(s).',
                     'data' => json_encode([
                         'cancelled_orders' => $cancelledOrders,
+                        'sold_assets' => $soldAssets,
                         'errors' => $errors,
                         'shutdown_at' => date('Y-m-d H:i:s')
                     ])
@@ -1826,7 +1885,7 @@ class site_controller
                 $logModel->save();
             }
 
-            // Atualizar ordens no DB
+            // 5. Atualizar ordens no DB
             foreach ($cancelledOrders as $binanceOrderId) {
                 $ordersModel = new orders_model();
                 $ordersModel->set_filter(["binance_order_id = '$binanceOrderId'"]);
@@ -1838,17 +1897,31 @@ class site_controller
                 }
             }
 
+            $message = 'Desligamento de emergência executado: ' . count($cancelledOrders) . ' ordens canceladas';
+            if (!empty($soldAssets)) {
+                $message .= ', ' . count($soldAssets) . ' ativo(s) vendido(s) (conta liquidada em USDC)';
+            }
+            if (!empty($errors)) {
+                $message .= ' | ' . count($errors) . ' erro(s)';
+            }
+            
+            error_log("✅ [ajaxEmergencyShutdown] Sucesso: $message");
+
             echo json_encode([
                 'success' => true,
-                'message' => 'Desligamento de emergência executado. ' . count($cancelledOrders) . ' ordens canceladas.',
+                'message' => $message,
                 'cancelled_orders' => $cancelledOrders,
+                'sold_assets' => $soldAssets,
                 'errors' => $errors
             ], JSON_UNESCAPED_UNICODE);
+            exit;
         } catch (Exception $e) {
+            error_log("❌ [ajaxEmergencyShutdown] Erro: " . $e->getMessage());
             echo json_encode([
                 'success' => false,
                 'message' => 'Erro no desligamento de emergência: ' . $e->getMessage()
             ], JSON_UNESCAPED_UNICODE);
+            exit;
         }
     }
 
@@ -1862,15 +1935,15 @@ class site_controller
     }
 
     /**
-     * Encerra todas as posições de GRID TRADING
-     * - Cancela todas as ordens abertas nos grids ativos
-     * - Vende o BTC acumulado
-     * - Marca grids como cancelled
+     * Encerra posições (PAUSE): Cancela ordens e pausa o bot
+     * - Cancela ordens abertas (mas MANTÉM o BTC acumulado)
+     * - Marca grid como 'stopped' para permitir restart
+     * - NÃO vende os ativos (preserva posições)
      */
     private function ajaxCloseAllGridPositions(): void
     {
         try {
-            error_log("🔵 [ajaxCloseAllGridPositions] Iniciando encerramento de posições");
+            error_log("⏸️ [ajaxCloseAllGridPositions] Iniciando PAUSA (manter BTC)");
             
             $binanceConfig = BinanceConfig::getActiveCredentials();
             $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
@@ -1882,28 +1955,26 @@ class site_controller
             $gridsModel->set_filter(["active = 'yes'", "status IN ('active', 'stopped')"]);
             $gridsModel->load_data();
 
-            error_log("🔵 [ajaxCloseAllGridPositions] Grids encontrados: " . count($gridsModel->data));
+            error_log("⏸️ [ajaxCloseAllGridPositions] Grids encontrados: " . count($gridsModel->data));
 
             if (empty($gridsModel->data)) {
                 echo json_encode([
                     'success' => true,
-                    'message' => 'Nenhum grid ativo para encerrar',
+                    'message' => 'Nenhum grid ativo para pausar',
                     'cancelled_orders' => [],
-                    'sold_assets' => [],
                     'errors' => []
                 ], JSON_UNESCAPED_UNICODE);
                 exit;
             }
 
             $cancelledOrders = [];
-            $soldAssets = [];
             $errors = [];
 
             foreach ($gridsModel->data as $grid) {
                 $gridId = $grid['idx'];
                 $symbol = $grid['symbol'];
                 
-                error_log("🔵 [ajaxCloseAllGridPositions] Processando grid #$gridId ($symbol)");
+                error_log("⏸️ [ajaxCloseAllGridPositions] Pausando grid #$gridId ($symbol)");
 
                 // 1. Cancelar todas as ordens abertas do grid na Binance
                 try {
@@ -1952,57 +2023,12 @@ class site_controller
                     $errors[] = "Erro ao buscar ordens de $symbol: " . $e->getMessage();
                 }
 
-                // 2. Vender todo o BTC acumulado no grid
-                try {
-                    $asset = str_replace('USDC', '', $symbol); // BTCUSDC -> BTC
-                    $accountInfo = $api->getAccount();
-                    $accountData = $accountInfo->getData();
-
-                    if ($accountData && isset($accountData['balances'])) {
-                        foreach ($accountData['balances'] as $balance) {
-                            if ($balance['asset'] === $asset) {
-                                $free = (float)($balance['free'] ?? 0);
-
-                                if ($free > 0.0001) { // Mínimo de 0.0001 BTC
-                                    $newOrderReq = new NewOrderRequest();
-                                    $newOrderReq->setSymbol($symbol);
-                                    $newOrderReq->setSide(Side::SELL);
-                                    $newOrderReq->setType(OrderType::MARKET);
-                                    $newOrderReq->setQuantity($free);
-
-                                    $response = $api->newOrder($newOrderReq);
-                                    $orderData = $response->getData();
-                                    
-                                    $sellOrderId = method_exists($orderData, 'getOrderId') 
-                                        ? $orderData->getOrderId() 
-                                        : ($orderData['orderId'] ?? null);
-
-                                    $soldAssets[] = [
-                                        'grid_id' => $gridId,
-                                        'symbol' => $symbol,
-                                        'asset' => $asset,
-                                        'quantity' => $free,
-                                        'order_id' => $sellOrderId
-                                    ];
-                                }
-                                break;
-                            }
-                        }
-                    }
-                } catch (Exception $e) {
-                    $errors[] = "Erro ao vender $asset: " . $e->getMessage();
-                }
-
-                // 3. Marcar grid como cancelled
+                // 2. Marcar grid como STOPPED (não cancelled) para permitir restart
                 $gridsModel->load_byIdx($gridId);
-                $gridsModel->populate([
-                    'status' => 'cancelled',
-                    'stop_loss_triggered' => 'yes',
-                    'stop_loss_triggered_at' => date('Y-m-d H:i:s')
-                ]);
+                $gridsModel->populate(['status' => 'stopped']);
                 $gridsModel->save();
 
-                // 4. Desativar ordens do grid no banco
+                // 3. Desativar ordens do grid no banco
                 $gridsOrdersModel = new grids_orders_model();
                 $gridsOrdersModel->set_filter(["grids_id = '$gridId'", "active = 'yes'"]);
                 $gridsOrdersModel->load_data();
@@ -2012,18 +2038,18 @@ class site_controller
                     $gridsOrdersModel->save();
                 }
 
-                // 5. Log
+                // 4. Log
                 $logModel = new grid_logs_model();
                 $logModel->populate([
                     'grids_id' => $gridId,
-                    'log_type' => 'close_all_positions',
-                    'event' => 'Encerramento de posições via dashboard',
-                    'message' => "Grid #$gridId encerrado: " . count($cancelledOrders) . ' ordens canceladas, ' . count($soldAssets) . ' ativos vendidos.',
+                    'log_type' => 'pause_grid',
+                    'event' => 'Bot pausado via dashboard (Encerrar Posições)',
+                    'message' => "Grid #$gridId pausado: " . count($cancelledOrders) . ' ordens canceladas. BTC preservado na conta.',
                     'data' => json_encode([
                         'cancelled_orders' => array_column($cancelledOrders, 'order_id'),
-                        'sold_assets' => $soldAssets,
                         'errors' => $errors,
-                        'closed_at' => date('Y-m-d H:i:s')
+                        'paused_at' => date('Y-m-d H:i:s'),
+                        'note' => 'Ativos mantidos - use Religar Bot para continuar'
                     ])
                 ]);
                 $logModel->save();
@@ -2039,10 +2065,7 @@ class site_controller
                 error_log("⚠️ Erro ao limpar cache: " . $cacheEx->getMessage());
             }
 
-            $message = "Posições encerradas: " . count($cancelledOrders) . " ordens canceladas";
-            if (!empty($soldAssets)) {
-                $message .= ", " . count($soldAssets) . " ativo(s) vendido(s)";
-            }
+            $message = "Bot pausado: " . count($cancelledOrders) . " ordens canceladas. BTC mantido na conta.";
             if (!empty($errors)) {
                 $message .= " | " . count($errors) . " erro(s) detectado(s)";
             }
@@ -2053,15 +2076,15 @@ class site_controller
                 'success' => true,
                 'message' => $message,
                 'cancelled_orders' => $cancelledOrders,
-                'sold_assets' => $soldAssets,
-                'errors' => $errors
+                'errors' => $errors,
+                'note' => 'Posições preservadas. Use "Religar Bot" para continuar operando.'
             ], JSON_UNESCAPED_UNICODE);
             exit;
         } catch (Exception $e) {
             error_log("❌ [ajaxCloseAllGridPositions] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
             echo json_encode([
                 'success' => false,
-                'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
+                'message' => 'Erro ao pausar bot: ' . $e->getMessage()
             ], JSON_UNESCAPED_UNICODE);
             exit;
         }
