@@ -21,8 +21,8 @@ set_include_path($_SERVER["DOCUMENT_ROOT"] . PATH_SEPARATOR . get_include_path()
 
 require_once($_SERVER["DOCUMENT_ROOT"] . "../app/inc/main.php");
 
-use Binance\Spot\SpotRestApi;
-use Binance\Spot\SpotRestApiUtil;
+use Binance\Client\Spot\SpotRestApi;
+use Binance\Client\Spot\SpotRestApiUtil;
 
 echo "═══════════════════════════════════════════════\n";
 echo "  DIAGNÓSTICO DE CAPITAL - NEXOBOT\n";
