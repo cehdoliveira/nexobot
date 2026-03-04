@@ -156,6 +156,12 @@ $dashboardJson = json_encode([
                     <i class="bi bi-exclamation-triangle"></i>
                     <span class="d-none d-lg-inline">Emergência</span>
                 </button>
+                <?php elseif (in_array($gridStatus ?? '', ['cancelled', 'stopped'])): ?>
+                <button class="ctrl-btn-desktop btn-restart" @click="restartGrid()"
+                        :disabled="actionLoading === 'restartGrid'">
+                    <i class="bi bi-play-fill"></i>
+                    <span class="d-none d-lg-inline">Religar Bot</span>
+                </button>
                 <?php endif; ?>
             </div>
         </div>
@@ -771,6 +777,11 @@ $dashboardJson = json_encode([
         <button class="ctrl-btn ctrl-danger" @click="emergencyShutdown()" aria-label="Desligamento de emergência">
             <i class="bi bi-exclamation-triangle-fill"></i>
             <span>Emerg.</span>
+        </button>
+        <?php elseif (in_array($gridStatus ?? '', ['cancelled', 'stopped'])): ?>
+        <button class="ctrl-btn ctrl-success" @click="restartGrid()" aria-label="Religar bot">
+            <i class="bi bi-play-fill"></i>
+            <span>Religar</span>
         </button>
         <?php endif; ?>
     </div>

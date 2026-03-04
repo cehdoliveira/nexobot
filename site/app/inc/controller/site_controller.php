@@ -53,7 +53,7 @@ class site_controller
                         exit;
 
                     case 'closeAllPositions':
-                        $this->closeAllPositions();
+                        $this->ajaxCloseAllGridPositions();
                         exit;
 
                     case 'stopBot':
@@ -66,6 +66,10 @@ class site_controller
 
                     case 'resetGrid':
                         $this->ajaxResetGrid();
+                        exit;
+
+                    case 'restartGrid':
+                        $this->ajaxRestartGrid();
                         exit;
 
                     default:
@@ -1857,5 +1861,281 @@ class site_controller
     {
         // Usa a mesma lógica do emergency shutdown
         $this->ajaxEmergencyShutdown();
+    }
+
+    /**
+     * Encerra todas as posições de GRID TRADING
+     * - Cancela todas as ordens abertas nos grids ativos
+     * - Vende o BTC acumulado
+     * - Marca grids como cancelled
+     */
+    private function ajaxCloseAllGridPositions(): void
+    {
+        try {
+            $binanceConfig = BinanceConfig::getActiveCredentials();
+            $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+            $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+            $configurationBuilder->url($binanceConfig['baseUrl']);
+            $api = new SpotRestApi($configurationBuilder->build());
+
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["active = 'yes'", "status IN ('active', 'stopped')"]);
+            $gridsModel->load_data();
+
+            if (empty($gridsModel->data)) {
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Nenhum grid ativo para encerrar',
+                    'cancelled_orders' => [],
+                    'sold_assets' => [],
+                    'errors' => []
+                ], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $cancelledOrders = [];
+            $soldAssets = [];
+            $errors = [];
+
+            foreach ($gridsModel->data as $grid) {
+                $gridId = $grid['idx'];
+                $symbol = $grid['symbol'];
+
+                // 1. Cancelar todas as ordens abertas do grid na Binance
+                try {
+                    $openOrdersResp = $api->getOpenOrders($symbol);
+                    $openOrdersData = $openOrdersResp->getData();
+
+                    $orders = [];
+                    if (is_array($openOrdersData)) {
+                        $orders = $openOrdersData;
+                    } elseif (is_object($openOrdersData) && method_exists($openOrdersData, 'getItems')) {
+                        $orders = $openOrdersData->getItems();
+                    }
+
+                    foreach ($orders as $binanceOrder) {
+                        if (!is_array($binanceOrder)) {
+                            $binanceOrder = json_decode(json_encode($binanceOrder), true);
+                        }
+                        $orderId = $binanceOrder['orderId'] ?? null;
+                        if ($orderId) {
+                            try {
+                                $api->deleteOrder($symbol, $orderId);
+                                $cancelledOrders[] = [
+                                    'grid_id' => $gridId,
+                                    'symbol' => $symbol,
+                                    'order_id' => $orderId
+                                ];
+
+                                // Atualizar no banco
+                                $ordersModel = new orders_model();
+                                $ordersModel->set_filter(["binance_order_id = '$orderId'"]);
+                                $ordersModel->load_data();
+                                if (!empty($ordersModel->data)) {
+                                    $ordersModel->load_byIdx($ordersModel->data[0]['idx']);
+                                    $ordersModel->populate(['status' => 'CANCELED', 'active' => 'no']);
+                                    $ordersModel->save();
+                                }
+                            } catch (Exception $ce) {
+                                // Ignorar erro -2011 (ordem já cancelada/executada)
+                                if (strpos($ce->getMessage(), '-2011') === false) {
+                                    $errors[] = "Erro ao cancelar ordem $orderId: " . $ce->getMessage();
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception $e) {
+                    $errors[] = "Erro ao buscar ordens de $symbol: " . $e->getMessage();
+                }
+
+                // 2. Vender todo o BTC acumulado no grid
+                try {
+                    $asset = str_replace('USDC', '', $symbol); // BTCUSDC -> BTC
+                    $accountInfo = $api->getAccount();
+                    $accountData = $accountInfo->getData();
+
+                    if ($accountData && isset($accountData['balances'])) {
+                        foreach ($accountData['balances'] as $balance) {
+                            if ($balance['asset'] === $asset) {
+                                $free = (float)($balance['free'] ?? 0);
+
+                                if ($free > 0.0001) { // Mínimo de 0.0001 BTC
+                                    $newOrderReq = new NewOrderRequest();
+                                    $newOrderReq->setSymbol($symbol);
+                                    $newOrderReq->setSide(Side::SELL);
+                                    $newOrderReq->setType(OrderType::MARKET);
+                                    $newOrderReq->setQuantity($free);
+
+                                    $response = $api->newOrder($newOrderReq);
+                                    $orderData = $response->getData();
+                                    
+                                    $sellOrderId = method_exists($orderData, 'getOrderId') 
+                                        ? $orderData->getOrderId() 
+                                        : ($orderData['orderId'] ?? null);
+
+                                    $soldAssets[] = [
+                                        'grid_id' => $gridId,
+                                        'symbol' => $symbol,
+                                        'asset' => $asset,
+                                        'quantity' => $free,
+                                        'order_id' => $sellOrderId
+                                    ];
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception $e) {
+                    $errors[] = "Erro ao vender $asset: " . $e->getMessage();
+                }
+
+                // 3. Marcar grid como cancelled
+                $gridsModel->load_byIdx($gridId);
+                $gridsModel->populate([
+                    'status' => 'cancelled',
+                    'stop_loss_triggered' => 'yes',
+                    'stop_loss_triggered_at' => date('Y-m-d H:i:s')
+                ]);
+                $gridsModel->save();
+
+                // 4. Desativar ordens do grid no banco
+                $gridsOrdersModel = new grids_orders_model();
+                $gridsOrdersModel->set_filter(["grid_id = '$gridId'", "active = 'yes'"]);
+                $gridsOrdersModel->load_data();
+                foreach ($gridsOrdersModel->data as $gridOrder) {
+                    $gridsOrdersModel->load_byIdx($gridOrder['idx']);
+                    $gridsOrdersModel->populate(['active' => 'no']);
+                    $gridsOrdersModel->save();
+                }
+
+                // 5. Log
+                $logModel = new grid_logs_model();
+                $logModel->populate([
+                    'grids_id' => $gridId,
+                    'log_type' => 'close_all_positions',
+                    'event' => 'Encerramento de posições via dashboard',
+                    'message' => "Grid #$gridId encerrado: " . count($cancelledOrders) . ' ordens canceladas, ' . count($soldAssets) . ' ativos vendidos.',
+                    'data' => json_encode([
+                        'cancelled_orders' => array_column($cancelledOrders, 'order_id'),
+                        'sold_assets' => $soldAssets,
+                        'errors' => $errors,
+                        'closed_at' => date('Y-m-d H:i:s')
+                    ]),
+                    'created_at' => date('Y-m-d H:i:s')
+                ]);
+                $logModel->save();
+            }
+
+            // Limpar cache
+            try {
+                $redis = RedisCache::getInstance();
+                $redis->deletePattern('*grids*');
+                $redis->deletePattern('*orders*');
+                $redis->deletePattern('*dashboard*');
+            } catch (Exception $cacheEx) {
+                error_log("⚠️ Erro ao limpar cache: " . $cacheEx->getMessage());
+            }
+
+            $message = "Posições encerradas: " . count($cancelledOrders) . " ordens canceladas";
+            if (!empty($soldAssets)) {
+                $message .= ", " . count($soldAssets) . " ativo(s) vendido(s)";
+            }
+            if (!empty($errors)) {
+                $message .= " | " . count($errors) . " erro(s) detectado(s)";
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => $message,
+                'cancelled_orders' => $cancelledOrders,
+                'sold_assets' => $soldAssets,
+                'errors' => $errors
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            error_log("❌ Erro ao encerrar posições de grid: " . $e->getMessage());
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Religa o bot após encerramento de emergência ou stop-loss
+     * Remove flags de stop_loss e permite que novo grid seja criado
+     */
+    private function ajaxRestartGrid(): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter([
+                "active = 'yes'", 
+                "status IN ('cancelled', 'stopped')"
+            ]);
+            $gridsModel->load_data();
+
+            if (empty($gridsModel->data)) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Nenhum grid parado/cancelado encontrado para religar'
+                ], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $reactivatedGrids = [];
+
+            foreach ($gridsModel->data as $grid) {
+                $gridId = $grid['idx'];
+                
+                // Desativar grid antigo definitivamente
+                $gridsModel->load_byIdx($gridId);
+                $gridsModel->populate([
+                    'active' => 'no',
+                    'status' => 'completed'
+                ]);
+                $gridsModel->save();
+
+                // Log
+                $logModel = new grid_logs_model();
+                $logModel->populate([
+                    'grids_id' => $gridId,
+                    'log_type' => 'restart_request',
+                    'event' => 'Bot religado via dashboard',
+                    'message' => "Grid #$gridId desativado. Novo grid será criado na próxima execução da CRON.",
+                    'data' => json_encode([
+                        'restarted_at' => date('Y-m-d H:i:s'),
+                        'old_status' => $grid['status']
+                    ]),
+                    'created_at' => date('Y-m-d H:i:s')
+                ]);
+                $logModel->save();
+
+                $reactivatedGrids[] = [
+                    'grid_id' => $gridId,
+                    'symbol' => $grid['symbol'],
+                    'old_status' => $grid['status']
+                ];
+            }
+
+            // Limpar cache
+            try {
+                $redis = RedisCache::getInstance();
+                $redis->deletePattern('*grids*');
+                $redis->deletePattern('*dashboard*');
+            } catch (Exception $cacheEx) {
+                error_log("⚠️ Erro ao limpar cache: " . $cacheEx->getMessage());
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => '✅ Bot religado! Novo grid será criado automaticamente na próxima execução (em até 1 minuto).',
+                'reactivated_grids' => $reactivatedGrids
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao religar bot: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+        }
     }
 }

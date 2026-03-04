@@ -316,6 +316,14 @@ document.addEventListener('alpine:init', () => {
       );
     },
 
+    restartGrid() {
+      this.executeAction(
+        'restartGrid',
+        '🔄 Religar Bot',
+        '<p>Isso irá:</p><ul class="text-start"><li>Desativar o grid parado/cancelado</li><li>Permitir que um novo grid seja criado</li><li>O novo grid será criado automaticamente na próxima execução (em até 1 minuto)</li></ul>'
+      );
+    },
+
     // === Connection Status ===
     updateConnectionStatus(connected) {
       this.isConnected = connected;
