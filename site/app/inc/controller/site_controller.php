@@ -1732,8 +1732,7 @@ class site_controller
                     'log_type' => 'bot_stopped',
                     'event' => 'Bot parado via dashboard',
                     'message' => 'Grid parado manualmente. Ordens existentes foram mantidas.',
-                    'data' => json_encode(['stopped_at' => date('Y-m-d H:i:s')]),
-                    'created_at' => date('Y-m-d H:i:s')
+                    'data' => json_encode(['stopped_at' => date('Y-m-d H:i:s')])
                 ]);
                 $logModel->save();
             }
@@ -1822,8 +1821,7 @@ class site_controller
                         'cancelled_orders' => $cancelledOrders,
                         'errors' => $errors,
                         'shutdown_at' => date('Y-m-d H:i:s')
-                    ]),
-                    'created_at' => date('Y-m-d H:i:s')
+                    ])
                 ]);
                 $logModel->save();
             }
