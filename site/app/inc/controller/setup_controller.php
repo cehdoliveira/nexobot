@@ -1191,35 +1191,12 @@ class setup_controller
 
             if (count($executedOrders) > 0) {
                 $this->log("Processando " . count($executedOrders) . " ordens executadas no grid $gridId", 'INFO', 'TRADE');
-            }
-
-            foreach ($executedOrders as $order) {
-                try {
-                    if ($order['side'] === 'BUY') {
-                        // COMPRA EXECUTADA → Criar ordem de VENDA acima
-                        $this->handleBuyOrderFilled($gridId, $order);
-                    } elseif ($order['side'] === 'SELL') {
-                        // VENDA EXECUTADA → Criar ordem de COMPRA abaixo + calcular lucro
-                        $this->handleSellOrderFilled($gridId, $order);
-                    }
-
-                    // Marcar como processada SOMENTE se não houve exceção
-                    // Se handleBuyOrderFilled falhar (ex: minNotional), a exceção
-                    // chegará aqui e a ordem NÃO será marcada — será retentada na próxima CRON
-                    $this->markOrderAsProcessed($order['grids_orders_idx']);
-                } catch (Exception $e) {
-                    $this->log(
-                        "Erro ao processar ordem {$order['idx']} (será retentada): " . $e->getMessage(),
-                        'ERROR',
-                        'TRADE'
-                    );
-                    $this->saveGridLog(
-                        $gridId,
-                        'order_processing_error',
-                        'error',
-                        "Erro ao processar ordem (retentando na próxima rodada): " . $e->getMessage()
-                    );
-                }
+                
+                // ══════ LÓGICA "VIOLÃO" REATIVA ══════
+                // Processar ordens em BATCH (não uma por uma)
+                // Se 2 SELLs executam → divide USDC disponível por 2
+                // Se 3 BUYs executam → divide BTC disponível por 3
+                $this->handleFilledOrdersBatch($gridId, $executedOrders, $symbol);
             }
 
             // 2. VERIFICAR SE PREÇO SAIU DO RANGE (REBALANCE)
@@ -1999,6 +1976,315 @@ class setup_controller
         } catch (Exception $e) {
             $this->log("Erro ao calcular BTC alocado em SELLs: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return 0.0;
+        }
+    }
+
+    /**
+     * LÓGICA "VIOLÃO" REATIVA: Processa ordens executadas em BATCH
+     * 
+     * Quando múltiplas ordens executam antes da CRON rodar:
+     * - 2 SELLs executam → divide USDC disponível por 2 → cria 2 BUYs
+     * - 3 BUYs executam → divide BTC disponível por 3 → cria 3 SELLs
+     * 
+     * Cada ordem reativa é criada 1% acima/abaixo do preço EXATO onde executou
+     * 
+     * @param int $gridId ID do grid
+     * @param array $executedOrders Lista de ordens executadas
+     * @param string $symbol Par de negociação
+     */
+    private function handleFilledOrdersBatch(int $gridId, array $executedOrders, string $symbol): void
+    {
+        try {
+            // Separar ordens por tipo
+            $sellOrders = array_filter($executedOrders, fn($o) => $o['side'] === 'SELL');
+            $buyOrders = array_filter($executedOrders, fn($o) => $o['side'] === 'BUY');
+            
+            $sellCount = count($sellOrders);
+            $buyCount = count($buyOrders);
+            
+            $this->log(
+                "🎸 Modo Violão: $sellCount SELL(s) + $buyCount BUY(s) executadas",
+                'INFO',
+                'TRADE'
+            );
+
+            // ══════════════════════════════════════════════════
+            // PARTE 1: PROCESSAR VENDAS (SELL → criar BUYs)
+            // ══════════════════════════════════════════════════
+            if ($sellCount > 0) {
+                $this->log("🔴 Processando $sellCount venda(s)...", 'INFO', 'TRADE');
+                
+                // 1. Calcular lucro de cada SELL
+                foreach ($sellOrders as $sellOrder) {
+                    $this->calculateAndSaveSellProfit($gridId, $sellOrder);
+                }
+                
+                // 2. Buscar USDC disponível
+                $availableUsdc = $this->getAvailableUsdcBalance(true);
+                
+                // 3. Dividir capital igualmente entre as SELLs
+                $capitalPerBuy = $availableUsdc / $sellCount;
+                
+                $this->log(
+                    "💵 USDC disponível: $" . number_format($availableUsdc, 2) . 
+                    " → $" . number_format($capitalPerBuy, 2) . " por ordem",
+                    'INFO',
+                    'TRADE'
+                );
+                
+                // 4. Validar se atinge mínimo $11 USDC por ordem
+                $minUsdcPerOrder = 11.0;
+                
+                if ($capitalPerBuy < $minUsdcPerOrder) {
+                    $this->log(
+                        "⚠️ Capital insuficiente para $sellCount BUY(s): $" . number_format($capitalPerBuy, 2) . 
+                        " por ordem (mínimo: $$minUsdcPerOrder). Aguardando mais capital.",
+                        'WARNING',
+                        'TRADE'
+                    );
+                    
+                    // Marcar SELLs como processadas mesmo sem criar BUYs
+                    // (evita reprocessamento infinito)
+                    foreach ($sellOrders as $sellOrder) {
+                        $this->markOrderAsProcessed($sellOrder['grids_orders_idx']);
+                    }
+                    
+                    // Não criar BUYs, mas continuar para processar BUYs se houver
+                } else {
+                    // 5. Criar uma BUY para cada SELL executada
+                    foreach ($sellOrders as $sellOrder) {
+                        try {
+                            $sellPrice = (float)$sellOrder['price'];
+                            $gridSpacing = $this->getGridSpacing($symbol);
+                            
+                            // Preço da BUY: 1% ABAIXO do preço EXATO onde SELL executou
+                            $buyPrice = $sellPrice * (1 - $gridSpacing);
+                            
+                            $this->log(
+                                "🎸 Criando BUY reativa: SELL @ $" . number_format($sellPrice, 2) . 
+                                " → BUY @ $" . number_format($buyPrice, 2) . 
+                                " (capital: $" . number_format($capitalPerBuy, 2) . ")",
+                                'INFO',
+                                'TRADE'
+                            );
+                            
+                            // Criar ordem BUY (sem validação anti-duplicação aqui)
+                            $newBuyOrderId = $this->placeBuyOrder(
+                                $gridId,
+                                $symbol,
+                                $sellOrder['grid_level'], // reutiliza nível da SELL
+                                $buyPrice,
+                                $capitalPerBuy
+                            );
+                            
+                            if ($newBuyOrderId) {
+                                $this->log(
+                                    "✅ BUY criada: nível {$sellOrder['grid_level']} @ $" . number_format($buyPrice, 2),
+                                    'SUCCESS',
+                                    'TRADE'
+                                );
+                            }
+                            
+                            // Marcar SELL como processada
+                            $this->markOrderAsProcessed($sellOrder['grids_orders_idx']);
+                        } catch (Exception $e) {
+                            $this->log(
+                                "❌ Erro ao criar BUY reativa para SELL #{$sellOrder['idx']}: " . $e->getMessage(),
+                                'ERROR',
+                                'TRADE'
+                            );
+                            
+                            // Não marcar como processada → retenta na próxima CRON
+                        }
+                    }
+                }
+            }
+
+            // ══════════════════════════════════════════════════
+            // PARTE 2: PROCESSAR COMPRAS (BUY → criar SELLs)
+            // ══════════════════════════════════════════════════
+            if ($buyCount > 0) {
+                $this->log("🟢 Processando $buyCount compra(s)...", 'INFO', 'TRADE');
+                
+                // 1. Buscar BTC disponível
+                $baseAsset = str_replace('USDC', '', $symbol);
+                $accountInfo = $this->getAccountInfo(true);
+                $btcFree = 0.0;
+                
+                foreach ($accountInfo['balances'] as $balance) {
+                    if ($balance['asset'] === $baseAsset) {
+                        $btcFree = (float)$balance['free'];
+                        break;
+                    }
+                }
+                
+                // 2. Dividir BTC igualmente entre as BUYs
+                $btcPerSell = $btcFree / $buyCount;
+                
+                $this->log(
+                    "₿ BTC disponível: " . number_format($btcFree, 5) . 
+                    " → " . number_format($btcPerSell, 5) . " por ordem",
+                    'INFO',
+                    'TRADE'
+                );
+                
+                // 3. Validar se atinge quantidade mínima
+                $symbolData = $this->getExchangeInfo($symbol);
+                list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                $minQty = (float)($symbolData['filters'][array_search('LOT_SIZE', array_column($symbolData['filters'], 'filterType'))]['minQty'] ?? 0.00001);
+                
+                if ($btcPerSell < $minQty) {
+                    $this->log(
+                        "⚠️ BTC insuficiente para $buyCount SELL(s): " . number_format($btcPerSell, 5) . 
+                        " por ordem (mínimo: " . number_format($minQty, 5) . "). Aguardando mais BTC.",
+                        'WARNING',
+                        'TRADE'
+                    );
+                    
+                    // Marcar BUYs como processadas mesmo sem criar SELLs
+                    foreach ($buyOrders as $buyOrder) {
+                        $this->markOrderAsProcessed($buyOrder['grids_orders_idx']);
+                    }
+                } else {
+                    // 4. Criar uma SELL para cada BUY executada
+                    foreach ($buyOrders as $buyOrder) {
+                        try {
+                            $buyPrice = (float)$buyOrder['price'];
+                            $gridSpacing = $this->getGridSpacing($symbol);
+                            
+                            // Preço da SELL: 1% ACIMA do preço EXATO onde BUY executou
+                            $sellPrice = $buyPrice * (1 + $gridSpacing);
+                            
+                            $this->log(
+                                "🎸 Criando SELL reativa: BUY @ $" . number_format($buyPrice, 2) . 
+                                " → SELL @ $" . number_format($sellPrice, 2) . 
+                                " (qty: " . number_format($btcPerSell, 5) . " BTC)",
+                                'INFO',
+                                'TRADE'
+                            );
+                            
+                            // Criar ordem SELL
+                            $newSellOrderId = $this->placeSellOrder(
+                                $gridId,
+                                $symbol,
+                                $buyOrder['grid_level'], // reutiliza nível da BUY
+                                $sellPrice,
+                                $btcPerSell,
+                                $buyOrder['grids_orders_idx'] // paired_order_id
+                            );
+                            
+                            if ($newSellOrderId) {
+                                $this->log(
+                                    "✅ SELL criada: nível {$buyOrder['grid_level']} @ $" . number_format($sellPrice, 2),
+                                    'SUCCESS',
+                                    'TRADE'
+                                );
+                            }
+                            
+                            // Marcar BUY como processada
+                            $this->markOrderAsProcessed($buyOrder['grids_orders_idx']);
+                        } catch (Exception $e) {
+                            $this->log(
+                                "❌ Erro ao criar SELL reativa para BUY #{$buyOrder['idx']}: " . $e->getMessage(),
+                                'ERROR',
+                                'TRADE'
+                            );
+                            
+                            // Não marcar como processada → retenta na próxima CRON
+                        }
+                    }
+                }
+            }
+            
+            $this->log("🎸 Modo Violão finalizado", 'INFO', 'TRADE');
+        } catch (Exception $e) {
+            $this->log(
+                "❌ Erro no processamento BATCH: " . $e->getMessage(),
+                'ERROR',
+                'TRADE'
+            );
+            throw $e;
+        }
+    }
+
+    /**
+     * Calcula e salva o lucro de uma ordem SELL executada
+     * (Extraído para reutilização no modo BATCH)
+     */
+    private function calculateAndSaveSellProfit(int $gridId, array $sellOrder): void
+    {
+        try {
+            $symbol = $sellOrder['symbol'];
+            $sellPrice = (float)$sellOrder['price'];
+            $executedQty = (float)$sellOrder['executed_qty'];
+
+            // Buscar ordem de compra pareada
+            $buyOrder = null;
+            if ($sellOrder['paired_order_id']) {
+                $gridsOrdersModel = new grids_orders_model();
+                $gridsOrdersModel->set_filter(["idx='" . $sellOrder['paired_order_id'] . "'"]);
+                $gridsOrdersModel->load_data();
+                $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+                if (!empty($gridsOrdersModel->data)) {
+                    $buyOrderData = $gridsOrdersModel->data[0];
+                    if (!empty($buyOrderData['orders_attach'])) {
+                        $buyOrder = $buyOrderData['orders_attach'][0];
+                    }
+                }
+            }
+
+            $profit = 0.0;
+            $gridData = $this->getGridById($gridId);
+
+            if ($buyOrder) {
+                // CASO 1: SELL reativa — TEM ordem de compra pareada
+                $buyPrice = (float)$buyOrder['price'];
+                $buyValue = $executedQty * $buyPrice;
+                $sellValue = $executedQty * $sellPrice;
+                $buyFee = $buyValue * 0.001;
+                $sellFee = $sellValue * 0.001;
+                $profit = $sellValue - $buyValue - $buyFee - $sellFee;
+
+                $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
+                $this->incrementGridProfit($gridId, $profit);
+
+                $profitLabel = $profit >= 0 ? 'Lucro' : 'Prejuízo';
+                $profitColor = $profit >= 0 ? 'SUCCESS' : 'WARNING';
+
+                $this->log(
+                    "PAR COMPLETO em $symbol: $profitLabel = $" . number_format(abs($profit), 4) . 
+                    " | Compra: \$$buyPrice × $executedQty BTC | Venda: \$$sellPrice",
+                    $profitColor,
+                    'TRADE'
+                );
+            } else {
+                // CASO 2: SELL inicial do grid híbrido — SEM ordem de compra pareada
+                $btcCostPrice = (float)($gridData['current_price'] ?? 0);
+
+                if ($btcCostPrice > 0) {
+                    $costValue = $executedQty * $btcCostPrice;
+                    $sellValue = $executedQty * $sellPrice;
+                    $costFee = $costValue * 0.001;
+                    $sellFee = $sellValue * 0.001;
+                    $profit = $sellValue - $costValue - $costFee - $sellFee;
+
+                    $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
+                    $this->incrementGridProfit($gridId, $profit);
+
+                    $this->log(
+                        "SELL HÍBRIDO em $symbol: Lucro = $" . number_format($profit, 4) . 
+                        " (Custo BTC: \$$btcCostPrice | Venda: \$$sellPrice)",
+                        'SUCCESS',
+                        'TRADE'
+                    );
+                }
+            }
+        } catch (Exception $e) {
+            $this->log(
+                "Erro ao calcular lucro da SELL #{$sellOrder['idx']}: " . $e->getMessage(),
+                'ERROR',
+                'TRADE'
+            );
         }
     }
 
