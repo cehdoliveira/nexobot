@@ -2026,8 +2026,7 @@ class site_controller
                         'sold_assets' => $soldAssets,
                         'errors' => $errors,
                         'closed_at' => date('Y-m-d H:i:s')
-                    ]),
-                    'created_at' => date('Y-m-d H:i:s')
+                    ])
                 ]);
                 $logModel->save();
             }
@@ -2123,8 +2122,7 @@ class site_controller
                         'data' => json_encode([
                             'restarted_at' => date('Y-m-d H:i:s'),
                             'old_status' => $grid['status']
-                        ]),
-                        'created_at' => date('Y-m-d H:i:s')
+                        ])
                     ]);
                     $logModel->save();
                 } catch (Exception $logEx) {
