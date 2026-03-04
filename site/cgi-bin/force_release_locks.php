@@ -6,7 +6,22 @@
  * ⚠️  Use com cuidado! Pause a CRON antes de executar.
  */
 
-require_once dirname(__DIR__) . '/app/inc/kernel.php';
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+// Configurar timezone ANTES de qualquer operação com data/hora
+date_default_timezone_set("America/Sao_Paulo");
+
+$_SERVER["DOCUMENT_ROOT"] = dirname(__FILE__) . "/../public_html/";
+$_SERVER["HTTP_HOST"] = "nexobot.local";
+putenv('SERVER_PORT=80');
+putenv('SERVER_PROTOCOL=http');
+putenv('SERVER_NAME=' . $_SERVER["HTTP_HOST"]);
+putenv('SCRIPT_NAME=index.php');
+set_include_path($_SERVER["DOCUMENT_ROOT"] . PATH_SEPARATOR . get_include_path());
+
+require_once($_SERVER["DOCUMENT_ROOT"] . "../app/inc/main.php");
 
 echo "═══════════════════════════════════════════════\n";
 echo "  FORÇA LIBERAÇÃO DE LOCKS - NEXOBOT\n";
