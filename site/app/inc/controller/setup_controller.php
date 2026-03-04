@@ -527,7 +527,21 @@ class setup_controller
                     $this->releaseGridLock($gridId);
                 }
             } else {
-                // Grid não existe → verificar capital ANTES de criar novo
+                // Grid não existe → VERIFICAR PROTEÇÕES ANTES DE CRIAR
+                
+                // ══════ PROTEÇÃO: STOP-LOSS ACIONADO ══════
+                // Se botão "Emergência" foi clicado, NÃO recriar automaticamente
+                // Usuário deve usar "Religar Bot" explicitamente
+                if ($this->hasStopLossTriggered($symbol)) {
+                    $this->log(
+                        "🛑 Stop-loss acionado para $symbol. Grid bloqueado até uso de 'Religar Bot'. CRON não criará novo grid.",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    return;
+                }
+                
+                // ══════ PROTEÇÃO: CAPITAL MÍNIMO ══════
                 if ($this->totalCapital < self::MIN_TRADE_USDC) {
                     $this->log(
                         "Capital USDC insuficiente para criar novo grid em $symbol: {$this->totalCapital} USDC (mínimo: " . self::MIN_TRADE_USDC . " USDC)",
@@ -536,6 +550,8 @@ class setup_controller
                     );
                     return;
                 }
+                
+                // ✅ Tudo OK, criar novo grid
                 $this->createNewGrid($symbol);
             }
         } catch (Exception $e) {
@@ -3094,6 +3110,32 @@ class setup_controller
         } catch (Exception $e) {
             $this->log("Erro ao buscar grid ativo: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return null;
+        }
+    }
+
+    /**
+     * Verifica se existe grid cancelado com stop-loss acionado
+     * Impede criação de novo grid até que usuário use "Religar Bot"
+     *
+     * @param string $symbol Símbolo a verificar
+     * @return bool true se existe stop-loss ativo (bloqueio)
+     */
+    private function hasStopLossTriggered(string $symbol): bool
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter([
+                "active = 'yes'",
+                "symbol = '{$symbol}'",
+                "status = 'cancelled'",
+                "stop_loss_triggered = 'yes'"
+            ]);
+            $gridsModel->load_data();
+
+            return !empty($gridsModel->data);
+        } catch (Exception $e) {
+            $this->log("Erro ao verificar stop-loss: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return false; // Em caso de erro, não bloquear
         }
     }
 

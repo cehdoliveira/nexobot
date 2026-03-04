@@ -1813,50 +1813,91 @@ class site_controller
                 // 2. VENDER TODO O BTC A MERCADO (EMERGÊNCIA = LIQUIDAR TUDO)
                 try {
                     $asset = str_replace('USDC', '', $symbol); // BTCUSDC -> BTC
+                    error_log("🔴 [ajaxEmergencyShutdown] Buscando saldo de $asset...");
+                    
                     $accountInfo = $api->getAccount();
                     $accountData = $accountInfo->getData();
 
-                    if ($accountData && isset($accountData['balances'])) {
-                        foreach ($accountData['balances'] as $balance) {
-                            if ($balance['asset'] === $asset) {
-                                $free = (float)($balance['free'] ?? 0);
+                    if (!$accountData || !isset($accountData['balances'])) {
+                        error_log("❌ [ajaxEmergencyShutdown] Dados de balances não encontrados");
+                        $errors[] = "Não foi possível obter saldos da conta";
+                        continue;
+                    }
 
-                                if ($free > 0.00001) { // Mínimo de 0.00001 BTC
-                                    error_log("🔴 [ajaxEmergencyShutdown] Vendendo $free BTC a mercado");
-                                    
-                                    // Arredondar para 5 casas decimais (padrão BTC)
-                                    $finalQty = number_format($free, 5, '.', '');
-
-                                    $newOrderReq = new NewOrderRequest();
-                                    $newOrderReq->setSymbol($symbol);
-                                    $newOrderReq->setSide(Side::SELL);
-                                    $newOrderReq->setType(OrderType::MARKET);
-                                    $newOrderReq->setQuantity($finalQty);
-
-                                    $response = $api->newOrder($newOrderReq);
-                                    $orderData = $response->getData();
-                                    
-                                    $sellOrderId = method_exists($orderData, 'getOrderId') 
-                                        ? $orderData->getOrderId() 
-                                        : ($orderData['orderId'] ?? null);
-
-                                    $soldAssets[] = [
-                                        'grid_id' => $gridId,
-                                        'symbol' => $symbol,
-                                        'asset' => $asset,
-                                        'quantity' => $finalQty,
-                                        'order_id' => $sellOrderId
-                                    ];
-                                    
-                                    error_log("✅ [ajaxEmergencyShutdown] BTC vendido: $finalQty @ mercado");
-                                }
-                                break;
-                            }
+                    $assetBalance = null;
+                    foreach ($accountData['balances'] as $balance) {
+                        if ($balance['asset'] === $asset) {
+                            $assetBalance = $balance;
+                            break;
                         }
                     }
+
+                    if (!$assetBalance) {
+                        error_log("⚠️ [ajaxEmergencyShutdown] Asset $asset não encontrado nos balances");
+                        continue;
+                    }
+
+                    $free = (float)($assetBalance['free'] ?? 0);
+                    $locked = (float)($assetBalance['locked'] ?? 0);
+                    $total = $free + $locked;
+                    
+                    error_log("🔴 [ajaxEmergencyShutdown] Saldo $asset: Free=$free | Locked=$locked | Total=$total");
+
+                    if ($free < 0.00001) {
+                        error_log("⚠️ [ajaxEmergencyShutdown] Saldo livre de $asset insuficiente para venda: $free (mínimo: 0.00001)");
+                        continue;
+                    }
+
+                    // Obter LOT_SIZE da Binance
+                    error_log("🔴 [ajaxEmergencyShutdown] Obtendo LOT_SIZE filters para $symbol...");
+                    $exchangeInfo = $this->getExchangeInfo($symbol);
+                    $lotSizeFilter = $this->extractLotSizeFilter($exchangeInfo);
+                    
+                    error_log("🔴 [ajaxEmergencyShutdown] LOT_SIZE: stepSize={$lotSizeFilter['stepSize']} | minQty={$lotSizeFilter['minQty']}");
+
+                    // Ajustar quantidade ao stepSize
+                    $finalQty = $this->adjustQuantityToStepSize($free, $lotSizeFilter['stepSize']);
+                    $finalQtyFloat = (float)$finalQty;
+
+                    error_log("🔴 [ajaxEmergencyShutdown] Quantidade ajustada: $free → $finalQty");
+
+                    // Verificar se quantidade ajustada é >= minQty
+                    if ($finalQtyFloat < (float)$lotSizeFilter['minQty']) {
+                        error_log("⚠️ [ajaxEmergencyShutdown] Quantidade ajustada $finalQty < minQty {$lotSizeFilter['minQty']}. Venda cancelada.");
+                        $errors[] = "Quantidade de $asset muito pequena para venda: $finalQty < {$lotSizeFilter['minQty']}";
+                        continue;
+                    }
+
+                    // Executar ordem MARKET SELL
+                    error_log("🔴 [ajaxEmergencyShutdown] Executando MARKET SELL: $finalQty $asset");
+                    
+                    $newOrderReq = new NewOrderRequest();
+                    $newOrderReq->setSymbol($symbol);
+                    $newOrderReq->setSide(Side::SELL);
+                    $newOrderReq->setType(OrderType::MARKET);
+                    $newOrderReq->setQuantity($finalQty);
+
+                    $response = $api->newOrder($newOrderReq);
+                    $orderData = $response->getData();
+                    
+                    $sellOrderId = method_exists($orderData, 'getOrderId') 
+                        ? $orderData->getOrderId() 
+                        : ($orderData['orderId'] ?? null);
+
+                    $soldAssets[] = [
+                        'grid_id' => $gridId,
+                        'symbol' => $symbol,
+                        'asset' => $asset,
+                        'quantity' => $finalQty,
+                        'quantity_original' => $free,
+                        'order_id' => $sellOrderId
+                    ];
+                    
+                    error_log("✅ [ajaxEmergencyShutdown] BTC vendido com sucesso: $finalQty @ MARKET | Order ID: $sellOrderId");
                 } catch (Exception $e) {
-                    $errors[] = "Erro ao vender $asset: " . $e->getMessage();
-                    error_log("❌ [ajaxEmergencyShutdown] Erro ao vender BTC: " . $e->getMessage());
+                    $errorMsg = $e->getMessage();
+                    $errors[] = "Erro ao vender $asset: $errorMsg";
+                    error_log("❌ [ajaxEmergencyShutdown] Erro ao vender $asset: $errorMsg | Trace: " . $e->getTraceAsString());
                 }
 
                 // 3. Marcar grid como cancelled
@@ -2182,5 +2223,80 @@ class site_controller
             ], JSON_UNESCAPED_UNICODE);
             exit;
         }
+    }
+
+    /**
+     * Helper: Obtém exchangeInfo da Binance com cache
+     */
+    private function getExchangeInfo(string $symbol): array
+    {
+        static $cache = [];
+        
+        if (isset($cache[$symbol])) {
+            return $cache[$symbol];
+        }
+
+        try {
+            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
+            $response = file_get_contents($url);
+
+            if ($response === false) {
+                throw new Exception("Erro ao acessar exchangeInfo da Binance");
+            }
+
+            $data = json_decode($response, true);
+            if (!isset($data['symbols'][0])) {
+                throw new Exception("Símbolo {$symbol} não encontrado");
+            }
+
+            $cache[$symbol] = $data['symbols'][0];
+            return $cache[$symbol];
+        } catch (Exception $e) {
+            error_log("❌ [getExchangeInfo] Erro: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Helper: Extrai filtros LOT_SIZE e PRICE_FILTER
+     */
+    private function extractLotSizeFilter(array $symbolData): array
+    {
+        $filters = array_column($symbolData['filters'], null, 'filterType');
+        
+        if (!isset($filters['LOT_SIZE'])) {
+            throw new Exception("LOT_SIZE filter não encontrado");
+        }
+
+        return [
+            'stepSize' => $filters['LOT_SIZE']['stepSize'],
+            'minQty' => $filters['LOT_SIZE']['minQty'] ?? '0.00001',
+            'maxQty' => $filters['LOT_SIZE']['maxQty'] ?? '9000'
+        ];
+    }
+
+    /**
+     * Helper: Calcula casas decimais de um stepSize
+     */
+    private function getDecimalPlaces(string $value): int
+    {
+        $parts = explode('.', $value);
+        return isset($parts[1]) ? strlen(rtrim($parts[1], '0')) : 0;
+    }
+
+    /**
+     * Helper: Ajusta quantidade ao stepSize da Binance
+     */
+    private function adjustQuantityToStepSize(float $quantity, string $stepSize): string
+    {
+        $stepSizeFloat = (float)$stepSize;
+        
+        // Arredondar para baixo (floor) para garantir que não exceda saldo disponível
+        $adjustedQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
+        
+        // Formatear com casas decimais corretas
+        $decimalPlaces = $this->getDecimalPlaces($stepSize);
+        
+        return number_format($adjustedQty, $decimalPlaces, '.', '');
     }
 }
