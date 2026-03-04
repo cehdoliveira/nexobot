@@ -1786,6 +1786,56 @@ class setup_controller
     }
 
     /**
+     * Verifica se já existe uma ordem BUY ativa em faixa de preço próxima
+     * Previne criação de ordens duplicadas quando múltiplas SELLs executam simultaneamente
+     * 
+     * @param int $gridId ID do grid
+     * @param float $targetPrice Preço da nova BUY que seria criada
+     * @param float $tolerance Tolerância percentual (default: 0.005 = 0.5%)
+     * @return bool true se já existe BUY ativa próxima ao preço alvo
+     */
+    private function hasActiveBuyOrderNearPrice(int $gridId, float $targetPrice, float $tolerance = 0.005): bool
+    {
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "grid_id = '{$gridId}'",
+                "active = 'yes'"
+            ]);
+            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders_attach'][0] ?? null;
+
+                if ($order && $order['side'] === 'BUY') {
+                    // Verificar se a BUY está ativa (aguardando execução)
+                    if (in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                        $existingPrice = (float)$order['price'];
+                        $priceDiffPercent = abs($existingPrice - $targetPrice) / $existingPrice;
+
+                        // Se diferença < tolerância (0.5%), considera duplicação
+                        if ($priceDiffPercent < $tolerance) {
+                            $this->log(
+                                "🔍 Duplicação detectada: BUY existente @ \${$existingPrice} vs nova @ \${$targetPrice} " .
+                                "(diferença: " . number_format($priceDiffPercent * 100, 2) . "%)",
+                                'INFO',
+                                'TRADE'
+                            );
+                            return true; // BUY muito próxima encontrada
+                        }
+                    }
+                }
+            }
+
+            return false;
+        } catch (Exception $e) {
+            $this->log("Erro ao verificar BUY ativa próxima ao preço $targetPrice: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return false;
+        }
+    }
+
+    /**
      * Verifica se uma ordem de compra já tem uma venda pareada ativa
      */
     private function hasPairedSellOrder(int $buyGridOrderIdx): bool
@@ -2058,6 +2108,18 @@ class setup_controller
             // Se retornou 0, USDC é insuficiente até para fallback — aguardar próximo ciclo
             if ($capitalForBuy <= 0) {
                 // Log já emitido dentro de getCapitalForNewBuyOrder
+                return;
+            }
+
+            // ══════ DUPLICATE ORDER PREVENTION ══════
+            // Verificar se já existe BUY ativa em faixa de preço próxima (±0.5%)
+            // Previne duplicação quando múltiplas SELLs executam simultaneamente
+            if ($this->hasActiveBuyOrderNearPrice($gridId, $buyPrice)) {
+                $this->log(
+                    "⚠️ Nova BUY pós-SELL nível {$sellOrder['grid_level']} pulada: já existe BUY ativa em preço próximo a \${$buyPrice} (proteção anti-duplicação)",
+                    'WARNING',
+                    'TRADE'
+                );
                 return;
             }
 
