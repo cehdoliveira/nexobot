@@ -269,7 +269,24 @@ document.addEventListener('alpine:init', () => {
           body: JSON.stringify({ action })
         });
 
-        const data = await response.json();
+        // Verificar se resposta HTTP foi bem-sucedida
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`❌ HTTP ${response.status}:`, errorText);
+          throw new Error(`Erro HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        // Tentar parsear JSON
+        let data;
+        try {
+          data = await response.json();
+        } catch (parseError) {
+          const responseText = await response.text();
+          console.error('❌ Erro ao parsear JSON:', responseText);
+          throw new Error('Resposta inválida do servidor');
+        }
+
+        console.log('✅ Resposta recebida:', data);
 
         if (data.success) {
           this.showToast(data.message || 'Ação executada com sucesso', 'success');
@@ -278,7 +295,8 @@ document.addEventListener('alpine:init', () => {
           this.showToast(data.message || 'Erro ao executar ação', 'error');
         }
       } catch (error) {
-        this.showToast('Erro de comunicação com o servidor', 'error');
+        console.error('❌ Erro na ação:', error);
+        this.showToast(error.message || 'Erro de comunicação com o servidor', 'error');
       } finally {
         this.actionLoading = null;
       }

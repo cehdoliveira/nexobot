@@ -1872,6 +1872,8 @@ class site_controller
     private function ajaxCloseAllGridPositions(): void
     {
         try {
+            error_log("🔵 [ajaxCloseAllGridPositions] Iniciando encerramento de posições");
+            
             $binanceConfig = BinanceConfig::getActiveCredentials();
             $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
             $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
@@ -1882,6 +1884,8 @@ class site_controller
             $gridsModel->set_filter(["active = 'yes'", "status IN ('active', 'stopped')"]);
             $gridsModel->load_data();
 
+            error_log("🔵 [ajaxCloseAllGridPositions] Grids encontrados: " . count($gridsModel->data));
+
             if (empty($gridsModel->data)) {
                 echo json_encode([
                     'success' => true,
@@ -1890,7 +1894,7 @@ class site_controller
                     'sold_assets' => [],
                     'errors' => []
                 ], JSON_UNESCAPED_UNICODE);
-                return;
+                exit;
             }
 
             $cancelledOrders = [];
@@ -1900,6 +1904,8 @@ class site_controller
             foreach ($gridsModel->data as $grid) {
                 $gridId = $grid['idx'];
                 $symbol = $grid['symbol'];
+                
+                error_log("🔵 [ajaxCloseAllGridPositions] Processando grid #$gridId ($symbol)");
 
                 // 1. Cancelar todas as ordens abertas do grid na Binance
                 try {
@@ -2044,6 +2050,8 @@ class site_controller
                 $message .= " | " . count($errors) . " erro(s) detectado(s)";
             }
 
+            error_log("✅ [ajaxCloseAllGridPositions] Sucesso: $message");
+
             echo json_encode([
                 'success' => true,
                 'message' => $message,
@@ -2051,12 +2059,14 @@ class site_controller
                 'sold_assets' => $soldAssets,
                 'errors' => $errors
             ], JSON_UNESCAPED_UNICODE);
+            exit;
         } catch (Exception $e) {
-            error_log("❌ Erro ao encerrar posições de grid: " . $e->getMessage());
+            error_log("❌ [ajaxCloseAllGridPositions] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
             echo json_encode([
                 'success' => false,
                 'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
             ], JSON_UNESCAPED_UNICODE);
+            exit;
         }
     }
 
@@ -2067,6 +2077,8 @@ class site_controller
     private function ajaxRestartGrid(): void
     {
         try {
+            error_log("🟢 [ajaxRestartGrid] Iniciando religamento do bot");
+            
             $gridsModel = new grids_model();
             $gridsModel->set_filter([
                 "active = 'yes'", 
@@ -2074,18 +2086,23 @@ class site_controller
             ]);
             $gridsModel->load_data();
 
+            error_log("🟢 [ajaxRestartGrid] Grids parados encontrados: " . count($gridsModel->data));
+
             if (empty($gridsModel->data)) {
+                error_log("⚠️ [ajaxRestartGrid] Nenhum grid encontrado para religar");
                 echo json_encode([
                     'success' => false,
                     'message' => 'Nenhum grid parado/cancelado encontrado para religar'
                 ], JSON_UNESCAPED_UNICODE);
-                return;
+                exit;
             }
 
             $reactivatedGrids = [];
 
             foreach ($gridsModel->data as $grid) {
                 $gridId = $grid['idx'];
+                
+                error_log("🟢 [ajaxRestartGrid] Desativando grid #$gridId (status: {$grid['status']})");
                 
                 // Desativar grid antigo definitivamente
                 $gridsModel->load_byIdx($gridId);
@@ -2096,19 +2113,23 @@ class site_controller
                 $gridsModel->save();
 
                 // Log
-                $logModel = new grid_logs_model();
-                $logModel->populate([
-                    'grids_id' => $gridId,
-                    'log_type' => 'restart_request',
-                    'event' => 'Bot religado via dashboard',
-                    'message' => "Grid #$gridId desativado. Novo grid será criado na próxima execução da CRON.",
-                    'data' => json_encode([
-                        'restarted_at' => date('Y-m-d H:i:s'),
-                        'old_status' => $grid['status']
-                    ]),
-                    'created_at' => date('Y-m-d H:i:s')
-                ]);
-                $logModel->save();
+                try {
+                    $logModel = new grid_logs_model();
+                    $logModel->populate([
+                        'grids_id' => $gridId,
+                        'log_type' => 'restart_request',
+                        'event' => 'Bot religado via dashboard',
+                        'message' => "Grid #$gridId desativado. Novo grid será criado na próxima execução da CRON.",
+                        'data' => json_encode([
+                            'restarted_at' => date('Y-m-d H:i:s'),
+                            'old_status' => $grid['status']
+                        ]),
+                        'created_at' => date('Y-m-d H:i:s')
+                    ]);
+                    $logModel->save();
+                } catch (Exception $logEx) {
+                    error_log("⚠️ [ajaxRestartGrid] Erro ao salvar log: " . $logEx->getMessage());
+                }
 
                 $reactivatedGrids[] = [
                     'grid_id' => $gridId,
@@ -2123,19 +2144,24 @@ class site_controller
                 $redis->deletePattern('*grids*');
                 $redis->deletePattern('*dashboard*');
             } catch (Exception $cacheEx) {
-                error_log("⚠️ Erro ao limpar cache: " . $cacheEx->getMessage());
+                error_log("⚠️ [ajaxRestartGrid] Erro ao limpar cache: " . $cacheEx->getMessage());
             }
+
+            error_log("✅ [ajaxRestartGrid] Bot religado com sucesso. Grids desativados: " . count($reactivatedGrids));
 
             echo json_encode([
                 'success' => true,
                 'message' => '✅ Bot religado! Novo grid será criado automaticamente na próxima execução (em até 1 minuto).',
                 'reactivated_grids' => $reactivatedGrids
             ], JSON_UNESCAPED_UNICODE);
+            exit;
         } catch (Exception $e) {
+            error_log("❌ [ajaxRestartGrid] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
             echo json_encode([
                 'success' => false,
                 'message' => 'Erro ao religar bot: ' . $e->getMessage()
             ], JSON_UNESCAPED_UNICODE);
+            exit;
         }
     }
 }
