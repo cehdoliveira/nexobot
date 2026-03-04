@@ -269,20 +269,22 @@ document.addEventListener('alpine:init', () => {
           body: JSON.stringify({ action })
         });
 
+        // Ler resposta como texto primeiro (uma única vez)
+        const responseText = await response.text();
+
         // Verificar se resposta HTTP foi bem-sucedida
         if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`❌ HTTP ${response.status}:`, errorText);
+          console.error(`❌ HTTP ${response.status}:`, responseText);
           throw new Error(`Erro HTTP ${response.status}: ${response.statusText}`);
         }
 
-        // Tentar parsear JSON
+        // Tentar parsear JSON manualmente
         let data;
         try {
-          data = await response.json();
+          data = JSON.parse(responseText);
         } catch (parseError) {
-          const responseText = await response.text();
           console.error('❌ Erro ao parsear JSON:', responseText);
+          console.error('❌ Parse error:', parseError);
           throw new Error('Resposta inválida do servidor');
         }
 
