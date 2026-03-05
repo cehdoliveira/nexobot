@@ -1183,21 +1183,21 @@ class setup_controller
             // 0. SINCRONIZAR STATUS DAS ORDENS COM A BINANCE
             $this->syncOrdersWithBinance($gridId);
 
-            // 0.5 RECUPERAR BTC ÓRFÃO (sem venda pareada)
-            $this->recoverOrphanedBtc($gridId, $symbol, $gridData);
-
             // 1. BUSCAR ORDENS EXECUTADAS MAS NÃO PROCESSADAS
             $executedOrders = $this->getExecutedUnprocessedOrders($gridId);
 
             if (count($executedOrders) > 0) {
                 $this->log("Processando " . count($executedOrders) . " ordens executadas no grid $gridId", 'INFO', 'TRADE');
-                
+
                 // ══════ LÓGICA "VIOLÃO" REATIVA ══════
                 // Processar ordens em BATCH (não uma por uma)
                 // Se 2 SELLs executam → divide USDC disponível por 2
                 // Se 3 BUYs executam → divide BTC disponível por 3
                 $this->handleFilledOrdersBatch($gridId, $executedOrders, $symbol);
             }
+
+            // 1.5 RECUPERAR BTC ÓRFÃO (contingência para ciclos anteriores sem pareamento)
+            $this->recoverOrphanedBtc($gridId, $symbol, $gridData);
 
             // 2. VERIFICAR SE PREÇO SAIU DO RANGE (REBALANCE)
             $currentPrice = $this->getCurrentPrice($symbol);
