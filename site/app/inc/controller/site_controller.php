@@ -209,282 +209,51 @@ class site_controller
         $roiPercent = $totalCapitalAllocated > 0 ? ($totalProfit / $totalCapitalAllocated) * 100 : 0;
 
         // === PREPARAR NÍVEIS DO GRID ===
-        // ESTRATÉGIA: Exibir ordens REAIS que existem no banco,
-        // OU gerar níveis planejados se não houver ordens ainda
+        // ESTRATÉGIA: Exibir APENAS ordens ativas (NEW/PARTIALLY_FILLED) de cada grid,
+        // ordenadas por proximidade do preço atual e renumeradas dinamicamente.
+        // Executadas/canceladas não aparecem no ladder — apenas na tabela "Ordens do Grid".
         $gridsWithLevels = [];
-        foreach ($allGrids as &$grid) {  // Usar referência (&) para modificar o array original
+        foreach ($allGrids as &$grid) {
             $gridId = $grid['idx'];
-
-            // Buscar ordens deste grid (apenas as ORIGINAIS, sem paired_order_id)
-            // Ordens originais = criadas quando o grid foi montado
-            // Ordens pareadas = criadas dinamicamente após execução de compra
-            $allGridOrdersForGrid = array_filter($allGridOrders, function($o) use ($gridId) {
-                return ($o['grids_id'] ?? 0) == $gridId && 
-                       (!isset($o['paired_order_id']) || (int)($o['paired_order_id'] ?? 0) === 0);
-            });
-
-            // Para cada par (grid_level, side) manter apenas a ordem mais recente (maior idx).
-            // Isso evita múltiplas entradas "Nível 1" causadas por ordens históricas já executadas
-            // no mesmo nível — cada nível deve exibir apenas seu estado atual.
-            $latestPerLevelSide = [];
-            foreach ($allGridOrdersForGrid as $gridOrder) {
-                $order = $gridOrder['orders'][0] ?? null;
-                if (!$order) {
-                    continue;
-                }
-                $side = $order['side'] ?? 'UNKNOWN';
-                $level = (int)($gridOrder['grid_level'] ?? 0);
-                $key = $level . '_' . $side;
-                $currentIdx = (int)($gridOrder['idx'] ?? 0);
-                if (!isset($latestPerLevelSide[$key]) || $currentIdx > $latestPerLevelSide[$key]['idx']) {
-                    $latestPerLevelSide[$key] = $gridOrder;
-                }
-            }
-            $gridOrders = array_values($latestPerLevelSide);
 
             $buyLevels = [];
             $sellLevels = [];
 
-            // Gerar níveis planejados baseado na configuração do grid
-            $lowerPrice = (float)($grid['lower_price'] ?? 0);
-            $upperPrice = (float)($grid['upper_price'] ?? 0);
-            $currentPrice = (float)($grid['current_price'] ?? 0);
-            $totalLevels = (int)($grid['grid_levels'] ?? 3);
+            // Buscar APENAS ordens ativas (NEW/PARTIALLY_FILLED) deste grid para o ladder.
+            // Inclui todas as ordens independente de paired_order_id (Violão cria ordens pareadas).
+            $activeGridOrders = array_filter($allGridOrders, function($o) use ($gridId) {
+                $status = $o['orders'][0]['status'] ?? '';
+                return ($o['grids_id'] ?? 0) == $gridId
+                    && in_array($status, ['NEW', 'PARTIALLY_FILLED']);
+            });
 
-            if ($currentPrice > 0 && $totalLevels > 0 && $lowerPrice > 0 && $upperPrice > 0) {
-                // Gerar níveis planejados balanceados (mesma quantidade para compra e venda)
-                $halfLevels = (int)floor($totalLevels / 2);
-                if ($halfLevels < 1) {
-                    $halfLevels = 1;
-                }
-
-                $buyStep = ($currentPrice - $lowerPrice) / $halfLevels;
-                $sellStep = ($upperPrice - $currentPrice) / $halfLevels;
-                $capitalPerLevel = (float)($grid['capital_allocated_usdc'] ?? 0) / $halfLevels;
-
-                for ($i = 1; $i <= $halfLevels; $i++) {
-                    $buyPrice = $currentPrice - ($buyStep * $i);
-                    $buyPrice = max($buyPrice, $lowerPrice);
-
-                    $buyLevelNumber = $halfLevels - $i + 1;
-                    $buyQty = $capitalPerLevel > 0 ? $capitalPerLevel / $buyPrice : 0;
-
-                    $buyLevels[] = [
-                        'level' => $buyLevelNumber,
-                        'price' => $buyPrice,
-                        'quantity' => $buyQty,
-                        'side' => 'BUY',
-                        'status' => 'PLANNED',
-                        'order_id' => 0,
-                        'has_order' => false,
-                        'created_at' => null
-                    ];
-
-                    // Sell planejado: 1% acima do buy correspondente
-                    // Nivel invertido: Buy nivel 1 (menor preco) -> Sell nivel 3; Buy nivel 3 (maior preco) -> Sell nivel 1
-                    $sellLevelNumber = $halfLevels - $buyLevelNumber + 1;
-                    $sellPrice = $buyPrice * 1.01;
-                    $sellLevels[] = [
-                        'level' => $sellLevelNumber,
-                        'price' => $sellPrice,
-                        'quantity' => $buyQty,
-                        'side' => 'SELL',
-                        'status' => 'PLANNED',
-                        'order_id' => 0,
-                        'has_order' => false,
-                        'created_at' => null
-                    ];
-                }
+            foreach ($activeGridOrders as $gridOrder) {
+                $order = $gridOrder['orders'][0] ?? null;
+                if (!$order) continue;
+                $side = $order['side'] ?? '';
+                $entry = [
+                    'level'      => 0, // será atribuído após ordenação
+                    'price'      => (float)($order['price'] ?? 0),
+                    'quantity'   => (float)($order['quantity'] ?? 0),
+                    'side'       => $side,
+                    'status'     => $order['status'] ?? 'UNKNOWN',
+                    'order_id'   => (int)($order['idx'] ?? 0),
+                    'has_order'  => true,
+                    'created_at' => $order['created_at'] ?? null,
+                ];
+                if ($side === 'BUY')  $buyLevels[]  = $entry;
+                if ($side === 'SELL') $sellLevels[] = $entry;
             }
 
-            // Sobrepor níveis com ordens reais (se existirem)
-            if (!empty($gridOrders)) {
-                foreach ($gridOrders as $gridOrder) {
-                    $order = $gridOrder['orders'][0] ?? null;
-                    if (!$order) {
-                        continue;
-                    }
+            // BUYs: maior preço primeiro (mais próximo do centro = Nível 1)
+            usort($buyLevels, fn($a, $b) => $b['price'] <=> $a['price']);
+            foreach ($buyLevels as $i => &$lvl) { $lvl['level'] = $i + 1; }
+            unset($lvl);
 
-                    $orderSide = $order['side'] ?? 'UNKNOWN';
-                    $orderLevel = (int)($gridOrder['grid_level'] ?? 0);
-                    $orderPrice = (float)($order['price'] ?? 0);
-                    $targetLevels = null;
-
-                    if ($orderSide === 'BUY') {
-                        $targetLevels = &$buyLevels;
-                    } elseif ($orderSide === 'SELL') {
-                        $targetLevels = &$sellLevels;
-                    }
-
-                    if ($targetLevels === null) {
-                        continue;
-                    }
-
-                    $replaced = false;
-                    $closestIndex = null;
-                    $closestDiff = null;
-
-                    foreach ($targetLevels as $idx => &$levelData) {
-                        if ($orderLevel > 0 && (int)($levelData['level'] ?? 0) === $orderLevel) {
-                            $closestIndex = $idx;
-                            $closestDiff = 0.0;
-                            break;
-                        }
-
-                        $diff = abs((float)($levelData['price'] ?? 0) - $orderPrice);
-                        if ($closestDiff === null || $diff < $closestDiff) {
-                            $closestDiff = $diff;
-                            $closestIndex = $idx;
-                        }
-                    }
-
-                    if ($closestIndex !== null) {
-                        $levelData = &$targetLevels[$closestIndex];
-                        $levelData['price'] = $orderPrice > 0 ? $orderPrice : (float)($levelData['price'] ?? 0);
-                        $levelData['quantity'] = (float)($order['quantity'] ?? $levelData['quantity']);
-                        $levelData['status'] = $order['status'] ?? 'UNKNOWN';
-                        $levelData['order_id'] = (int)($order['idx'] ?? 0);
-                        $levelData['has_order'] = true;
-                        $levelData['created_at'] = $order['created_at'] ?? null;
-                        $replaced = true;
-                        unset($levelData);
-                    }
-                    unset($levelData);
-                    unset($levelData);
-
-                    if (!$replaced) {
-                        $targetLevels[] = [
-                            'level' => $orderLevel,
-                            'price' => (float)($order['price'] ?? 0),
-                            'quantity' => (float)($order['quantity'] ?? 0),
-                            'side' => $orderSide,
-                            'status' => $order['status'] ?? 'UNKNOWN',
-                            'order_id' => (int)($order['idx'] ?? 0),
-                            'has_order' => true,
-                            'created_at' => $order['created_at'] ?? null
-                        ];
-                    }
-                }
-                unset($targetLevels);
-            }
-
-            // Fallback: se nao gerou niveis planejados, montar diretamente das ordens reais
-            if (empty($buyLevels)) {
-                $buyFromOrders = [];
-                $fallbackLevel = 1;
-                foreach ($gridOrders as $gridOrder) {
-                    $order = $gridOrder['orders'][0] ?? null;
-                    if (!$order || ($order['side'] ?? '') !== 'BUY') {
-                        continue;
-                    }
-
-                    $level = (int)($gridOrder['grid_level'] ?? 0);
-                    if ($level <= 0) {
-                        $level = $fallbackLevel;
-                        $fallbackLevel++;
-                    } else {
-                        $fallbackLevel = max($fallbackLevel, $level + 1);
-                    }
-
-                    $buyFromOrders[] = [
-                        'level' => $level,
-                        'price' => (float)($order['price'] ?? 0),
-                        'quantity' => (float)($order['quantity'] ?? 0),
-                        'side' => 'BUY',
-                        'status' => $order['status'] ?? 'UNKNOWN',
-                        'order_id' => (int)($order['idx'] ?? 0),
-                        'has_order' => true,
-                        'created_at' => $order['created_at'] ?? null
-                    ];
-                }
-                if (!empty($buyFromOrders)) {
-                    $buyLevels = $buyFromOrders;
-                }
-            }
-
-            if (empty($sellLevels)) {
-                $sellFromOrders = [];
-                $fallbackLevel = 1;
-                foreach ($gridOrders as $gridOrder) {
-                    $order = $gridOrder['orders'][0] ?? null;
-                    if (!$order || ($order['side'] ?? '') !== 'SELL') {
-                        continue;
-                    }
-
-                    $level = (int)($gridOrder['grid_level'] ?? 0);
-                    if ($level <= 0) {
-                        $level = $fallbackLevel;
-                        $fallbackLevel++;
-                    } else {
-                        $fallbackLevel = max($fallbackLevel, $level + 1);
-                    }
-
-                    $sellFromOrders[] = [
-                        'level' => $level,
-                        'price' => (float)($order['price'] ?? 0),
-                        'quantity' => (float)($order['quantity'] ?? 0),
-                        'side' => 'SELL',
-                        'status' => $order['status'] ?? 'UNKNOWN',
-                        'order_id' => (int)($order['idx'] ?? 0),
-                        'has_order' => true,
-                        'created_at' => $order['created_at'] ?? null
-                    ];
-                }
-                if (!empty($sellFromOrders)) {
-                    $sellLevels = $sellFromOrders;
-                }
-            }
-
-            // Se ainda nao houver niveis de venda, derivar 1% acima das compras abertas
-            if (empty($sellLevels) && !empty($buyLevels)) {
-                $derivedSellLevels = [];
-                foreach ($buyLevels as $level) {
-                    if (($level['side'] ?? '') !== 'BUY') {
-                        continue;
-                    }
-
-                    $buyPrice = (float)($level['price'] ?? 0);
-                    $buyQty = (float)($level['quantity'] ?? 0);
-                    if ($buyPrice <= 0 || $buyQty <= 0) {
-                        continue;
-                    }
-
-                    $derivedSellLevels[] = [
-                        'level' => (int)($level['level'] ?? 0),
-                        'price' => $buyPrice * 1.01,
-                        'quantity' => $buyQty,
-                        'side' => 'SELL',
-                        'status' => 'PLANNED',
-                        'order_id' => 0,
-                        'has_order' => false,
-                        'created_at' => null
-                    ];
-                }
-
-                if (!empty($derivedSellLevels)) {
-                    $sellLevels = $derivedSellLevels;
-                }
-            }
-
-            // Ordenar por preço e reatribuir níveis dinâmicos por proximidade do preço atual
-            // BUYs: ordenar decrescente (maior preço = mais próximo do centro)
-            if (is_array($buyLevels) && !empty($buyLevels)) {
-                usort($buyLevels, fn($a, $b) => $b['price'] <=> $a['price']);
-                // Nível 1 = mais próximo ao preço atual (maior preço numa BUY)
-                foreach ($buyLevels as $i => &$lvl) {
-                    $lvl['level'] = $i + 1;
-                }
-                unset($lvl);
-            }
-            // SELLs: ordenar crescente (menor preço = mais próximo do centro)
-            if (is_array($sellLevels) && !empty($sellLevels)) {
-                usort($sellLevels, fn($a, $b) => $a['price'] <=> $b['price']);
-                // Nível 1 = mais próximo ao preço atual (menor preço numa SELL)
-                foreach ($sellLevels as $i => &$lvl) {
-                    $lvl['level'] = $i + 1;
-                }
-                unset($lvl);
-            }
+            // SELLs: menor preço primeiro (mais próximo do centro = Nível 1)
+            usort($sellLevels, fn($a, $b) => $a['price'] <=> $b['price']);
+            foreach ($sellLevels as $i => &$lvl) { $lvl['level'] = $i + 1; }
+            unset($lvl);
 
             // Contar ordens abertas deste grid
             $gridOpenOrders = array_filter($openOrders, fn($o) => ($o['grids_id'] ?? 0) == $gridId);
