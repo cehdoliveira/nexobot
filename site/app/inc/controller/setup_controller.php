@@ -1464,20 +1464,9 @@ class setup_controller
                         continue;
                     }
 
-                    // Calcular preço mínimo de venda para garantir lucro
+                    // LÓGICA VIOLÃO: SELL exatamente 1% acima do preço de compra
                     $buyPrice = (float)$orphan['buy_price'];
-                    $minSellPrice = $buyPrice * (1 + $gridSpacing); // Preço da compra + grid spacing
-
-                    // Se mercado atual permite lucro maior, usar mercado
-                    // Se mercado caiu, usar preço mínimo para garantir lucro (pode demorar mais para executar)
-                    $sellPrice = max($minSellPrice, $currentPrice);
-
-                    // IMPORTANTE: Aplicar espaçamento por nível para evitar múltiplas SELL no MESMO preço
-                    // Cada nível de recovery deve ter preço diferente (escalado por grid_level)
-                    // Isso garante que quando múltiplas SELLs órfãs executam na mesma CRON,
-                    // as BUYs recriadas ficarão em níveis/preços diferentes
-                    $levelSpacingAdjustment = 1 + ($gridSpacing * (6 - $orphan['grid_level']));
-                    $sellPrice = $sellPrice * $levelSpacingAdjustment;
+                    $sellPrice = $buyPrice * (1 + $gridSpacing); // +1% sobre a compra
 
                     // Criar ordem de venda pareada com o BTC órfão
                     $sellOrderId = $this->placeSellOrder(
