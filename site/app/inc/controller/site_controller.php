@@ -466,12 +466,24 @@ class site_controller
                 }
             }
 
-            // Ordenar por preço para garantir ordem consistente
+            // Ordenar por preço e reatribuir níveis dinâmicos por proximidade do preço atual
+            // BUYs: ordenar decrescente (maior preço = mais próximo do centro)
             if (is_array($buyLevels) && !empty($buyLevels)) {
-                usort($buyLevels, fn($a, $b) => $b['price'] <=> $a['price']); // Decrescente: alto->baixo (Level 1 é mais próximo do preço atual)
+                usort($buyLevels, fn($a, $b) => $b['price'] <=> $a['price']);
+                // Nível 1 = mais próximo ao preço atual (maior preço numa BUY)
+                foreach ($buyLevels as $i => &$lvl) {
+                    $lvl['level'] = $i + 1;
+                }
+                unset($lvl);
             }
+            // SELLs: ordenar crescente (menor preço = mais próximo do centro)
             if (is_array($sellLevels) && !empty($sellLevels)) {
-                usort($sellLevels, fn($a, $b) => $a['price'] <=> $b['price']); // Crescente: baixo->alto (Level 1 é mais próximo do preço atual)
+                usort($sellLevels, fn($a, $b) => $a['price'] <=> $b['price']);
+                // Nível 1 = mais próximo ao preço atual (menor preço numa SELL)
+                foreach ($sellLevels as $i => &$lvl) {
+                    $lvl['level'] = $i + 1;
+                }
+                unset($lvl);
             }
 
             // Contar ordens abertas deste grid
@@ -495,8 +507,8 @@ class site_controller
         }
         unset($grid); // Limpar referência
 
-        // Ordenar ordens abertas por grid_level (ordem crescente: 1, 2, 3)
-        usort($openOrders, fn($a, $b) => ($a['grid_level'] ?? 0) <=> ($b['grid_level'] ?? 0));
+        // Ordenar ordens por data de criação decrescente (mais recente primeiro)
+        usort($openOrders, fn($a, $b) => strtotime($b['created_at'] ?? '0') <=> strtotime($a['created_at'] ?? '0'));
 
         // === PREPARAR PAGINAÇÃO DAS ORDENS ===
         $itemsPerPage = 6;

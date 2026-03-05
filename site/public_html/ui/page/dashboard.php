@@ -411,10 +411,11 @@ $dashboardJson = json_encode([
             <?php foreach ($gridsLevels as $gridData): ?>
             <?php
             $grid = $gridData['grid'];
-            $buyLevels = $gridData['buy_levels'];
-            $sellLevels = $gridData['sell_levels'];
-            usort($buyLevels, fn($a, $b) => $b['price'] <=> $a['price']);
-            usort($sellLevels, fn($a, $b) => $b['price'] <=> $a['price']);
+            $grid = $gridData['grid'];
+            $buyLevels = $gridData['buy_levels'];  // Já ordenados e com níveis dinâmicos
+            $sellLevels = $gridData['sell_levels']; // Já ordenados e com níveis dinâmicos
+            // SELLs: mostrar do maior preço para o menor (mais distante → mais próximo)
+            $sellLevelsDisplay = array_reverse($sellLevels);
             $gridPrice = (float)($grid['current_price'] ?? 0);
             ?>
             <div class="dash-card">
@@ -436,8 +437,8 @@ $dashboardJson = json_encode([
                 </div>
                 <div class="card-body-custom p-0">
                     <div class="grid-ladder custom-scroll" style="max-height: 500px;">
-                        <!-- SELL Levels (highest price first) -->
-                        <?php foreach ($sellLevels as $level): ?>
+                        <!-- SELL Levels (highest price first = mais distante) -->
+                        <?php foreach ($sellLevelsDisplay as $level): ?>
                         <?php
                         $statusLabel = !$level['has_order'] ? 'Planejado' : match($level['status'] ?? '') {
                             'FILLED' => 'Executada', 'PARTIALLY_FILLED' => 'Parcial',
@@ -476,7 +477,7 @@ $dashboardJson = json_encode([
                         <?php endif; ?>
 
                         <!-- BUY Levels (highest price first = closest to current) -->
-                        <?php foreach ($buyLevels as $level): ?>
+                        <?php foreach ($buyLevels as $level): // Nível 1 já é o mais próximo ?>
                         <?php
                         $statusLabel = !$level['has_order'] ? 'Planejado' : match($level['status'] ?? '') {
                             'FILLED' => 'Executada', 'PARTIALLY_FILLED' => 'Parcial',
@@ -489,7 +490,7 @@ $dashboardJson = json_encode([
                         ?>
                         <div class="ladder-level level-buy">
                             <span class="level-badge badge-buy">
-                                <i class="bi bi-arrow-down-short"></i>B<?php echo (count($buyLevels) + 1 - $level['level']); ?>
+                                <i class="bi bi-arrow-down-short"></i>B<?php echo $level['level']; ?>
                             </span>
                             <span class="level-price text-buy">$<?php echo number_format($level['price'], 2, '.', ','); ?></span>
                             <span class="level-qty d-none d-sm-inline"><?php echo number_format($level['quantity'], 6); ?> un</span>
@@ -541,7 +542,6 @@ $dashboardJson = json_encode([
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <div class="d-flex align-items-center gap-2">
                                     <span class="order-side <?php echo $oSide === 'BUY' ? 'side-buy' : 'side-sell'; ?>"><?php echo $oSide; ?></span>
-                                    <span class="badge bg-secondary" style="font-size: 0.65rem;">Nível <?php echo $oLevel; ?></span>
                                 </div>
                                 <span class="badge-status <?php
                                     echo match($oStatus) {
@@ -587,7 +587,6 @@ $dashboardJson = json_encode([
                                         <th>Preço</th>
                                         <th>Quantidade</th>
                                         <th>Valor</th>
-                                        <th>Nível</th>
                                         <th>Status</th>
                                         <th class="d-none d-lg-table-cell">Data</th>
                                     </tr>
@@ -608,7 +607,6 @@ $dashboardJson = json_encode([
                                         <td class="mono fw-bold">$<?php echo number_format($oPrice, 2, '.', ','); ?></td>
                                         <td class="mono"><?php echo number_format($oQty, 8); ?></td>
                                         <td class="mono">$<?php echo number_format($oPrice * $oQty, 2); ?></td>
-                                        <td><span class="badge bg-secondary" style="font-size: 0.65rem;"><?php echo $order['grid_level'] ?? 'N/A'; ?></span></td>
                                         <td>
                                             <span class="badge-status <?php
                                                 echo match($oStatus) {
