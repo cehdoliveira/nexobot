@@ -1781,7 +1781,7 @@ class setup_controller
         try {
             $gridsOrdersModel = new grids_orders_model();
             $gridsOrdersModel->set_filter([
-                "grid_id = '{$gridId}'",
+                "grids_id = '{$gridId}'",
                 "active = 'yes'"
             ]);
             $gridsOrdersModel->load_data();
@@ -2048,6 +2048,18 @@ class setup_controller
                             
                             // Preço da BUY: 1% ABAIXO do preço EXATO onde SELL executou
                             $buyPrice = $sellPrice * (1 - $gridSpacing);
+
+                            // Proteção anti-duplicação: pular se já existe BUY ativa próxima a este preço
+                            if ($this->hasActiveBuyOrderNearPrice($gridId, $buyPrice)) {
+                                $this->log(
+                                    "⚠️ BUY reativa pulada: já existe BUY ativa próxima a $" . number_format($buyPrice, 2) .
+                                    " (proteção anti-duplicação)",
+                                    'WARNING',
+                                    'TRADE'
+                                );
+                                $this->markOrderAsProcessed($sellOrder['grids_orders_idx']);
+                                continue;
+                            }
                             
                             $this->log(
                                 "🎸 Criando BUY reativa: SELL @ $" . number_format($sellPrice, 2) . 
@@ -2057,7 +2069,6 @@ class setup_controller
                                 'TRADE'
                             );
                             
-                            // Criar ordem BUY (sem validação anti-duplicação aqui)
                             $newBuyOrderId = $this->placeBuyOrder(
                                 $gridId,
                                 $symbol,
@@ -2482,6 +2493,9 @@ class setup_controller
             } catch (Exception $e) {
                 $this->log("Aviso ao cancelar ordens restantes na Binance: " . $e->getMessage(), 'WARNING', 'TRADE');
             }
+
+            // Aguarda a Binance processar os cancelamentos e liberar o BTC bloqueado
+            sleep(2);
 
             // 2. BUSCAR SALDO REAL E LIVRE NA BINANCE APÓS CANCELAMENTOS
             // NÃO usa tracking interno — consulta diretamente a API com force-refresh
