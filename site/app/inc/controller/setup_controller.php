@@ -876,7 +876,7 @@ class setup_controller
     }
 
     /**
-     * Prepara o capital inicial: 70% USDC (compras) + 30% BTC (vendas superiores)
+     * Prepara o capital inicial: 60% USDC (compras) + 40% BTC (vendas superiores)
      * Compra BTC automaticamente se o saldo disponível for insuficiente.
      *
      * @param string $symbol Par de negociação (ex: BTCUSDC)
@@ -903,7 +903,7 @@ class setup_controller
             $currentPrice  = $this->getCurrentPrice($symbol);
             $totalCapital  = $usdcBalance + ($btcBalance * $currentPrice);
 
-            // Quanto BTC devemos ter (30% do capital total)
+            // Quanto BTC devemos ter (40% do capital total)
             $targetBtcValue = $totalCapital * self::INITIAL_BTC_ALLOCATION;
             $targetBtcQty   = $targetBtcValue / $currentPrice;
             $needToBuy      = $targetBtcQty - $btcBalance;
@@ -1007,7 +1007,7 @@ class setup_controller
     private function createNewGrid(string $symbol): void
     {
         try {
-            // 0. PREPARAR CAPITAL INICIAL (30% BTC + 70% USDC)
+            // 0. PREPARAR CAPITAL INICIAL (40% BTC + 60% USDC)
             $this->log("🔄 Preparando capital inicial para grid híbrido...", 'INFO', 'TRADE');
             $capital = $this->prepareInitialCapital($symbol);
 
@@ -2470,13 +2470,40 @@ class setup_controller
         try {
             $this->log("REBALANCEAMENTO iniciado para $symbol (novo centro: $newCenterPrice)", 'WARNING', 'TRADE');
 
-            // 1. CANCELAR TODAS ORDENS ABERTAS DO GRID
+            // 1. CANCELAR TODAS ORDENS ABERTAS DO GRID (rastreadas no banco)
             $this->cancelAllGridOrders($gridId);
 
-            // 2. VENDER TODO ATIVO ACUMULADO A MERCADO
-            $accumulatedAsset = $this->getAccumulatedAsset($gridId, $symbol);
-            if ($accumulatedAsset > 0) {
-                $this->sellAssetAtMarket($symbol, $accumulatedAsset, $gridId);
+            // 1.5 CANCELAR TODAS ORDENS RESTANTES NA BINANCE
+            // Garante que ordens órfãs (não rastreadas) também sejam canceladas,
+            // liberando qualquer BTC bloqueado antes de consultar o saldo.
+            try {
+                $this->client->deleteOpenOrders($symbol);
+                $this->log("Todas as ordens abertas em $symbol canceladas na Binance", 'INFO', 'TRADE');
+            } catch (Exception $e) {
+                $this->log("Aviso ao cancelar ordens restantes na Binance: " . $e->getMessage(), 'WARNING', 'TRADE');
+            }
+
+            // 2. BUSCAR SALDO REAL E LIVRE NA BINANCE APÓS CANCELAMENTOS
+            // NÃO usa tracking interno — consulta diretamente a API com force-refresh
+            // para garantir que o BTC liberado dos cancelamentos está incluído.
+            $baseAsset = str_replace('USDC', '', $symbol);
+            $accountInfo = $this->getAccountInfo(true);
+            $freeBtc = 0.0;
+            foreach ($accountInfo['balances'] as $balance) {
+                if ($balance['asset'] === $baseAsset) {
+                    $freeBtc = (float)$balance['free'];
+                    break;
+                }
+            }
+
+            $this->log(
+                "💰 Saldo real $baseAsset disponível para venda (Binance): " . number_format($freeBtc, 8),
+                'INFO',
+                'TRADE'
+            );
+
+            if ($freeBtc > 0) {
+                $this->sellAssetAtMarket($symbol, $freeBtc, $gridId);
             }
 
             // 3. MARCAR GRID COMO REBALANCEADO
@@ -2709,9 +2736,18 @@ class setup_controller
             $stepSizeFloat = (float)$stepSize;
             $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
 
+            // Obter minQty do LOT_SIZE diretamente dos filtros do símbolo
+            $filters = array_column($symbolData['filters'], null, 'filterType');
+            $minQty = isset($filters['LOT_SIZE']['minQty']) ? (float)$filters['LOT_SIZE']['minQty'] : 0.00001;
+
             $safeQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
-            if ($safeQty <= 0) {
-                $this->log("Quantidade de venda insuficiente para $symbol", 'WARNING', 'TRADE');
+            if ($safeQty <= 0 || $safeQty < $minQty) {
+                $this->log(
+                    "Quantidade insuficiente para venda a mercado: " . number_format($safeQty, 8) .
+                    " (mínimo LOT_SIZE: " . number_format($minQty, 8) . ")",
+                    'WARNING',
+                    'TRADE'
+                );
                 return;
             }
 
