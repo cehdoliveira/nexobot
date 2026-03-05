@@ -23,6 +23,9 @@ class orders_model extends DOLModel
 
 	function __construct($bd = false)
 	{
-		return parent::__construct("orders", $bd);
+		$result = parent::__construct("orders", $bd);
+		// TTL reduzido: status de ordens muda a cada ciclo do CRON
+		$this->setCacheTTL(5);
+		return $result;
 	}
 }

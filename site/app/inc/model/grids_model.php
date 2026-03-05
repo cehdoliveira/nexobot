@@ -30,7 +30,10 @@ class grids_model extends DOLModel
 
 	function __construct($bd = false)
 	{
-		return parent::__construct("grids", $bd);
+		$result = parent::__construct("grids", $bd);
+		// TTL reduzido: o CRON lê esta tabela a cada minuto para decisões críticas
+		$this->setCacheTTL(5);
+		return $result;
 	}
 }
 ?>

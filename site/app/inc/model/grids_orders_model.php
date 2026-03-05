@@ -15,7 +15,10 @@ class grids_orders_model extends DOLModel
 
 	function __construct($bd = false)
 	{
-		return parent::__construct("grids_orders", $bd);
+		$result = parent::__construct("grids_orders", $bd);
+		// TTL reduzido: vínculos ordem-grid são criados e processados a cada ciclo do CRON
+		$this->setCacheTTL(5);
+		return $result;
 	}
 }
 ?>
