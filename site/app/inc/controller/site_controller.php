@@ -144,21 +144,11 @@ class site_controller
         });
 
         // TODAS as ordens (abertas + fechadas/executadas) para exibição no dashboard
-        // Ordenar por grid_level primeiro, depois por status (abertas primeiro)
+        // Ordenar pela data de criação mais recente primeiro
         $allOrdersforDisplay = $allGridOrders;
-        usort($allOrdersforDisplay, function ($a, $b) {
-            $levelA = (int)($a['grid_level'] ?? 0);
-            $levelB = (int)($b['grid_level'] ?? 0);
-            if ($levelA !== $levelB) {
-                return $levelA <=> $levelB;
-            }
-            // Se mesmo nível, colocar abertos primeiro
-            $statusA = $a['orders'][0]['status'] ?? '';
-            $statusB = $b['orders'][0]['status'] ?? '';
-            $isOpenA = in_array($statusA, ['NEW', 'PARTIALLY_FILLED']) ? 0 : 1;
-            $isOpenB = in_array($statusB, ['NEW', 'PARTIALLY_FILLED']) ? 0 : 1;
-            return $isOpenA <=> $isOpenB;
-        });
+        usort($allOrdersforDisplay, fn($a, $b) =>
+            strtotime($b['created_at'] ?? '0') <=> strtotime($a['created_at'] ?? '0')
+        );
 
         // Total de lucro
         $totalProfit = 0;
@@ -275,9 +265,6 @@ class site_controller
             }
         }
         unset($grid); // Limpar referência
-
-        // Ordenar ordens por data de criação decrescente (mais recente primeiro)
-        usort($openOrders, fn($a, $b) => strtotime($b['created_at'] ?? '0') <=> strtotime($a['created_at'] ?? '0'));
 
         // === PREPARAR PAGINAÇÃO DAS ORDENS ===
         $itemsPerPage = 6;
