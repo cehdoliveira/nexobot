@@ -48,7 +48,7 @@ class setup_controller
 
     // Logs aprimorados
     private const DEBUG_MODE = false;                       // Desativar para reduzir tamanho de logs. INFO/SYSTEM não serão salvos
-    private const ENABLE_DETAILED_LOGS = !self::DEBUG_MODE; // Logs detalhados apenas em DEBUG_MODE
+
     private const LOG_RETENTION_DAYS = 30;
 
     // Cache TTL
@@ -142,7 +142,7 @@ class setup_controller
             default => $basePath . self::ERROR_LOG
         };
 
-        $execId = $this->executionId ?: '--------';
+        $execId = $this->executionId;
 
         $this->logBuffer[$logFile][] = sprintf(
             "[%s] [%s] [%s] [%s] - %s\n",
@@ -153,7 +153,7 @@ class setup_controller
             $message
         );
 
-        if (count($this->logBuffer[$logFile] ?? []) >= $this->logBufferSize) {
+        if (count($this->logBuffer[$logFile]) >= $this->logBufferSize) {
             $this->flushLogFile($logFile);
         }
     }
@@ -218,6 +218,42 @@ class setup_controller
     }
 
     /**
+     * Extrai o valor de um campo de saldo para um ativo específico
+     * da lista de saldos retornada pela API da Binance.
+     *
+     * @param array  $balances Lista de saldos (accountInfo['balances'])
+     * @param string $asset    Símbolo do ativo (ex: 'BTC', 'USDC')
+     * @param string $field    Campo a extrair: 'free' (padrão) ou 'locked'
+     * @return float           Valor do campo, ou 0.0 se não encontrado
+     */
+    private function getBalanceForAsset(array $balances, string $asset, string $field = 'free'): float
+    {
+        foreach ($balances as $balance) {
+            if (($balance['asset'] ?? '') === $asset) {
+                return (float)($balance[$field] ?? 0.0);
+            }
+        }
+        return 0.0;
+    }
+
+    /**
+     * Lê um valor de uma resposta da API Binance que pode ser objeto ou array.
+     *
+     * @param mixed  $data     Resposta da API (objeto ou array associativo)
+     * @param string $getter   Nome do método getter (ex: 'getStatus')
+     * @param string $arrayKey Chave do array de fallback (ex: 'status')
+     * @param mixed  $default  Valor padrão se não encontrado
+     * @return mixed
+     */
+    private function extractBinanceValue(mixed $data, string $getter, string $arrayKey, mixed $default = null): mixed
+    {
+        if (is_object($data) && method_exists($data, $getter)) {
+            return $data->$getter();
+        }
+        return $data[$arrayKey] ?? $default;
+    }
+
+    /**
      * Obtém o saldo USDC disponível (free) que não está alocado em ordens pendentes
      * 
      * @param bool $forceRefresh Force latest account info from API
@@ -228,13 +264,7 @@ class setup_controller
         try {
             $accountInfo = $this->getAccountInfo($forceRefresh);
 
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === 'USDC') {
-                    return (float)$balance['free'];
-                }
-            }
-
-            return 0.0;
+            return $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
         } catch (Exception $e) {
             $this->log("Erro ao obter saldo USDC disponível: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return 0.0;
@@ -309,7 +339,7 @@ class setup_controller
         }
     }
 
-    public function getExchangeInfo($symbol): array
+    public function getExchangeInfo(string $symbol): array
     {
         try {
             // Cache em memória por CACHE_TTL_EXCHANGE_INFO segundos (padrão 60s)
@@ -471,16 +501,17 @@ class setup_controller
             // 2. Marcar grid como cancelado
             $this->updateGridStatus($gridId, 'cancelled');
 
-            // 3. Desativar ordens no banco
+            // 3. Desativar ordens no banco (bulk UPDATE — mais eficiente que loop por registro)
             $gridsOrdersModel = new grids_orders_model();
             $gridsOrdersModel->set_filter(["grids_id = '{$gridId}'"]);
             $gridsOrdersModel->load_data();
 
-            foreach ($gridsOrdersModel->data as $gridOrder) {
-                $model = new grids_orders_model();
-                $model->set_filter(["idx = '{$gridOrder['idx']}'"]);
-                $model->populate(['active' => 'no']);
-                $model->save();
+            $idxList = implode(',', array_map('intval', array_column($gridsOrdersModel->data, 'idx')));
+            if ($idxList !== '') {
+                $bulkModel = new grids_orders_model();
+                $bulkModel->set_filter(["idx IN ($idxList)"]);
+                $bulkModel->populate(['active' => 'no']);
+                $bulkModel->save();
             }
 
             // 4. Limpar cache em memória
@@ -528,7 +559,7 @@ class setup_controller
                 }
             } else {
                 // Grid não existe → VERIFICAR PROTEÇÕES ANTES DE CRIAR
-                
+
                 // ══════ PROTEÇÃO: STOP-LOSS ACIONADO ══════
                 // Se botão "Emergência" foi clicado, NÃO recriar automaticamente
                 // Usuário deve usar "Religar Bot" explicitamente
@@ -540,7 +571,7 @@ class setup_controller
                     );
                     return;
                 }
-                
+
                 // ══════ PROTEÇÃO: CAPITAL MÍNIMO ══════
                 if ($this->totalCapital < self::MIN_TRADE_USDC) {
                     $this->log(
@@ -550,7 +581,7 @@ class setup_controller
                     );
                     return;
                 }
-                
+
                 // ✅ Tudo OK, criar novo grid
                 $this->createNewGrid($symbol);
             }
@@ -599,13 +630,8 @@ class setup_controller
                     $response = $this->client->getOrder($order['symbol'], $order['binance_order_id']);
                     $binanceOrder = $response->getData();
 
-                    $newStatus = method_exists($binanceOrder, 'getStatus')
-                        ? $binanceOrder->getStatus()
-                        : ($binanceOrder['status'] ?? null);
-
-                    $executedQty = method_exists($binanceOrder, 'getExecutedQty')
-                        ? $binanceOrder->getExecutedQty()
-                        : ($binanceOrder['executedQty'] ?? 0);
+                    $newStatus   = $this->extractBinanceValue($binanceOrder, 'getStatus', 'status', null);
+                    $executedQty = $this->extractBinanceValue($binanceOrder, 'getExecutedQty', 'executedQty', 0);
 
                     // Atualizar ordem se status mudou OU se executed_qty diverge
                     $dbExecutedQty = (float)($order['executed_qty'] ?? 0);
@@ -693,9 +719,7 @@ class setup_controller
                 try {
                     $response = $this->client->getOrder($order['symbol'], $binanceOrderId);
                     $binanceData = $response->getData();
-                    $realQty = method_exists($binanceData, 'getExecutedQty')
-                        ? (float)$binanceData->getExecutedQty()
-                        : (float)($binanceData['executedQty'] ?? 0);
+                    $realQty = (float)$this->extractBinanceValue($binanceData, 'getExecutedQty', 'executedQty', 0);
 
                     if ($realQty > 0) {
                         $ordersModel = new orders_model();
@@ -775,10 +799,10 @@ class setup_controller
             }
 
             $canceledCount = 0;
-            $currentTime = round(microtime(true) * 1000); // em millisegundos
+            $currentTime = (int)(microtime(true) * 1000); // em millisegundos
             $maxAgeMs = 15 * 60 * 1000; // 15 minutos em millisegundos
 
-            foreach ($openOrders as $idx => $binanceOrder) {
+            foreach ($openOrders as $binanceOrder) {
                 try {
                     if (!is_array($binanceOrder)) {
                         $binanceOrder = json_decode(json_encode($binanceOrder), true);
@@ -891,14 +915,8 @@ class setup_controller
             $usdcBalance = 0.0;
             $btcBalance  = 0.0;
 
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === 'USDC') {
-                    $usdcBalance = (float)$balance['free'];
-                }
-                if ($balance['asset'] === $baseAsset) {
-                    $btcBalance = (float)$balance['free'];
-                }
-            }
+            $usdcBalance = $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
+            $btcBalance  = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
 
             $currentPrice  = $this->getCurrentPrice($symbol);
             $totalCapital  = $usdcBalance + ($btcBalance * $currentPrice);
@@ -919,14 +937,8 @@ class setup_controller
 
                 // Recarregar saldos após compra
                 $accountInfo = $this->getAccountInfo(true);
-                foreach ($accountInfo['balances'] as $balance) {
-                    if ($balance['asset'] === 'USDC') {
-                        $usdcBalance = (float)$balance['free'];
-                    }
-                    if ($balance['asset'] === $baseAsset) {
-                        $btcBalance = (float)$balance['free'];
-                    }
-                }
+                $usdcBalance = $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
+                $btcBalance  = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
 
                 $this->log(
                     "✅ Compra inicial concluída! Saldo: $btcBalance $baseAsset (~$" . number_format($btcBalance * $currentPrice, 2) . ") | $usdcBalance USDC",
@@ -980,13 +992,8 @@ class setup_controller
             $response  = $this->client->newOrder($orderReq);
             $orderData = $response->getData();
 
-            $executedQty = method_exists($orderData, 'getExecutedQty')
-                ? $orderData->getExecutedQty()
-                : ($orderData['executedQty'] ?? $adjustedQty);
-
-            $cumulativeQuote = method_exists($orderData, 'getCummulativeQuoteQty')
-                ? (float)$orderData->getCummulativeQuoteQty()
-                : (float)($orderData['cummulativeQuoteQty'] ?? 0.0);
+            $executedQty     = $this->extractBinanceValue($orderData, 'getExecutedQty', 'executedQty', $adjustedQty);
+            $cumulativeQuote = (float)$this->extractBinanceValue($orderData, 'getCummulativeQuoteQty', 'cummulativeQuoteQty', 0.0);
             $avgPrice = ($executedQty > 0 && $cumulativeQuote > 0)
                 ? $cumulativeQuote / $executedQty
                 : 0.0;
@@ -1307,9 +1314,7 @@ class setup_controller
                             if ($binanceOrderId) {
                                 $response = $this->client->getOrder($order['symbol'], $binanceOrderId);
                                 $binanceData = $response->getData();
-                                $realQty = method_exists($binanceData, 'getExecutedQty')
-                                    ? (float)$binanceData->getExecutedQty()
-                                    : (float)($binanceData['executedQty'] ?? 0);
+                                $realQty = (float)$this->extractBinanceValue($binanceData, 'getExecutedQty', 'executedQty', 0);
 
                                 if ($realQty > 0) {
                                     $orphanQty = $realQty;
@@ -1383,13 +1388,8 @@ class setup_controller
                 $freeBtc = 0.0;
                 $lockedBtc = 0.0;
 
-                foreach ($accountInfo['balances'] as $balance) {
-                    if ($balance['asset'] === $baseAsset) {
-                        $freeBtc = (float)$balance['free'];
-                        $lockedBtc = (float)$balance['locked'];
-                        break;
-                    }
-                }
+                $freeBtc   = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
+                $lockedBtc = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset, 'locked');
 
                 $totalOrphanedQty = array_sum(array_column($orphanedBuys, 'executed_qty'));
 
@@ -1564,9 +1564,7 @@ class setup_controller
                     if ($binanceOrderId) {
                         $response = $this->client->getOrder($symbol, $binanceOrderId);
                         $binanceData = $response->getData();
-                        $realQty = method_exists($binanceData, 'getExecutedQty')
-                            ? (float)$binanceData->getExecutedQty()
-                            : (float)($binanceData['executedQty'] ?? 0);
+                        $realQty = (float)$this->extractBinanceValue($binanceData, 'getExecutedQty', 'executedQty', 0);
 
                         if ($realQty > 0) {
                             $buyQty = $realQty;
@@ -1631,14 +1629,7 @@ class setup_controller
 
             // 2. VERIFICAR SALDO DE BTC DISPONÍVEL
             $accountInfo = $this->getAccountInfo(true);
-            $availableBtc = 0.0;
-
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === $baseAsset) {
-                    $availableBtc = (float)$balance['free'];
-                    break;
-                }
-            }
+            $availableBtc = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
 
             if ($availableBtc < $buyQty) {
                 $this->log(
@@ -1800,7 +1791,7 @@ class setup_controller
                         if ($priceDiffPercent < $tolerance) {
                             $this->log(
                                 "🔍 Duplicação detectada: BUY existente @ \${$existingPrice} vs nova @ \${$targetPrice} " .
-                                "(diferença: " . number_format($priceDiffPercent * 100, 2) . "%)",
+                                    "(diferença: " . number_format($priceDiffPercent * 100, 2) . "%)",
                                 'INFO',
                                 'TRADE'
                             );
@@ -1987,10 +1978,10 @@ class setup_controller
             // Separar ordens por tipo
             $sellOrders = array_filter($executedOrders, fn($o) => $o['side'] === 'SELL');
             $buyOrders = array_filter($executedOrders, fn($o) => $o['side'] === 'BUY');
-            
+
             $sellCount = count($sellOrders);
             $buyCount = count($buyOrders);
-            
+
             $this->log(
                 "🎸 Modo Violão: $sellCount SELL(s) + $buyCount BUY(s) executadas",
                 'INFO',
@@ -2002,42 +1993,42 @@ class setup_controller
             // ══════════════════════════════════════════════════
             if ($sellCount > 0) {
                 $this->log("🔴 Processando $sellCount venda(s)...", 'INFO', 'TRADE');
-                
+
                 // 1. Calcular lucro de cada SELL
                 foreach ($sellOrders as $sellOrder) {
                     $this->calculateAndSaveSellProfit($gridId, $sellOrder);
                 }
-                
+
                 // 2. Buscar USDC disponível
                 $availableUsdc = $this->getAvailableUsdcBalance(true);
-                
+
                 // 3. Dividir capital igualmente entre as SELLs
                 $capitalPerBuy = $availableUsdc / $sellCount;
-                
+
                 $this->log(
-                    "💵 USDC disponível: $" . number_format($availableUsdc, 2) . 
-                    " → $" . number_format($capitalPerBuy, 2) . " por ordem",
+                    "💵 USDC disponível: $" . number_format($availableUsdc, 2) .
+                        " → $" . number_format($capitalPerBuy, 2) . " por ordem",
                     'INFO',
                     'TRADE'
                 );
-                
+
                 // 4. Validar se atinge mínimo $11 USDC por ordem
                 $minUsdcPerOrder = 11.0;
-                
+
                 if ($capitalPerBuy < $minUsdcPerOrder) {
                     $this->log(
-                        "⚠️ Capital insuficiente para $sellCount BUY(s): $" . number_format($capitalPerBuy, 2) . 
-                        " por ordem (mínimo: $$minUsdcPerOrder). Aguardando mais capital.",
+                        "⚠️ Capital insuficiente para $sellCount BUY(s): $" . number_format($capitalPerBuy, 2) .
+                            " por ordem (mínimo: $$minUsdcPerOrder). Aguardando mais capital.",
                         'WARNING',
                         'TRADE'
                     );
-                    
+
                     // Marcar SELLs como processadas mesmo sem criar BUYs
                     // (evita reprocessamento infinito)
                     foreach ($sellOrders as $sellOrder) {
                         $this->markOrderAsProcessed($sellOrder['grids_orders_idx']);
                     }
-                    
+
                     // Não criar BUYs, mas continuar para processar BUYs se houver
                 } else {
                     // 5. Criar uma BUY para cada SELL executada
@@ -2045,7 +2036,7 @@ class setup_controller
                         try {
                             $sellPrice = (float)$sellOrder['price'];
                             $gridSpacing = $this->getGridSpacing($symbol);
-                            
+
                             // Preço da BUY: 1% ABAIXO do preço EXATO onde SELL executou
                             $buyPrice = $sellPrice * (1 - $gridSpacing);
 
@@ -2053,22 +2044,22 @@ class setup_controller
                             if ($this->hasActiveBuyOrderNearPrice($gridId, $buyPrice)) {
                                 $this->log(
                                     "⚠️ BUY reativa pulada: já existe BUY ativa próxima a $" . number_format($buyPrice, 2) .
-                                    " (proteção anti-duplicação)",
+                                        " (proteção anti-duplicação)",
                                     'WARNING',
                                     'TRADE'
                                 );
                                 $this->markOrderAsProcessed($sellOrder['grids_orders_idx']);
                                 continue;
                             }
-                            
+
                             $this->log(
-                                "🎸 Criando BUY reativa: SELL @ $" . number_format($sellPrice, 2) . 
-                                " → BUY @ $" . number_format($buyPrice, 2) . 
-                                " (capital: $" . number_format($capitalPerBuy, 2) . ")",
+                                "🎸 Criando BUY reativa: SELL @ $" . number_format($sellPrice, 2) .
+                                    " → BUY @ $" . number_format($buyPrice, 2) .
+                                    " (capital: $" . number_format($capitalPerBuy, 2) . ")",
                                 'INFO',
                                 'TRADE'
                             );
-                            
+
                             $newBuyOrderId = $this->placeBuyOrder(
                                 $gridId,
                                 $symbol,
@@ -2076,7 +2067,7 @@ class setup_controller
                                 $buyPrice,
                                 $capitalPerBuy
                             );
-                            
+
                             if ($newBuyOrderId) {
                                 $this->log(
                                     "✅ BUY criada: nível {$sellOrder['grid_level']} @ $" . number_format($buyPrice, 2),
@@ -2084,7 +2075,7 @@ class setup_controller
                                     'TRADE'
                                 );
                             }
-                            
+
                             // Marcar SELL como processada
                             $this->markOrderAsProcessed($sellOrder['grids_orders_idx']);
                         } catch (Exception $e) {
@@ -2093,7 +2084,7 @@ class setup_controller
                                 'ERROR',
                                 'TRADE'
                             );
-                            
+
                             // Não marcar como processada → retenta na próxima CRON
                         }
                     }
@@ -2105,42 +2096,35 @@ class setup_controller
             // ══════════════════════════════════════════════════
             if ($buyCount > 0) {
                 $this->log("🟢 Processando $buyCount compra(s)...", 'INFO', 'TRADE');
-                
+
                 // 1. Buscar BTC disponível
                 $baseAsset = str_replace('USDC', '', $symbol);
                 $accountInfo = $this->getAccountInfo(true);
-                $btcFree = 0.0;
-                
-                foreach ($accountInfo['balances'] as $balance) {
-                    if ($balance['asset'] === $baseAsset) {
-                        $btcFree = (float)$balance['free'];
-                        break;
-                    }
-                }
-                
+                $btcFree = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
+
                 // 2. Dividir BTC igualmente entre as BUYs
                 $btcPerSell = $btcFree / $buyCount;
-                
+
                 $this->log(
-                    "₿ BTC disponível: " . number_format($btcFree, 5) . 
-                    " → " . number_format($btcPerSell, 5) . " por ordem",
+                    "₿ BTC disponível: " . number_format($btcFree, 5) .
+                        " → " . number_format($btcPerSell, 5) . " por ordem",
                     'INFO',
                     'TRADE'
                 );
-                
+
                 // 3. Validar se atinge quantidade mínima
                 $symbolData = $this->getExchangeInfo($symbol);
                 list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
                 $minQty = (float)($symbolData['filters'][array_search('LOT_SIZE', array_column($symbolData['filters'], 'filterType'))]['minQty'] ?? 0.00001);
-                
+
                 if ($btcPerSell < $minQty) {
                     $this->log(
-                        "⚠️ BTC insuficiente para $buyCount SELL(s): " . number_format($btcPerSell, 5) . 
-                        " por ordem (mínimo: " . number_format($minQty, 5) . "). Aguardando mais BTC.",
+                        "⚠️ BTC insuficiente para $buyCount SELL(s): " . number_format($btcPerSell, 5) .
+                            " por ordem (mínimo: " . number_format($minQty, 5) . "). Aguardando mais BTC.",
                         'WARNING',
                         'TRADE'
                     );
-                    
+
                     // Marcar BUYs como processadas mesmo sem criar SELLs
                     foreach ($buyOrders as $buyOrder) {
                         $this->markOrderAsProcessed($buyOrder['grids_orders_idx']);
@@ -2151,18 +2135,18 @@ class setup_controller
                         try {
                             $buyPrice = (float)$buyOrder['price'];
                             $gridSpacing = $this->getGridSpacing($symbol);
-                            
+
                             // Preço da SELL: 1% ACIMA do preço EXATO onde BUY executou
                             $sellPrice = $buyPrice * (1 + $gridSpacing);
-                            
+
                             $this->log(
-                                "🎸 Criando SELL reativa: BUY @ $" . number_format($buyPrice, 2) . 
-                                " → SELL @ $" . number_format($sellPrice, 2) . 
-                                " (qty: " . number_format($btcPerSell, 5) . " BTC)",
+                                "🎸 Criando SELL reativa: BUY @ $" . number_format($buyPrice, 2) .
+                                    " → SELL @ $" . number_format($sellPrice, 2) .
+                                    " (qty: " . number_format($btcPerSell, 5) . " BTC)",
                                 'INFO',
                                 'TRADE'
                             );
-                            
+
                             // Criar ordem SELL
                             $newSellOrderId = $this->placeSellOrder(
                                 $gridId,
@@ -2172,7 +2156,7 @@ class setup_controller
                                 $btcPerSell,
                                 $buyOrder['grids_orders_idx'] // paired_order_id
                             );
-                            
+
                             if ($newSellOrderId) {
                                 $this->log(
                                     "✅ SELL criada: nível {$buyOrder['grid_level']} @ $" . number_format($sellPrice, 2),
@@ -2180,7 +2164,7 @@ class setup_controller
                                     'TRADE'
                                 );
                             }
-                            
+
                             // Marcar BUY como processada
                             $this->markOrderAsProcessed($buyOrder['grids_orders_idx']);
                         } catch (Exception $e) {
@@ -2189,13 +2173,13 @@ class setup_controller
                                 'ERROR',
                                 'TRADE'
                             );
-                            
+
                             // Não marcar como processada → retenta na próxima CRON
                         }
                     }
                 }
             }
-            
+
             $this->log("🎸 Modo Violão finalizado", 'INFO', 'TRADE');
         } catch (Exception $e) {
             $this->log(
@@ -2205,6 +2189,23 @@ class setup_controller
             );
             throw $e;
         }
+    }
+
+    /**
+     * Calcula o lucro líquido de um par BUY→SELL descontando taxas de negociação.
+     *
+     * @param float $executedQty Quantidade do ativo negociada
+     * @param float $buyPrice    Preço de compra (ou custo do ativo)
+     * @param float $sellPrice   Preço de venda
+     * @return float             Lucro líquido em USDC
+     */
+    private function calculatePairProfit(float $executedQty, float $buyPrice, float $sellPrice): float
+    {
+        $buyValue  = $executedQty * $buyPrice;
+        $sellValue = $executedQty * $sellPrice;
+        $buyFee    = $buyValue  * self::FEE_PERCENT;
+        $sellFee   = $sellValue * self::FEE_PERCENT;
+        return $sellValue - $buyValue - $buyFee - $sellFee;
     }
 
     /**
@@ -2239,11 +2240,7 @@ class setup_controller
             if ($buyOrder) {
                 // CASO 1: SELL reativa — TEM ordem de compra pareada
                 $buyPrice = (float)$buyOrder['price'];
-                $buyValue = $executedQty * $buyPrice;
-                $sellValue = $executedQty * $sellPrice;
-                $buyFee = $buyValue * 0.001;
-                $sellFee = $sellValue * 0.001;
-                $profit = $sellValue - $buyValue - $buyFee - $sellFee;
+                $profit   = $this->calculatePairProfit($executedQty, $buyPrice, $sellPrice);
 
                 $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                 $this->incrementGridProfit($gridId, $profit);
@@ -2252,8 +2249,8 @@ class setup_controller
                 $profitColor = $profit >= 0 ? 'SUCCESS' : 'WARNING';
 
                 $this->log(
-                    "PAR COMPLETO em $symbol: $profitLabel = $" . number_format(abs($profit), 4) . 
-                    " | Compra: \$$buyPrice × $executedQty BTC | Venda: \$$sellPrice",
+                    "PAR COMPLETO em $symbol: $profitLabel = $" . number_format(abs($profit), 4) .
+                        " | Compra: \$$buyPrice × $executedQty BTC | Venda: \$$sellPrice",
                     $profitColor,
                     'TRADE'
                 );
@@ -2262,18 +2259,14 @@ class setup_controller
                 $btcCostPrice = (float)($gridData['current_price'] ?? 0);
 
                 if ($btcCostPrice > 0) {
-                    $costValue = $executedQty * $btcCostPrice;
-                    $sellValue = $executedQty * $sellPrice;
-                    $costFee = $costValue * 0.001;
-                    $sellFee = $sellValue * 0.001;
-                    $profit = $sellValue - $costValue - $costFee - $sellFee;
+                    $profit = $this->calculatePairProfit($executedQty, $btcCostPrice, $sellPrice);
 
                     $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                     $this->incrementGridProfit($gridId, $profit);
 
                     $this->log(
-                        "SELL HÍBRIDO em $symbol: Lucro = $" . number_format($profit, 4) . 
-                        " (Custo BTC: \$$btcCostPrice | Venda: \$$sellPrice)",
+                        "SELL HÍBRIDO em $symbol: Lucro = $" . number_format($profit, 4) .
+                            " (Custo BTC: \$$btcCostPrice | Venda: \$$sellPrice)",
                         'SUCCESS',
                         'TRADE'
                     );
@@ -2322,11 +2315,7 @@ class setup_controller
                 $buyPrice = (float)$buyOrder['price'];
 
                 // Calcular lucro (desconta fee de 0.1% em cada lado)
-                $buyValue  = $executedQty * $buyPrice;
-                $sellValue = $executedQty * $sellPrice;
-                $buyFee    = $buyValue  * 0.001;
-                $sellFee   = $sellValue * 0.001;
-                $profit    = $sellValue - $buyValue - $buyFee - $sellFee;
+                $profit = $this->calculatePairProfit($executedQty, $buyPrice, $sellPrice);
 
                 // Salvar lucro na ordem de venda
                 $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
@@ -2361,11 +2350,7 @@ class setup_controller
                 $btcCostPrice = (float)($gridData['current_price'] ?? 0);
 
                 if ($btcCostPrice > 0) {
-                    $costValue = $executedQty * $btcCostPrice;
-                    $sellValue = $executedQty * $sellPrice;
-                    $costFee   = $costValue * 0.001; // fee na compra inicial do BTC
-                    $sellFee   = $sellValue * 0.001;
-                    $profit    = $sellValue - $costValue - $costFee - $sellFee;
+                    $profit = $this->calculatePairProfit($executedQty, $btcCostPrice, $sellPrice);
 
                     // Salvar lucro na ordem de venda
                     $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
@@ -2502,13 +2487,7 @@ class setup_controller
             // para garantir que o BTC liberado dos cancelamentos está incluído.
             $baseAsset = str_replace('USDC', '', $symbol);
             $accountInfo = $this->getAccountInfo(true);
-            $freeBtc = 0.0;
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === $baseAsset) {
-                    $freeBtc = (float)$balance['free'];
-                    break;
-                }
-            }
+            $freeBtc = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
 
             $this->log(
                 "💰 Saldo real $baseAsset disponível para venda (Binance): " . number_format($freeBtc, 8),
@@ -2608,17 +2587,9 @@ class setup_controller
             $response = $this->client->newOrder($orderReq);
             $orderData = $response->getData();
 
-            $binanceOrderId = method_exists($orderData, 'getOrderId')
-                ? $orderData->getOrderId()
-                : ($orderData['orderId'] ?? null);
-
-            $binanceClientOrderId = method_exists($orderData, 'getClientOrderId')
-                ? $orderData->getClientOrderId()
-                : ($orderData['clientOrderId'] ?? null);
-
-            $status = method_exists($orderData, 'getStatus')
-                ? $orderData->getStatus()
-                : ($orderData['status'] ?? 'UNKNOWN');
+            $binanceOrderId       = $this->extractBinanceValue($orderData, 'getOrderId', 'orderId', null);
+            $binanceClientOrderId = $this->extractBinanceValue($orderData, 'getClientOrderId', 'clientOrderId', null);
+            $status               = $this->extractBinanceValue($orderData, 'getStatus', 'status', 'UNKNOWN');
 
             // 6. Salvar ordem no banco
             $orderDbId = $this->saveGridOrder([
@@ -2698,17 +2669,9 @@ class setup_controller
             $response = $this->client->newOrder($orderReq);
             $orderData = $response->getData();
 
-            $binanceOrderId = method_exists($orderData, 'getOrderId')
-                ? $orderData->getOrderId()
-                : ($orderData['orderId'] ?? null);
-
-            $binanceClientOrderId = method_exists($orderData, 'getClientOrderId')
-                ? $orderData->getClientOrderId()
-                : ($orderData['clientOrderId'] ?? null);
-
-            $status = method_exists($orderData, 'getStatus')
-                ? $orderData->getStatus()
-                : ($orderData['status'] ?? 'UNKNOWN');
+            $binanceOrderId       = $this->extractBinanceValue($orderData, 'getOrderId', 'orderId', null);
+            $binanceClientOrderId = $this->extractBinanceValue($orderData, 'getClientOrderId', 'clientOrderId', null);
+            $status               = $this->extractBinanceValue($orderData, 'getStatus', 'status', 'UNKNOWN');
 
             // 6. Salvar ordem no banco
             $orderDbId = $this->saveGridOrder([
@@ -2758,7 +2721,7 @@ class setup_controller
             if ($safeQty <= 0 || $safeQty < $minQty) {
                 $this->log(
                     "Quantidade insuficiente para venda a mercado: " . number_format($safeQty, 8) .
-                    " (mínimo LOT_SIZE: " . number_format($minQty, 8) . ")",
+                        " (mínimo LOT_SIZE: " . number_format($minQty, 8) . ")",
                     'WARNING',
                     'TRADE'
                 );
@@ -2774,8 +2737,8 @@ class setup_controller
             $resp = $this->client->newOrder($sellReq);
             $data = $resp->getData();
 
-            $orderId = method_exists($data, 'getOrderId') ? $data->getOrderId() : ($data['orderId'] ?? null);
-            $status = method_exists($data, 'getStatus') ? $data->getStatus() : ($data['status'] ?? 'UNKNOWN');
+            $orderId = $this->extractBinanceValue($data, 'getOrderId', 'orderId', null);
+            $status  = $this->extractBinanceValue($data, 'getStatus', 'status', 'UNKNOWN');
 
             $this->log("Venda de emergência executada: $symbol (Qty: $safeQty, Status: $status)", 'SUCCESS', 'TRADE');
 
@@ -2842,16 +2805,12 @@ class setup_controller
         try {
             $accountInfo = $this->getAccountInfo(true);
 
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === 'USDC') {
-                    $this->totalCapital = (float)$balance['free'];
-                    $this->log("Capital USDC disponível: {$this->totalCapital}", 'INFO', 'SYSTEM');
-                    return;
-                }
+            $this->totalCapital = $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
+            if ($this->totalCapital === 0.0) {
+                $this->log("AVISO: Nenhum saldo USDC encontrado", 'WARNING', 'SYSTEM');
+                return;
             }
-
-            $this->totalCapital = 0.0;
-            $this->log("AVISO: Nenhum saldo USDC encontrado", 'WARNING', 'SYSTEM');
+            $this->log("Capital USDC disponível: {$this->totalCapital}", 'INFO', 'SYSTEM');
         } catch (Exception $e) {
             $this->log("Erro ao carregar capital: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             $this->totalCapital = 0.0;
@@ -3044,14 +3003,7 @@ class setup_controller
             // 2. VENDER TODO BTC RESTANTE A MERCADO
             $baseAsset = str_replace('USDC', '', $symbol);
             $accountInfo = $this->getAccountInfo(true);
-            $btcBalance = 0.0;
-
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === $baseAsset) {
-                    $btcBalance = (float)$balance['free'];
-                    break;
-                }
-            }
+            $btcBalance = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
 
             if ($btcBalance > 0.00001) {
                 $this->log("🔄 Vendendo $btcBalance $baseAsset a mercado...", 'INFO', 'SYSTEM');
@@ -3132,15 +3084,10 @@ class setup_controller
             $btcFree = 0.0;
             $btcLocked = 0.0;
 
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === 'USDC') {
-                    $usdcBalance = (float)$balance['free'] + (float)$balance['locked'];
-                }
-                if ($balance['asset'] === $baseAsset) {
-                    $btcFree = (float)$balance['free'];
-                    $btcLocked = (float)$balance['locked'];
-                }
-            }
+            $usdcBalance = $this->getBalanceForAsset($accountInfo['balances'], 'USDC')
+                + $this->getBalanceForAsset($accountInfo['balances'], 'USDC', 'locked');
+            $btcFree     = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
+            $btcLocked   = $this->getBalanceForAsset($accountInfo['balances'], $baseAsset, 'locked');
 
             $currentPrice = $this->getCurrentPrice($symbol);
             $totalBtcValue = ($btcFree + $btcLocked) * $currentPrice;
@@ -3805,13 +3752,7 @@ class setup_controller
             $baseAsset = str_replace('USDC', '', $symbol);
             $accountInfo = $this->getAccountInfo(true);
 
-            foreach ($accountInfo['balances'] as $balance) {
-                if ($balance['asset'] === $baseAsset) {
-                    return (float)$balance['free'];
-                }
-            }
-
-            return 0.0;
+            return $this->getBalanceForAsset($accountInfo['balances'], $baseAsset);
         } catch (Exception $e) {
             $this->log("Erro ao calcular ativo acumulado: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return 0.0;
