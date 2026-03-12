@@ -429,6 +429,23 @@ class setup_controller
     }
 
     /**
+     * Retorna o preço canônico do slot mais próximo na grade geométrica.
+     *   slot  = round(log($targetPrice / $centerPrice) / log(1 + $gridSpacing))
+     *   preço = $centerPrice × (1 + $gridSpacing)^slot
+     *
+     * Normalizar o preço antes de criar ordens garante que todos os níveis
+     * fiquem em posições exatas da grade, eliminando desvios de float/tickSize.
+     */
+    private function normalizeToGrid(float $targetPrice, float $centerPrice, float $gridSpacing): float
+    {
+        if ($centerPrice <= 0 || $gridSpacing <= 0 || $targetPrice <= 0) {
+            return $targetPrice;
+        }
+        $slot = (int)round(log($targetPrice / $centerPrice) / log(1 + $gridSpacing));
+        return $centerPrice * pow(1 + $gridSpacing, $slot);
+    }
+
+    /**
      * Método principal de execução
      * Ponto de entrada do bot que é chamado via cron
      */
@@ -1807,6 +1824,62 @@ class setup_controller
     }
 
     /**
+     * Verifica se já existe uma ordem ativa (NEW/PARTIALLY_FILLED) no slot canônico
+     * $slot para o lado $side. Substitui hasActiveBuyOrderNearPrice: usa a grade
+     * geométrica em vez de tolerância percentual — imune a falsos positivos por
+     * arredondamento de float ou diferenças menores que 1 tickSize.
+     *
+     * @param int    $gridId      ID do grid
+     * @param string $side        'BUY' ou 'SELL'
+     * @param int    $slot        Slot canônico calculado via normalizeToGrid
+     * @param float  $centerPrice Preço central do grid
+     * @param float  $gridSpacing Espaçamento percentual (ex. 0.01)
+     * @return bool true se já existe ordem ativa nesse slot
+     */
+    private function hasActiveOrderAtSlot(int $gridId, string $side, int $slot, float $centerPrice, float $gridSpacing): bool
+    {
+        if ($centerPrice <= 0 || $gridSpacing <= 0) {
+            return false; // sem dados suficientes para calcular slot — não bloqueia
+        }
+        try {
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "grids_id = '{$gridId}'",
+                "active = 'yes'"
+            ]);
+            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            $logBase = log(1 + $gridSpacing);
+
+            foreach ($gridsOrdersModel->data as $gridOrder) {
+                $order = $gridOrder['orders_attach'][0] ?? null;
+                if (!$order || $order['side'] !== $side) {
+                    continue;
+                }
+                if (!in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
+                    continue;
+                }
+                $existingPrice = (float)$order['price'];
+                $existingSlot  = (int)round(log($existingPrice / $centerPrice) / $logBase);
+                if ($existingSlot === $slot) {
+                    $this->log(
+                        "🔍 Duplicação (slot {$slot}): {$side} existente @ \${$existingPrice} — nova ordem bloqueada",
+                        'INFO',
+                        'TRADE'
+                    );
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (Exception $e) {
+            $this->log("Erro ao verificar slot $slot ({$side}): " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return false;
+        }
+    }
+
+    /**
      * Verifica se uma ordem de compra já tem uma venda pareada ativa
      */
     private function hasPairedSellOrder(int $buyGridOrderIdx): bool
@@ -2038,11 +2111,15 @@ class setup_controller
                             // Preço da BUY: 1% ABAIXO do preço EXATO onde SELL executou
                             $buyPrice = $sellPrice * (1 - $gridSpacing);
 
-                            // Proteção anti-duplicação: pular se já existe BUY ativa próxima a este preço
-                            if ($this->hasActiveBuyOrderNearPrice($gridId, $buyPrice)) {
+                            // Proteção anti-duplicação: pular se slot canônico já está ocupado por BUY ativa
+                            $_gd_b = $this->getGridById($gridId);
+                            $_cp_b = (float)($_gd_b['current_price'] ?? 0);
+                            $_slot_b = $_cp_b > 0
+                                ? (int)round(log($buyPrice / $_cp_b) / log(1 + $gridSpacing))
+                                : PHP_INT_MIN;
+                            if ($this->hasActiveOrderAtSlot($gridId, 'BUY', $_slot_b, $_cp_b, $gridSpacing)) {
                                 $this->log(
-                                    "⚠️ BUY reativa pulada: já existe BUY ativa próxima a $" . number_format($buyPrice, 2) .
-                                        " (proteção anti-duplicação)",
+                                    "⚠️ BUY reativa nível {$sellOrder['grid_level']} pulada: slot {$_slot_b} já ocupado (proteção anti-duplicação)",
                                     'WARNING',
                                     'TRADE'
                                 );
@@ -2420,11 +2497,14 @@ class setup_controller
             }
 
             // ══════ DUPLICATE ORDER PREVENTION ══════
-            // Verificar se já existe BUY ativa em faixa de preço próxima (±0.5%)
-            // Previne duplicação quando múltiplas SELLs executam simultaneamente
-            if ($this->hasActiveBuyOrderNearPrice($gridId, $buyPrice)) {
+            // Verificação por slot canônico — imune a desvios de float/tickSize
+            $_cp_s = (float)($gridData['current_price'] ?? 0);
+            $_slot_s = $_cp_s > 0
+                ? (int)round(log($buyPrice / $_cp_s) / log(1 + $gridSpacing))
+                : PHP_INT_MIN;
+            if ($this->hasActiveOrderAtSlot($gridId, 'BUY', $_slot_s, $_cp_s, $gridSpacing)) {
                 $this->log(
-                    "⚠️ Nova BUY pós-SELL nível {$sellOrder['grid_level']} pulada: já existe BUY ativa em preço próximo a \${$buyPrice} (proteção anti-duplicação)",
+                    "⚠️ Nova BUY pós-SELL nível {$sellOrder['grid_level']} pulada: slot {$_slot_s} já ocupado (proteção anti-duplicação)",
                     'WARNING',
                     'TRADE'
                 );
@@ -2719,6 +2799,25 @@ class setup_controller
                         'original_cost_price' => $originalCostPrice,
                     ];
                 }
+
+                // ── Atualizar current_price (ciclo puramente SELL→SELL) ──────────────
+                // Sem BUYs ativas, o midpoint não é calculável. Ancoramos em
+                // lowestSellPrice: é onde o grid está encostado e onde normalizeToGrid
+                // deve centrar os slots no próximo ciclo.
+                if (!empty($activeSellOrders)) {
+                    $lowestActiveSell = min(array_column($activeSellOrders, 'price'));
+                    $gridsCenter = new grids_model();
+                    $gridsCenter->set_filter(["idx = '{$gridId}'"]);
+                    $gridsCenter->populate(['current_price' => number_format($lowestActiveSell, 8, '.', '')]);
+                    $gridsCenter->save();
+
+                    $this->log(
+                        "📍 Center price (SELL→SELL) atualizado: \$" . number_format($lowestActiveSell, 2) .
+                            " (menor SELL ativa)",
+                        'INFO',
+                        'TRADE'
+                    );
+                }
                 return;
             }
 
@@ -2929,6 +3028,29 @@ class setup_controller
                     $activeSellOrders[] = ['price' => $newSellPrice, 'grids_orders_idx' => $newSellId];
                 }
             }
+
+            // ── Atualizar current_price após slides ───────────────────────────────
+            // Recalcula o center price como midpoint entre a maior BUY e menor SELL
+            // ainda ativas. Mantém normalizeToGrid/hasActiveOrderAtSlot coerentes
+            // com o estado real do grid após cada ciclo de deslizamento.
+            if (!empty($activeBuyOrders) && !empty($activeSellOrders)) {
+                $highestActiveBuy = max(array_column($activeBuyOrders,  'price'));
+                $lowestActiveSell = min(array_column($activeSellOrders, 'price'));
+                $newCenterPrice   = ($lowestActiveSell + $highestActiveBuy) / 2.0;
+
+                $gridsCenter = new grids_model();
+                $gridsCenter->set_filter(["idx = '{$gridId}'"]);
+                $gridsCenter->populate(['current_price' => number_format($newCenterPrice, 8, '.', '')]);
+                $gridsCenter->save();
+
+                $this->log(
+                    "📍 Center price atualizado: \$" . number_format($newCenterPrice, 2) .
+                        " (BUY max: \$" . number_format($highestActiveBuy, 2) .
+                        " | SELL min: \$" . number_format($lowestActiveSell, 2) . ")",
+                    'INFO',
+                    'TRADE'
+                );
+            }
         } catch (Exception $e) {
             $this->log("Erro no slideGrid para grid #$gridId ($symbol): " . $e->getMessage(), 'ERROR', 'TRADE');
         }
@@ -2993,6 +3115,14 @@ class setup_controller
                     'TRADE'
                 );
                 return null;
+            }
+
+            // 0. Normalizar preço ao slot canônico da grade geométrica
+            $_gd = $this->getGridById($gridId);
+            $_cp = (float)($_gd['current_price'] ?? 0);
+            $_gs = $this->getGridSpacing($symbol);
+            if ($_cp > 0 && $_gs > 0) {
+                $price = $this->normalizeToGrid($price, $_cp, $_gs);
             }
 
             // 1. Obter filtros do símbolo
@@ -3083,6 +3213,14 @@ class setup_controller
         float $originalCostPrice = 0.0
     ): ?int {
         try {
+            // 0. Normalizar preço ao slot canônico da grade geométrica
+            $_gd = $this->getGridById($gridId);
+            $_cp = (float)($_gd['current_price'] ?? 0);
+            $_gs = $this->getGridSpacing($symbol);
+            if ($_cp > 0 && $_gs > 0) {
+                $price = $this->normalizeToGrid($price, $_cp, $_gs);
+            }
+
             // 1. Obter filtros do símbolo
             $symbolData = $this->getExchangeInfo($symbol);
             list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
