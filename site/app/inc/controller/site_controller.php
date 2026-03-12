@@ -238,9 +238,10 @@ class site_controller
                     'side'       => $side,
                     'status'     => $order['status'] ?? 'UNKNOWN',
                     'order_id'   => (int)($order['idx'] ?? 0),
-                    'has_order'  => true,
-                    'created_at' => $order['created_at'] ?? null,
-                    'is_sliding' => (int)($gridOrder['is_sliding_level'] ?? 0) === 1,
+                    'has_order'           => true,
+                    'created_at'          => $order['created_at'] ?? null,
+                    'is_sliding'          => (int)($gridOrder['is_sliding_level'] ?? 0) === 1,
+                    'original_cost_price' => (float)($gridOrder['original_cost_price'] ?? 0),
                 ];
                 if ($side === 'BUY')  $buyLevels[]  = $entry;
                 if ($side === 'SELL') $sellLevels[] = $entry;

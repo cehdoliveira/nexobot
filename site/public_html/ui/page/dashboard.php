@@ -46,6 +46,36 @@ $lastMonitor        = $firstGrid ? ($firstGrid['last_monitor_at'] ?? null) : nul
 $drawdownPct = ($peakCapital > 0) ? (($peakCapital - $currentCapital) / $peakCapital) * 100 : 0;
 $drawdownPct = max(0, $drawdownPct);
 
+// Trailing Stop: 3 estados — aguardando / armado (lucro ≥ 10%) / ativado
+$trailingArmed = $trailingTriggered !== 'yes'
+    && $initialCapital > 0
+    && $currentCapital > 0
+    && ($currentCapital - $initialCapital) / $initialCapital >= 0.10;
+
+// CRON health: tempo desde o último monitoramento do bot
+$minutesSinceMonitor = null;
+$cronStatus = 'unknown';
+if ($lastMonitor) {
+    $minutesSinceMonitor = (time() - strtotime($lastMonitor)) / 60;
+    $cronStatus = $minutesSinceMonitor <= 2 ? 'ok' : ($minutesSinceMonitor <= 5 ? 'warning' : 'critical');
+}
+
+// Mapa de tradução dos tipos de evento do log
+$eventLabels = [
+    'grid_create'          => 'Grid Criado',
+    'grid_update'          => 'Grid Atualizado',
+    'grid_monitor'         => 'Monitoramento',
+    'grid_slide_down'      => 'Slide ⬇ Baixo',
+    'grid_slide_up'        => 'Slide ⬆ Cima',
+    'grid_slide_down_sell' => 'Slide ⬇ SELL→SELL',
+    'rebalance_error'      => 'Rebalance Erro',
+    'stop_loss'            => 'Stop-Loss',
+    'trailing_stop'        => 'Trailing Stop',
+    'emergency_shutdown'   => 'Emergência',
+    'orphan_recovery'      => 'BTC Órfão Rec.',
+    'order_filled'         => 'Ordem Executada',
+];
+
 // Calculate buy/sell order counts
 $buyOrders = 0;
 $sellOrders = 0;
@@ -348,10 +378,24 @@ $dashboardJson = json_encode([
                         <div class="mb-3">
                             <div class="d-flex justify-content-between align-items-center mb-1">
                                 <span class="metric-label mb-0">Trailing Stop (15%)</span>
-                                <span class="protection-pill <?php echo $trailingTriggered === 'yes' ? 'pill-triggered' : 'pill-active'; ?>">
-                                    <?php echo $trailingTriggered === 'yes' ? 'ATIVADO' : 'Monitorando'; ?>
-                                </span>
+                                <?php if ($trailingTriggered === 'yes'): ?>
+                                <span class="protection-pill pill-triggered">ATIVADO</span>
+                                <?php elseif ($trailingArmed): ?>
+                                <span class="protection-pill" style="background:rgba(255,165,0,.12);color:#ffaa00;border:1px solid rgba(255,165,0,.3);">Armado ⚡</span>
+                                <?php else: ?>
+                                <span class="protection-pill pill-active">Aguardando</span>
+                                <?php endif; ?>
                             </div>
+                            <small class="text-dim" style="font-size:0.65rem;">Ativa após 10% de lucro &nbsp;&bull;&nbsp; Aciona se pico cair 15%</small>
+                        </div>
+
+                        <!-- Fee Threshold -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="metric-label mb-0">Fee Threshold</span>
+                                <span class="protection-pill pill-active">Ativo</span>
+                            </div>
+                            <small class="text-dim" style="font-size:0.65rem;">Rejeita ordens sem lucro mínimo após taxas (0.1% × 2)</small>
                         </div>
 
                         <!-- Drawdown Progress Bar -->
@@ -398,6 +442,17 @@ $dashboardJson = json_encode([
                         <div class="mt-2">
                             <small class="text-dim" style="font-size: 0.65rem;">
                                 <i class="bi bi-clock"></i> Último monitoramento: <?php echo date('d/m H:i:s', strtotime($lastMonitor)); ?>
+                            </small>
+                        </div>
+                        <div class="mt-1">
+                            <?php
+                            $cronColor = match($cronStatus) { 'ok' => '#00c07f', 'warning' => '#ffaa00', default => '#ff4d6d' };
+                            $cronIcon  = match($cronStatus) { 'ok' => 'bi-cpu', 'warning' => 'bi-cpu', default => 'bi-cpu-fill' };
+                            $cronLabel = match($cronStatus) { 'ok' => 'CRON saudável', 'warning' => 'CRON lento', default => 'CRON parado?' };
+                            ?>
+                            <small style="font-size: 0.65rem; color: <?php echo $cronColor; ?>;">
+                                <i class="bi <?php echo $cronIcon; ?>"></i>
+                                <?php echo $cronLabel; ?> &bull; <?php echo number_format($minutesSinceMonitor, 1); ?> min atrás
                             </small>
                         </div>
                         <?php endif; ?>
@@ -455,7 +510,12 @@ $dashboardJson = json_encode([
                                 <i class="bi bi-arrow-up-short"></i>S<?php echo $level['level']; ?>
                                 <?php if ($level['is_sliding'] ?? false): ?><span title="Nível deslizante" style="font-size:0.6rem;vertical-align:middle;">⟳</span><?php endif; ?>
                             </span>
-                            <span class="level-price text-sell">$<?php echo number_format($level['price'], 2, '.', ','); ?></span>
+                            <span class="level-price text-sell">
+                                $<?php echo number_format($level['price'], 2, '.', ','); ?>
+                                <?php if (($level['is_sliding'] ?? false) && ($level['original_cost_price'] ?? 0) > 0): ?>
+                                <small class="text-dim d-none d-sm-inline" style="font-size:0.6rem;"> &middot; custo $<?php echo number_format($level['original_cost_price'], 2); ?></small>
+                                <?php endif; ?>
+                            </span>
                             <span class="level-qty d-none d-sm-inline"><?php echo number_format($level['quantity'], 6); ?> un</span>
                             <span class="level-qty d-none d-md-inline">~$<?php echo number_format($level['price'] * $level['quantity'], 2); ?></span>
                             <span class="level-status badge-status <?php echo $statusClass; ?>"><?php echo $statusLabel; ?></span>
@@ -495,7 +555,12 @@ $dashboardJson = json_encode([
                                 <i class="bi bi-arrow-down-short"></i>B<?php echo $level['level']; ?>
                                 <?php if ($level['is_sliding'] ?? false): ?><span title="Nível deslizante" style="font-size:0.6rem;vertical-align:middle;">⟳</span><?php endif; ?>
                             </span>
-                            <span class="level-price text-buy">$<?php echo number_format($level['price'], 2, '.', ','); ?></span>
+                            <span class="level-price text-buy">
+                                $<?php echo number_format($level['price'], 2, '.', ','); ?>
+                                <?php if (($level['is_sliding'] ?? false) && ($level['original_cost_price'] ?? 0) > 0): ?>
+                                <small class="text-dim d-none d-sm-inline" style="font-size:0.6rem;"> &middot; custo $<?php echo number_format($level['original_cost_price'], 2); ?></small>
+                                <?php endif; ?>
+                            </span>
                             <span class="level-qty d-none d-sm-inline"><?php echo number_format($level['quantity'], 6); ?> un</span>
                             <span class="level-qty d-none d-md-inline">~$<?php echo number_format($level['price'] * $level['quantity'], 2); ?></span>
                             <span class="level-status badge-status <?php echo $statusClass; ?>"><?php echo $statusLabel; ?></span>
@@ -545,12 +610,16 @@ $dashboardJson = json_encode([
                         $oPrice = (float)($od['price'] ?? 0);
                         $oQty = (float)($od['quantity'] ?? 0);
                         $oLevel = $order['grid_level'] ?? 'N/A';
+                        $oSliding = (int)($order['is_sliding_level'] ?? 0) === 1;
+                        $oProfit = (float)($order['profit_usdc'] ?? 0);
                         $isOpen = in_array($oStatus, ['NEW', 'PARTIALLY_FILLED']);
                         ?>
                         <div class="order-card-mobile <?php echo !$isOpen ? 'opacity-75' : ''; ?>">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <div class="d-flex align-items-center gap-2">
-                                    <span class="order-side <?php echo $oSide === 'BUY' ? 'side-buy' : 'side-sell'; ?>"><?php echo $oSide; ?></span>
+                                    <span class="order-side <?php echo $oSide === 'BUY' ? 'side-buy' : 'side-sell'; ?>">
+                                        <?php echo $oSide; ?><?php if ($oSliding): ?> <span title="Nível deslizante">⟳</span><?php endif; ?>
+                                    </span>
                                 </div>
                                 <span class="badge-status <?php
                                     echo match($oStatus) {
@@ -593,11 +662,13 @@ $dashboardJson = json_encode([
                                     <tr>
                                         <th>Símbolo</th>
                                         <th>Lado</th>
+                                        <th class="d-none d-lg-table-cell">Nível</th>
                                         <th>Preço</th>
                                         <th>Quantidade</th>
                                         <th>Valor</th>
                                         <th>Status</th>
-                                        <th class="d-none d-lg-table-cell">Data</th>
+                                        <th class="d-none d-lg-table-cell">Lucro</th>
+                                        <th class="d-none d-xl-table-cell">Data</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -609,10 +680,14 @@ $dashboardJson = json_encode([
                                     $oPrice = (float)($od['price'] ?? 0);
                                     $oQty = (float)($od['quantity'] ?? 0);
                                     $isOpen = in_array($oStatus, ['NEW', 'PARTIALLY_FILLED']);
+                                    $oSliding = (int)($order['is_sliding_level'] ?? 0) === 1;
+                                    $oProfit  = (float)($order['profit_usdc'] ?? 0);
+                                    $oLevel   = $order['grid_level'] ?? '--';
                                     ?>
                                     <tr <?php echo !$isOpen ? 'style="opacity: 0.6;"' : ''; ?>>
                                         <td><span class="badge bg-info" style="font-size: 0.7rem;"><?php echo htmlspecialchars($od['symbol'] ?? 'N/A'); ?></span></td>
-                                        <td><span class="<?php echo $oSide === 'BUY' ? 'badge-buy' : 'badge-sell'; ?>"><?php echo $oSide; ?></span></td>
+                                        <td><span class="<?php echo $oSide === 'BUY' ? 'badge-buy' : 'badge-sell'; ?>"><?php echo $oSide; ?><?php if ($oSliding): ?> <span title="Nível deslizante">⟳</span><?php endif; ?></span></td>
+                                        <td class="d-none d-lg-table-cell"><span class="font-mono" style="font-size:0.8rem;">N<?php echo $oLevel; ?></span></td>
                                         <td class="mono fw-bold">$<?php echo number_format($oPrice, 2, '.', ','); ?></td>
                                         <td class="mono"><?php echo number_format($oQty, 8); ?></td>
                                         <td class="mono">$<?php echo number_format($oPrice * $oQty, 2); ?></td>
@@ -632,6 +707,13 @@ $dashboardJson = json_encode([
                                             </span>
                                         </td>
                                         <td class="d-none d-lg-table-cell">
+                                            <?php if ($oProfit != 0): ?>
+                                            <span class="font-mono <?php echo $oProfit > 0 ? 'text-success' : 'text-danger'; ?>" style="font-size:0.8rem;">
+                                                <?php echo ($oProfit > 0 ? '+' : '') . '$' . number_format(abs($oProfit), 4); ?>
+                                            </span>
+                                            <?php else: ?><small class="text-dim">--</small><?php endif; ?>
+                                        </td>
+                                        <td class="d-none d-xl-table-cell">
                                             <small class="text-dim"><?php
                                                 $createdAt = $order['created_at'] ?? null;
                                                 echo $createdAt ? date('d/m/Y H:i', strtotime($createdAt)) : 'N/A';
@@ -713,7 +795,10 @@ $dashboardJson = json_encode([
                                     <?php echo isset($log['created_at']) ? date('d/m H:i:s', strtotime($log['created_at'])) : '--'; ?>
                                     <span class="badge bg-secondary ms-1" style="font-size: 0.55rem;"><?php echo htmlspecialchars($log['log_type'] ?? ''); ?></span>
                                 </div>
-                                <div class="timeline-event"><?php echo htmlspecialchars($log['event'] ?? 'N/A'); ?></div>
+                                <div class="timeline-event"><?php echo htmlspecialchars($eventLabels[$log['event'] ?? ''] ?? ($log['event'] ?? 'N/A')); ?></div>
+                                <?php if (!empty($log['message'])): ?>
+                                <div class="text-dim" style="font-size:0.65rem;margin-top:2px;"><?php echo htmlspecialchars($log['message']); ?></div>
+                                <?php endif; ?>
                             </div>
                         </div>
                         <?php endforeach; ?>
@@ -727,9 +812,10 @@ $dashboardJson = json_encode([
                             <thead>
                                 <tr>
                                     <th style="width: 140px;">Data/Hora</th>
-                                    <th style="width: 100px;">Tipo</th>
-                                    <th>Evento</th>
-                                    <th style="width: 80px;">Status</th>
+                                    <th style="width: 70px;">Tipo</th>
+                                    <th style="width: 150px;">Evento</th>
+                                    <th>Mensagem</th>
+                                    <th style="width: 70px;">Status</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -739,14 +825,19 @@ $dashboardJson = json_encode([
                                         <small><?php echo isset($log['created_at']) ? date('d/m/Y H:i:s', strtotime($log['created_at'])) : '--'; ?></small>
                                     </td>
                                     <td>
-                                        <span class="badge bg-secondary" style="font-size: 0.6rem;"><?php echo htmlspecialchars($log['log_type'] ?? 'N/A'); ?></span>
+                                        <span class="badge <?php echo match($log['log_type'] ?? '') { 'error' => 'bg-danger', 'warning' => 'bg-warning text-dark', 'success' => 'bg-success', default => 'bg-secondary' }; ?>" style="font-size: 0.6rem;">
+                                            <?php echo match($log['log_type'] ?? '') { 'error' => 'Erro', 'warning' => 'Aviso', 'success' => 'Ok', default => htmlspecialchars($log['log_type'] ?? '') }; ?>
+                                        </span>
                                     </td>
                                     <td>
-                                        <small><?php echo htmlspecialchars($log['event'] ?? 'N/A'); ?></small>
+                                        <small><?php echo htmlspecialchars($eventLabels[$log['event'] ?? ''] ?? ($log['event'] ?? 'N/A')); ?></small>
                                     </td>
                                     <td>
-                                        <span class="badge-status <?php echo ($log['log_type'] ?? '') === 'error' ? 'badge-canceled' : 'badge-filled'; ?>" style="font-size: 0.6rem;">
-                                            <?php echo ($log['log_type'] ?? '') === 'error' ? 'Erro' : 'Ok'; ?>
+                                        <small class="text-dim"><?php echo htmlspecialchars($log['message'] ?? ''); ?></small>
+                                    </td>
+                                    <td>
+                                        <span class="badge-status <?php echo match($log['log_type'] ?? '') { 'error' => 'badge-canceled', 'warning' => 'badge-partial', default => 'badge-filled' }; ?>" style="font-size: 0.6rem;">
+                                            <?php echo match($log['log_type'] ?? '') { 'error' => 'Erro', 'warning' => 'Aviso', default => 'Ok' }; ?>
                                         </span>
                                     </td>
                                 </tr>
