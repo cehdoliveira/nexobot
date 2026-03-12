@@ -198,6 +198,16 @@ class site_controller
         // ROI
         $roiPercent = $totalCapitalAllocated > 0 ? ($totalProfit / $totalCapitalAllocated) * 100 : 0;
 
+        // === ESTATÍSTICAS DE SLIDING GRID ===
+        $totalSlides = 0;
+        $slidesDown  = 0;
+        $slidesUp    = 0;
+        foreach ($allGrids as $grid) {
+            $totalSlides += (int)($grid['slide_count']      ?? 0);
+            $slidesDown  += (int)($grid['slide_count_down'] ?? 0);
+            $slidesUp    += (int)($grid['slide_count_up']   ?? 0);
+        }
+
         // === PREPARAR NÍVEIS DO GRID ===
         // ESTRATÉGIA: Exibir APENAS ordens ativas (NEW/PARTIALLY_FILLED) de cada grid,
         // ordenadas por proximidade do preço atual e renumeradas dinamicamente.
@@ -230,6 +240,7 @@ class site_controller
                     'order_id'   => (int)($order['idx'] ?? 0),
                     'has_order'  => true,
                     'created_at' => $order['created_at'] ?? null,
+                    'is_sliding' => (int)($gridOrder['is_sliding_level'] ?? 0) === 1,
                 ];
                 if ($side === 'BUY')  $buyLevels[]  = $entry;
                 if ($side === 'SELL') $sellLevels[] = $entry;
@@ -346,6 +357,11 @@ class site_controller
             'symbols_stats' => $symbolsStats,
             'logs' => $gridLogs,
             'binance_env' => $binanceConfig['mode'] ?? 'dev',
+            'sliding' => [
+                'total_slides' => $totalSlides,
+                'slides_down'  => $slidesDown,
+                'slides_up'    => $slidesUp,
+            ],
             'wallet' => [
                 'usdc_balance' => $usdcBalance,
                 'btc_balance'  => $btcBalance ?? 0

@@ -9,6 +9,8 @@ class grids_orders_model extends DOLModel
 		"paired_order_id",
 		"is_processed",
 		"profit_usdc",
+		"is_sliding_level",
+		"original_cost_price",
 		"created_at"
 	];
 	protected $filter = ["active = 'yes'"];

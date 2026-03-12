@@ -15,7 +15,8 @@ $pagination   = $gridDashboardData['orders_pagination'] ?? [];
 $symbolsStats = $gridDashboardData['symbols_stats'] ?? [];
 $logs         = $gridDashboardData['logs'] ?? [];
 $wallet       = $gridDashboardData['wallet'] ?? [];
-$binanceEnv   = $gridDashboardData['binance_env'] ?? 'dev';
+$binanceEnv    = $gridDashboardData['binance_env'] ?? 'dev';
+$slidingStats  = $gridDashboardData['sliding'] ?? ['total_slides' => 0, 'slides_down' => 0, 'slides_up' => 0];
 
 $activeGrids    = (int)($stats['grids']['active_grids'] ?? 0);
 $openOrdersCnt  = (int)($stats['orders']['open_orders'] ?? 0);
@@ -449,9 +450,10 @@ $dashboardJson = json_encode([
                             'CANCELED', 'CANCELLED' => 'badge-canceled', default => 'badge-new'
                         };
                         ?>
-                        <div class="ladder-level level-sell">
+                        <div class="ladder-level level-sell<?php echo ($level['is_sliding'] ?? false) ? ' level-sliding' : ''; ?>">
                             <span class="level-badge badge-sell">
                                 <i class="bi bi-arrow-up-short"></i>S<?php echo $level['level']; ?>
+                                <?php if ($level['is_sliding'] ?? false): ?><span title="Nível deslizante" style="font-size:0.6rem;vertical-align:middle;">⟳</span><?php endif; ?>
                             </span>
                             <span class="level-price text-sell">$<?php echo number_format($level['price'], 2, '.', ','); ?></span>
                             <span class="level-qty d-none d-sm-inline"><?php echo number_format($level['quantity'], 6); ?> un</span>
@@ -488,9 +490,10 @@ $dashboardJson = json_encode([
                             'CANCELED', 'CANCELLED' => 'badge-canceled', default => 'badge-new'
                         };
                         ?>
-                        <div class="ladder-level level-buy">
+                        <div class="ladder-level level-buy<?php echo ($level['is_sliding'] ?? false) ? ' level-sliding' : ''; ?>">
                             <span class="level-badge badge-buy">
                                 <i class="bi bi-arrow-down-short"></i>B<?php echo $level['level']; ?>
+                                <?php if ($level['is_sliding'] ?? false): ?><span title="Nível deslizante" style="font-size:0.6rem;vertical-align:middle;">⟳</span><?php endif; ?>
                             </span>
                             <span class="level-price text-buy">$<?php echo number_format($level['price'], 2, '.', ','); ?></span>
                             <span class="level-qty d-none d-sm-inline"><?php echo number_format($level['quantity'], 6); ?> un</span>
@@ -505,6 +508,12 @@ $dashboardJson = json_encode([
                         <span class="text-dim"><i class="bi bi-graph-up"></i> Spacing: <?php echo number_format((float)($grid['grid_spacing_percent'] ?? 0) * 100, 1); ?>%</span>
                         <span class="text-dim"><i class="bi bi-layers"></i> <?php echo $grid['grid_levels'] ?? 0; ?> níveis</span>
                         <span class="text-dim"><i class="bi bi-cash"></i> $<?php echo number_format((float)($grid['capital_allocated_usdc'] ?? 0), 2); ?> total</span>
+                        <?php
+                        $gridSlideTotal = (int)($grid['slide_count']      ?? 0);
+                        $gridSlideDown  = (int)($grid['slide_count_down'] ?? 0);
+                        $gridSlideUp    = (int)($grid['slide_count_up']   ?? 0);
+                        if ($gridSlideTotal > 0):
+                        ?><span class="text-dim" title="Slides realizados neste grid"><i class="bi bi-arrow-left-right"></i> <?php echo $gridSlideTotal; ?> slides (⬆️<?php echo $gridSlideUp; ?> / ⬇️<?php echo $gridSlideDown; ?>)</span><?php endif; ?>
                     </div>
                 </div>
             </div>

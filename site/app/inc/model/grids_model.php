@@ -24,6 +24,9 @@ class grids_model extends DOLModel
 		"is_processing",
 		"last_monitor_at",
 		"last_checked_at",
+		"slide_count",
+		"slide_count_down",
+		"slide_count_up",
 		"created_at"
 	];
 	protected $filter = ["active = 'yes'"];
