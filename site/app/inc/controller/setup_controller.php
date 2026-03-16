@@ -2671,13 +2671,15 @@ class setup_controller
                 if ($order['side'] === 'SELL') $activeSellOrders[] = $entry;
             }
 
-            // Sem SELLs ativas — impossível reciclar ou determinar range
-            if (empty($activeSellOrders)) {
+            // Sem ordens ativas em nenhum lado — nada a processar
+            if (empty($activeSellOrders) && empty($activeBuyOrders)) {
                 return;
             }
 
             // ── 6.1b  Slide SELL→SELL: todas as BUYs executaram, preço caiu abaixo das SELLs ──
-            if (empty($activeBuyOrders)) {
+            // Entra APENAS quando não há BUYs E ainda existem SELLs para reciclar.
+            // Se não há SELLs (todas executaram em alta), o bloco 6.3 Slide UP é quem age.
+            if (empty($activeBuyOrders) && !empty($activeSellOrders)) {
                 $lowestSellPrice = min(array_column($activeSellOrders, 'price'));
 
                 if ($currentPrice >= $lowestSellPrice) {
@@ -2821,12 +2823,19 @@ class setup_controller
                 return;
             }
 
-            $lowestBuyPrice   = min(array_column($activeBuyOrders,  'price'));
-            $highestSellPrice = max(array_column($activeSellOrders, 'price'));
+            $lowestBuyPrice = min(array_column($activeBuyOrders, 'price'));
 
-            // Preço dentro do range — nenhuma ação necessária
-            if ($currentPrice >= $lowestBuyPrice && $currentPrice <= $highestSellPrice) {
-                return;
+            if (!empty($activeSellOrders)) {
+                $highestSellPrice = max(array_column($activeSellOrders, 'price'));
+                // Preço dentro do range — nenhuma ação necessária
+                if ($currentPrice >= $lowestBuyPrice && $currentPrice <= $highestSellPrice) {
+                    return;
+                }
+            } else {
+                // Sem SELLs ativas: todas executaram durante uma alta.
+                // Não há range superior a verificar; Slide UP vai recriar.
+                // highestSellPrice será semeado corretamente antes do bloco 6.3.
+                $highestSellPrice = 0.0;
             }
 
             $gridSpacing = $this->getGridSpacing($symbol);
@@ -2931,10 +2940,19 @@ class setup_controller
             // Recalcular highestSellPrice após possível slide para baixo
             if (!empty($activeSellOrders)) {
                 $highestSellPrice = max(array_column($activeSellOrders, 'price'));
+            } else {
+                // Sem SELLs (todas executadas): semear a partir da maior BUY ativa.
+                // O loop de Slide UP criará a primeira SELL imediatamente acima dessa referência,
+                // reaproximando o grid do preço de mercado.
+                $highestSellPrice = max(array_column($activeBuyOrders, 'price'));
             }
 
-            // ── 6.3  Slide para cima (preço subiu acima da maior SELL) ─────────────
-            if ($currentPrice > $highestSellPrice && !empty($activeSellOrders)) {
+            // ── 6.3  Slide para cima ─────────────────────────────────────────────────
+            // Disparado quando:
+            //   (a) SELLs existem e currentPrice subiu acima da maior delas, OU
+            //   (b) Não há SELLs (todas executaram) e há BUYs para reciclar —
+            //       highestSellPrice semeado como max(activeBuyOrders) garante a entrada.
+            if ($currentPrice > $highestSellPrice) {
                 $iteration = 0;
                 while ($currentPrice > $highestSellPrice && $iteration < self::GRID_SLIDE_MAX_ITERATIONS) {
                     $iteration++;
