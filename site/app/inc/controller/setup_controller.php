@@ -470,7 +470,7 @@ class setup_controller
             // 2. Processar cada símbolo
             foreach (self::SYMBOLS as $symbol) {
                 try {
-                    $this->log("--- Processando $symbol ---", 'INFO', 'TRADE');
+                    // $this->log("--- Processando $symbol ---", 'INFO', 'TRADE');
                     $this->processSymbol($symbol);
                     $successCount++;
                 } catch (Exception $e) {
