@@ -63,16 +63,24 @@ if ($lastMonitor) {
 // Mapa de tradução dos tipos de evento do log
 $eventLabels = [
     'grid_create'          => 'Grid Criado',
+    'grid_created_hybrid'  => 'Grid Hibrido Criado',
     'grid_update'          => 'Grid Atualizado',
     'grid_monitor'         => 'Monitoramento',
     'grid_slide_down'      => 'Slide ⬇ Baixo',
     'grid_slide_up'        => 'Slide ⬆ Cima',
     'grid_slide_down_sell' => 'Slide ⬇ SELL→SELL',
+    'buy_filled_sell_created' => 'BUY Executada → SELL Criada',
+    'sell_order_filled'    => 'SELL Executada',
     'rebalance_error'      => 'Rebalance Erro',
     'stop_loss'            => 'Stop-Loss',
     'trailing_stop'        => 'Trailing Stop',
+    'emergency_stop_loss'  => 'Emergencia Stop-Loss',
+    'emergency_trailing_stop' => 'Emergencia Trailing Stop',
     'emergency_shutdown'   => 'Emergência',
-    'orphan_recovery'      => 'BTC Órfão Rec.',
+    'orphan_recovery'      => 'BTC Orfao Rec.',
+    'orphaned_btc_recovered' => 'BTC Orfao Recuperado',
+    'bot_stopped'          => 'Bot Parado',
+    'bot_restarted'        => 'Bot Religado',
     'order_filled'         => 'Ordem Executada',
 ];
 
