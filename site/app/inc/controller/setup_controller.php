@@ -2676,6 +2676,33 @@ class setup_controller
                 return;
             }
 
+            // ── GATE: só deslizar se o preço saiu 5% do range do grid ──────────────
+            // O slide é uma operação extrema — a lógica reativa (BUY→SELL, SELL→BUY)
+            // cuida de oscilações dentro do range. O slide só deve atuar quando o preço
+            // se afastou significativamente (REBALANCE_THRESHOLD) do range original
+            // definido por lower_price / upper_price.
+            $gridMin = (float)($gridData['lower_price'] ?? 0);
+            $gridMax = (float)($gridData['upper_price'] ?? 0);
+
+            if ($gridMin > 0 && $gridMax > 0) {
+                $belowRange = false;
+                $aboveRange = false;
+
+                if ($currentPrice < $gridMin) {
+                    $deviation = ($gridMin - $currentPrice) / $gridMin;
+                    $belowRange = $deviation > self::REBALANCE_THRESHOLD;
+                }
+                if ($currentPrice > $gridMax) {
+                    $deviation = ($currentPrice - $gridMax) / $gridMax;
+                    $aboveRange = $deviation > self::REBALANCE_THRESHOLD;
+                }
+
+                if (!$belowRange && !$aboveRange) {
+                    // Preço ainda dentro do range (ou saiu menos de 5%) — não deslizar
+                    return;
+                }
+            }
+
             // ── 6.1b  Slide SELL→SELL: todas as BUYs executaram, preço caiu abaixo das SELLs ──
             // Entra APENAS quando não há BUYs E ainda existem SELLs para reciclar.
             // Se não há SELLs (todas executaram em alta), o bloco 6.3 Slide UP é quem age.
