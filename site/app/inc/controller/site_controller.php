@@ -2067,13 +2067,19 @@ class site_controller
             // Rebase completo pós-aporte: zera a referência de pico para o capital atual.
             // Evita que um pico histórico antigo continue distorcendo o trailing após aportes mensais.
             $newPeak = $newCurrent;
+            
+            // Recalcular capital_per_level com o novo capital total, distribuído pelos 6 níveis da grid
+            $gridLevels = 6; // Constante GRID_LEVELS do setup_controller
+            $newCapitalPerLevel = $newInitial / $gridLevels;
+            $previousCapitalPerLevel = (float)($grid['capital_per_level'] ?? 0);
 
             $gridsModel->load_byIdx($gridId);
             $gridsModel->populate([
                 'capital_allocated_usdc' => $newAllocated,
                 'initial_capital_usdc' => $newInitial,
                 'peak_capital_usdc' => $newPeak,
-                'current_capital_usdc' => $newCurrent
+                'current_capital_usdc' => $newCurrent,
+                'capital_per_level' => $newCapitalPerLevel
             ]);
             $gridsModel->save();
 
@@ -2082,7 +2088,7 @@ class site_controller
                 'grids_id' => $gridId,
                 'log_type' => 'capital_rebased',
                 'event' => 'Aporte registrado via dashboard',
-                'message' => 'Aporte manual registrado. Baseline e pico recalibrados para medir trailing apenas a partir do novo capital.',
+                'message' => 'Aporte manual registrado. Baseline, pico e capital_per_level recalibrados para distribuição equilibrada entre os 6 níveis.',
                 'data' => json_encode([
                     'amount' => $amount,
                     'symbol' => $symbol,
@@ -2094,6 +2100,9 @@ class site_controller
                     'new_allocated' => $newAllocated,
                     'previous_current' => $previousCurrent,
                     'new_current' => $newCurrent,
+                    'previous_capital_per_level' => $previousCapitalPerLevel,
+                    'new_capital_per_level' => $newCapitalPerLevel,
+                    'grid_levels' => $gridLevels,
                     'registered_at' => date('Y-m-d H:i:s')
                 ])
             ]);
@@ -2109,14 +2118,15 @@ class site_controller
 
             echo json_encode([
                 'success' => true,
-                'message' => 'Aporte de $' . number_format($amount, 2, '.', ',') . ' registrado. Baseline de capital recalibrada.',
+                'message' => 'Aporte de $' . number_format($amount, 2, '.', ',') . ' registrado. Baseline de capital, pico e capital_per_level recalibrados.',
                 'data' => [
                     'grid_id' => $gridId,
                     'symbol' => $symbol,
                     'new_initial' => $newInitial,
                     'new_peak' => $newPeak,
                     'new_current' => $newCurrent,
-                    'new_allocated' => $newAllocated
+                    'new_allocated' => $newAllocated,
+                    'new_capital_per_level' => $newCapitalPerLevel
                 ]
             ], JSON_UNESCAPED_UNICODE);
             exit;
