@@ -72,6 +72,10 @@ class site_controller
                         $this->ajaxRestartGrid();
                         exit;
 
+                    case 'registerContribution':
+                        $this->ajaxRegisterContribution();
+                        exit;
+
                     default:
                         echo json_encode(['success' => false, 'message' => 'Ação não encontrada']);
                         exit;
@@ -2008,6 +2012,162 @@ class site_controller
             ], JSON_UNESCAPED_UNICODE);
             exit;
         }
+    }
+
+    /**
+     * Registra um aporte manual e recalibra a baseline de capital do grid.
+     * Evita que aportes externos sejam interpretados como lucro pelo trailing stop.
+     */
+    private function ajaxRegisterContribution(): void
+    {
+        try {
+            $input = $_POST;
+            if (empty($input)) {
+                $rawInput = file_get_contents('php://input');
+                if (!empty($rawInput)) {
+                    $input = json_decode($rawInput, true) ?: [];
+                }
+            }
+
+            $amount = (float)($input['amount'] ?? 0);
+            if ($amount <= 0) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Informe um valor de aporte maior que zero'
+                ], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["active = 'yes'", "status = 'active'"]);
+            $gridsModel->load_data();
+
+            if (count($gridsModel->data) !== 1) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'O registro de aporte exige exatamente 1 grid ativo'
+                ], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+
+            $grid = $gridsModel->data[0];
+            $gridId = (int)$grid['idx'];
+            $symbol = $grid['symbol'];
+
+            $api = $this->createBinanceApiClient();
+            $liveCurrentCapital = $this->calculateGridCurrentCapital($symbol, $api);
+            $previousInitial = (float)($grid['initial_capital_usdc'] ?? 0);
+            $previousPeak = (float)($grid['peak_capital_usdc'] ?? 0);
+            $previousAllocated = (float)($grid['capital_allocated_usdc'] ?? 0);
+            $previousCurrent = (float)($grid['current_capital_usdc'] ?? 0);
+
+            $newInitial = $previousInitial + $amount;
+            $newPeak = $previousPeak + $amount;
+            $newAllocated = $previousAllocated + $amount;
+            $newCurrent = $liveCurrentCapital > 0 ? $liveCurrentCapital : ($previousCurrent + $amount);
+
+            $gridsModel->load_byIdx($gridId);
+            $gridsModel->populate([
+                'capital_allocated_usdc' => $newAllocated,
+                'initial_capital_usdc' => $newInitial,
+                'peak_capital_usdc' => $newPeak,
+                'current_capital_usdc' => $newCurrent
+            ]);
+            $gridsModel->save();
+
+            $logModel = new grid_logs_model();
+            $logModel->populate([
+                'grids_id' => $gridId,
+                'log_type' => 'capital_rebased',
+                'event' => 'Aporte registrado via dashboard',
+                'message' => 'Aporte manual registrado. Baseline de capital recalibrada para não contaminar o trailing stop.',
+                'data' => json_encode([
+                    'amount' => $amount,
+                    'symbol' => $symbol,
+                    'previous_initial' => $previousInitial,
+                    'new_initial' => $newInitial,
+                    'previous_peak' => $previousPeak,
+                    'new_peak' => $newPeak,
+                    'previous_allocated' => $previousAllocated,
+                    'new_allocated' => $newAllocated,
+                    'previous_current' => $previousCurrent,
+                    'new_current' => $newCurrent,
+                    'registered_at' => date('Y-m-d H:i:s')
+                ])
+            ]);
+            $logModel->save();
+
+            try {
+                $redis = RedisCache::getInstance();
+                $redis->deletePattern('*grids*');
+                $redis->deletePattern('*dashboard*');
+            } catch (Exception $cacheEx) {
+                error_log("⚠️ [ajaxRegisterContribution] Erro ao limpar cache: " . $cacheEx->getMessage());
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => 'Aporte de $' . number_format($amount, 2, '.', ',') . ' registrado. Baseline de capital recalibrada.',
+                'data' => [
+                    'grid_id' => $gridId,
+                    'symbol' => $symbol,
+                    'new_initial' => $newInitial,
+                    'new_peak' => $newPeak,
+                    'new_current' => $newCurrent,
+                    'new_allocated' => $newAllocated
+                ]
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        } catch (Exception $e) {
+            error_log("❌ [ajaxRegisterContribution] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
+            echo json_encode([
+                'success' => false,
+                'message' => 'Erro ao registrar aporte: ' . $e->getMessage()
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+    }
+
+    private function createBinanceApiClient(): SpotRestApi
+    {
+        $binanceConfig = BinanceConfig::getActiveCredentials();
+        $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
+        $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
+        $configurationBuilder->url($binanceConfig['baseUrl']);
+
+        return new SpotRestApi($configurationBuilder->build());
+    }
+
+    private function getBalanceForAsset(array $balances, string $asset, string $field = 'free'): float
+    {
+        foreach ($balances as $balance) {
+            if (($balance['asset'] ?? '') === $asset) {
+                return (float)($balance[$field] ?? 0.0);
+            }
+        }
+
+        return 0.0;
+    }
+
+    private function calculateGridCurrentCapital(string $symbol, SpotRestApi $api): float
+    {
+        $baseAsset = str_replace('USDC', '', $symbol);
+
+        $accountResponse = $api->getAccount();
+        $accountData = $accountResponse->getData();
+        $accountInfo = json_decode(json_encode($accountData), true);
+
+        $usdcBalance = $this->getBalanceForAsset($accountInfo['balances'] ?? [], 'USDC')
+            + $this->getBalanceForAsset($accountInfo['balances'] ?? [], 'USDC', 'locked');
+        $btcFree = $this->getBalanceForAsset($accountInfo['balances'] ?? [], $baseAsset);
+        $btcLocked = $this->getBalanceForAsset($accountInfo['balances'] ?? [], $baseAsset, 'locked');
+
+        $currentPrice = $this->getCurrentPrice($symbol, $api);
+        if ($currentPrice === null) {
+            throw new Exception('Não foi possível obter o preço atual para recalibrar o capital');
+        }
+
+        return $usdcBalance + (($btcFree + $btcLocked) * $currentPrice);
     }
 
     /**

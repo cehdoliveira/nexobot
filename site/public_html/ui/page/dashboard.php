@@ -77,6 +77,7 @@ $eventLabels = [
     'emergency_stop_loss'  => 'Emergencia Stop-Loss',
     'emergency_trailing_stop' => 'Emergencia Trailing Stop',
     'emergency_shutdown'   => 'Emergência',
+    'capital_rebased'      => 'Aporte Registrado',
     'bot_stopped'          => 'Bot Parado',
     'bot_restarted'        => 'Bot Religado',
     'order_filled'         => 'Ordem Executada',
@@ -192,6 +193,11 @@ $dashboardJson = json_encode([
                         :disabled="actionLoading === 'emergencyShutdown'">
                     <i class="bi bi-exclamation-triangle"></i>
                     <span class="d-none d-lg-inline">Emergência</span>
+                </button>
+                <button class="ctrl-btn-desktop" @click="registerContribution()"
+                        :disabled="actionLoading === 'registerContribution'">
+                    <i class="bi bi-cash-coin"></i>
+                    <span class="d-none d-lg-inline">Registrar Aporte</span>
                 </button>
                 <?php elseif (in_array($gridStatus ?? '', ['cancelled', 'stopped'])): ?>
                 <button class="ctrl-btn-desktop btn-restart" @click="restartGrid()"
@@ -881,6 +887,10 @@ $dashboardJson = json_encode([
         <button class="ctrl-btn ctrl-danger" @click="emergencyShutdown()" aria-label="Desligamento de emergência">
             <i class="bi bi-exclamation-triangle-fill"></i>
             <span>Emerg.</span>
+        </button>
+        <button class="ctrl-btn" @click="registerContribution()" :disabled="actionLoading === 'registerContribution'" aria-label="Registrar aporte">
+            <i class="bi bi-cash-coin"></i>
+            <span>Aporte</span>
         </button>
         <?php elseif (in_array($gridStatus ?? '', ['cancelled', 'stopped'])): ?>
         <button class="ctrl-btn ctrl-success" @click="restartGrid()" aria-label="Religar bot">

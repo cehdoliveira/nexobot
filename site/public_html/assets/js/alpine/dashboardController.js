@@ -349,6 +349,76 @@ document.addEventListener('alpine:init', () => {
       );
     },
 
+    async registerContribution() {
+      const result = await Swal.fire({
+        title: 'Registrar aporte',
+        html: '<p class="mb-2">Informe o valor do aporte manual em USDC.</p><p class="text-muted small mb-0">Isso ajusta a baseline de capital para que o trailing stop não trate o aporte como lucro.</p>',
+        input: 'number',
+        inputLabel: 'Valor do aporte (USDC)',
+        inputValue: '',
+        inputAttributes: {
+          min: '0.01',
+          step: '0.01'
+        },
+        showCancelButton: true,
+        confirmButtonText: 'Registrar',
+        cancelButtonText: 'Cancelar',
+        confirmButtonColor: '#3b82f6',
+        inputValidator: (value) => {
+          const amount = parseFloat(value);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            return 'Informe um valor maior que zero';
+          }
+          return null;
+        }
+      });
+
+      if (!result.isConfirmed) return;
+
+      const amount = parseFloat(result.value);
+      this.actionLoading = 'registerContribution';
+
+      try {
+        const response = await fetch(window.location.pathname + '?_t=' + Date.now(), {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          },
+          body: JSON.stringify({ action: 'registerContribution', amount })
+        });
+
+        const responseText = await response.text();
+
+        if (!response.ok) {
+          console.error(`❌ HTTP ${response.status}:`, responseText);
+          throw new Error(`Erro HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        let data;
+        try {
+          data = JSON.parse(responseText);
+        } catch (parseError) {
+          console.error('❌ Erro ao parsear JSON:', responseText);
+          throw new Error('Resposta inválida do servidor');
+        }
+
+        if (data.success) {
+          this.showToast(data.message || 'Aporte registrado com sucesso', 'success');
+          setTimeout(() => window.location.reload(), 1500);
+        } else {
+          this.showToast(data.message || 'Erro ao registrar aporte', 'error');
+        }
+      } catch (error) {
+        console.error('❌ Erro ao registrar aporte:', error);
+        this.showToast(error.message || 'Erro de comunicação com o servidor', 'error');
+      } finally {
+        this.actionLoading = null;
+      }
+    },
+
     // === Connection Status ===
     updateConnectionStatus(connected) {
       this.isConnected = connected;
