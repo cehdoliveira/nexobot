@@ -43,8 +43,10 @@ $stopLossTriggered  = $firstGrid ? ($firstGrid['stop_loss_triggered'] ?? 'no') :
 $trailingTriggered  = $firstGrid ? ($firstGrid['trailing_stop_triggered'] ?? 'no') : 'no';
 $lastMonitor        = $firstGrid ? ($firstGrid['last_monitor_at'] ?? null) : null;
 
-$drawdownPct = ($peakCapital > 0) ? (($peakCapital - $currentCapital) / $peakCapital) * 100 : 0;
+$drawdownPct = ($initialCapital > 0) ? (($initialCapital - $currentCapital) / $initialCapital) * 100 : 0;
 $drawdownPct = max(0, $drawdownPct);
+$peakDropPct = ($peakCapital > 0) ? (($peakCapital - $currentCapital) / $peakCapital) * 100 : 0;
+$peakDropPct = max(0, $peakDropPct);
 
 // Trailing Stop: 3 estados — aguardando / armado (lucro ≥ 10%) / ativado
 $trailingArmed = $trailingTriggered !== 'yes'
@@ -425,6 +427,11 @@ $dashboardJson = json_encode([
                             <div class="d-flex justify-content-between mt-1">
                                 <small class="text-dim" style="font-size: 0.65rem;">0%</small>
                                 <small class="text-dim" style="font-size: 0.65rem;">Stop-Loss 20%</small>
+                            </div>
+                            <div class="mt-1">
+                                <small class="text-dim" style="font-size: 0.65rem;">
+                                    Queda do Pico (Trailing): <?php echo number_format($peakDropPct, 2); ?>% (limite 15%)
+                                </small>
                             </div>
                         </div>
 
