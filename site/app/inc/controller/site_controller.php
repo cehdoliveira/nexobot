@@ -2062,9 +2062,11 @@ class site_controller
             $previousCurrent = (float)($grid['current_capital_usdc'] ?? 0);
 
             $newInitial = $previousInitial + $amount;
-            $newPeak = $previousPeak + $amount;
             $newAllocated = $previousAllocated + $amount;
             $newCurrent = $liveCurrentCapital > 0 ? $liveCurrentCapital : ($previousCurrent + $amount);
+            // Rebase completo pós-aporte: zera a referência de pico para o capital atual.
+            // Evita que um pico histórico antigo continue distorcendo o trailing após aportes mensais.
+            $newPeak = $newCurrent;
 
             $gridsModel->load_byIdx($gridId);
             $gridsModel->populate([
@@ -2080,7 +2082,7 @@ class site_controller
                 'grids_id' => $gridId,
                 'log_type' => 'capital_rebased',
                 'event' => 'Aporte registrado via dashboard',
-                'message' => 'Aporte manual registrado. Baseline de capital recalibrada para não contaminar o trailing stop.',
+                'message' => 'Aporte manual registrado. Baseline e pico recalibrados para medir trailing apenas a partir do novo capital.',
                 'data' => json_encode([
                     'amount' => $amount,
                     'symbol' => $symbol,
