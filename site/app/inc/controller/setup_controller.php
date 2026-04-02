@@ -1756,22 +1756,32 @@ class setup_controller
                 $availableUsdc = $this->getAvailableUsdcBalance(true);
 
                 // 3. Dividir capital igualmente entre as SELLs
-                $capitalPerBuy = $availableUsdc / $sellCount;
+                $capitalPerBuyRaw = $availableUsdc / $sellCount;
+
+                // 4. Aplicar teto por nível para evitar que uma única BUY consuma caixa em excesso
+                $gridData = $this->getGridById($gridId);
+                $baseCapitalPerLevel = (float)($gridData['capital_per_level'] ?? 0.0);
+                $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
+                $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
+                $capitalCapPerBuy = $baseCapitalPerLevel + $profitReinvestmentPerOrder;
+                $capitalPerBuy = min($capitalPerBuyRaw, $capitalCapPerBuy);
 
                 $this->log(
                     "💵 USDC disponível: $" . number_format($availableUsdc, 2) .
-                        " → $" . number_format($capitalPerBuy, 2) . " por ordem",
+                        " | bruto por ordem: $" . number_format($capitalPerBuyRaw, 2) .
+                        " | teto por nível: $" . number_format($capitalCapPerBuy, 2) .
+                        " | final por ordem: $" . number_format($capitalPerBuy, 2),
                     'INFO',
                     'TRADE'
                 );
 
-                // 4. Validar se atinge mínimo $11 USDC por ordem
-                $minUsdcPerOrder = 11.0;
+                // 5. Validar se atinge mínimo viável por ordem
+                $minUsdcPerOrder = self::MIN_TRADE_USDC * self::SAFETY_MARGIN;
 
                 if ($capitalPerBuy < $minUsdcPerOrder) {
                     $this->log(
-                        "⚠️ Capital insuficiente para $sellCount BUY(s): $" . number_format($capitalPerBuy, 2) .
-                            " por ordem (mínimo: $$minUsdcPerOrder). Aguardando mais capital.",
+                        "⚠️ Capital insuficiente para $sellCount BUY(s): final $" . number_format($capitalPerBuy, 2) .
+                            " por ordem (mínimo viável: $" . number_format($minUsdcPerOrder, 2) . "). Aguardando mais capital.",
                         'WARNING',
                         'TRADE'
                     );
@@ -1784,7 +1794,7 @@ class setup_controller
 
                     // Não criar BUYs, mas continuar para processar BUYs se houver
                 } else {
-                    // 5. Criar uma BUY para cada SELL executada
+                    // 6. Criar uma BUY para cada SELL executada
                     foreach ($sellOrders as $sellOrder) {
                         try {
                             $sellPrice = (float)$sellOrder['price'];
