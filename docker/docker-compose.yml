@@ -9,6 +9,7 @@ services:
     volumes:
       - ../_data/logs/:/var/log/
       - ../_data/upload/:/var/www/nexobot/site/public_html/assets/upload/
+      - ../laravel/:/var/www/nexobot/laravel/
       - ../site/public_html/:/var/www/nexobot/site/public_html/
       - ../site/app/:/var/www/nexobot/site/app/
       - ../site/cgi-bin/:/var/www/nexobot/site/cgi-bin/

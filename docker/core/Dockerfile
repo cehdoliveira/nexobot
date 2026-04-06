@@ -26,9 +26,8 @@ RUN a2enmod headers rewrite
 # Instalar Composer na pasta lib
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Criar diretório lib caso não exista
-# Altere o caminho: /var/www/nexobot para /var/www/<NOME_APP>
-RUN mkdir -p /var/www/nexobot/app/inc/lib
+# Criar diretórios-base
+RUN mkdir -p /var/www/nexobot/site/app/inc/lib /var/www/nexobot/laravel/storage /var/www/nexobot/laravel/bootstrap/cache
 
 # Definir permissões adequadas
 RUN chown -R www-data:www-data /var/www/nexobot

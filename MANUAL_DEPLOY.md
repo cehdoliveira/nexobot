@@ -11,6 +11,8 @@
 
 > **Este documento é para PRODUÇÃO.** Para desenvolvimento local, consulte [README.md](README.md)
 
+> **Branch `refactoring`:** o deploy web passa a usar `laravel/public` como `DocumentRoot`, mantendo `site/` e `cgi-bin/` como camada legada durante a migração.
+
 ---
 
 ## 📚 Índice

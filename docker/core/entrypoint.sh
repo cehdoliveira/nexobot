@@ -1,13 +1,19 @@
 #!/bin/bash
 set -e
 
-echo "Executando composer install nas pastas lib..."
+echo "Executando composer install nas aplicações..."
 
 # Instalar dependências do composer para site
 # Altere o caminho: /var/www/nexobot para /var/www/<NOME_APP>
 if [ -f "/var/www/nexobot/site/app/inc/lib/composer.json" ]; then
     echo "Instalando dependências do site..."
     cd /var/www/nexobot/site/app/inc/lib
+    composer install --no-interaction --prefer-dist --optimize-autoloader
+fi
+
+if [ -f "/var/www/nexobot/laravel/composer.json" ]; then
+    echo "Instalando dependências do Laravel..."
+    cd /var/www/nexobot/laravel
     composer install --no-interaction --prefer-dist --optimize-autoloader
 fi
 
