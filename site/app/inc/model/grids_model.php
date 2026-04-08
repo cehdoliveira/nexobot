@@ -17,6 +17,7 @@ class grids_model extends DOLModel
 		"initial_capital_usdc",
 		"peak_capital_usdc",
 		"current_capital_usdc",
+		"last_usdc_balance_usdc",
 		"stop_loss_triggered",
 		"stop_loss_triggered_at",
 		"trailing_stop_triggered",

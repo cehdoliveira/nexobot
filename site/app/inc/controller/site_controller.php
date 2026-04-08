@@ -2055,7 +2055,8 @@ class site_controller
             $symbol = $grid['symbol'];
 
             $api = $this->createBinanceApiClient();
-            $liveCurrentCapital = $this->calculateGridCurrentCapital($symbol, $api);
+            $capitalSnapshot = $this->calculateGridCapitalSnapshot($symbol, $api);
+            $liveCurrentCapital = (float)($capitalSnapshot['total'] ?? 0);
             $previousInitial = (float)($grid['initial_capital_usdc'] ?? 0);
             $previousPeak = (float)($grid['peak_capital_usdc'] ?? 0);
             $previousAllocated = (float)($grid['capital_allocated_usdc'] ?? 0);
@@ -2079,6 +2080,7 @@ class site_controller
                 'initial_capital_usdc' => $newInitial,
                 'peak_capital_usdc' => $newPeak,
                 'current_capital_usdc' => $newCurrent,
+                'last_usdc_balance_usdc' => (float)($capitalSnapshot['usdc'] ?? 0),
                 'capital_per_level' => $newCapitalPerLevel
             ]);
             $gridsModel->save();
@@ -2163,6 +2165,12 @@ class site_controller
 
     private function calculateGridCurrentCapital(string $symbol, SpotRestApi $api): float
     {
+        $snapshot = $this->calculateGridCapitalSnapshot($symbol, $api);
+        return (float)($snapshot['total'] ?? 0.0);
+    }
+
+    private function calculateGridCapitalSnapshot(string $symbol, SpotRestApi $api): array
+    {
         $baseAsset = str_replace('USDC', '', $symbol);
 
         $accountResponse = $api->getAccount();
@@ -2179,7 +2187,10 @@ class site_controller
             throw new Exception('Não foi possível obter o preço atual para recalibrar o capital');
         }
 
-        return $usdcBalance + (($btcFree + $btcLocked) * $currentPrice);
+        return [
+            'total' => $usdcBalance + (($btcFree + $btcLocked) * $currentPrice),
+            'usdc' => $usdcBalance
+        ];
     }
 
     /**

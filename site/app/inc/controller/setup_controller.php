@@ -37,6 +37,7 @@ class setup_controller
     private const TRAILING_STOP_PERCENT = 0.15;           // 15% de queda do pico
     private const MIN_PROFIT_TO_ACTIVATE_TRAILING = 0.10;  // Ativa após 10% de lucro
     private const ENABLE_TRAILING_STOP = true;
+    private const AUTO_CONTRIBUTION_THRESHOLD_PERCENT = 0.25; // Rebase automático se capital saltar 25% ou mais em um ciclo
 
     // Proteção: Fee Threshold (validação de lucro mínimo)
     private const FEE_PERCENT = 0.001;                     // 0.1% por operação
@@ -1187,6 +1188,17 @@ class setup_controller
             $symbol = $gridData['symbol'];
             $gridId = $gridData['idx'];
 
+            $capitalSnapshot = $this->calculateCurrentCapitalSnapshot($symbol);
+            $currentCapital = (float)($capitalSnapshot['total'] ?? 0.0);
+            if ($currentCapital > 0) {
+                $gridData = $this->autoRegisterContributionIfNeeded(
+                    (int)$gridId,
+                    $gridData,
+                    $currentCapital,
+                    (float)($capitalSnapshot['usdc'] ?? 0.0)
+                );
+            }
+
             // ══════ PROTEÇÃO 1: GLOBAL STOP-LOSS ══════
             // Verificação ANTES de qualquer processamento de ordens
             if (self::ENABLE_STOP_LOSS && $this->checkStopLoss((int)$gridId, $gridData)) {
@@ -1202,7 +1214,6 @@ class setup_controller
             }
 
             // ══════ ATUALIZAR TRACKING DE CAPITAL ══════
-            $currentCapital = $this->calculateCurrentCapital($symbol);
             if ($currentCapital > 0) {
                 $this->updateCapitalTracking((int)$gridId, $currentCapital);
             }
@@ -3326,6 +3337,18 @@ class setup_controller
      */
     private function calculateCurrentCapital(string $symbol): float
     {
+        $snapshot = $this->calculateCurrentCapitalSnapshot($symbol);
+        return (float)($snapshot['total'] ?? 0.0);
+    }
+
+    /**
+     * Calcula o snapshot atual de capital, separando o componente em USDC.
+     *
+     * @param string $symbol Par de negociação
+     * @return array{total: float, usdc: float, asset_value: float}
+     */
+    private function calculateCurrentCapitalSnapshot(string $symbol): array
+    {
         try {
             $baseAsset = str_replace('USDC', '', $symbol);
             $accountInfo = $this->getAccountInfo(true);
@@ -3342,10 +3365,18 @@ class setup_controller
             $currentPrice = $this->getCurrentPrice($symbol);
             $totalBtcValue = ($btcFree + $btcLocked) * $currentPrice;
 
-            return $usdcBalance + $totalBtcValue;
+            return [
+                'total' => $usdcBalance + $totalBtcValue,
+                'usdc' => $usdcBalance,
+                'asset_value' => $totalBtcValue
+            ];
         } catch (Exception $e) {
             $this->log("Erro ao calcular capital atual: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-            return 0.0;
+            return [
+                'total' => 0.0,
+                'usdc' => 0.0,
+                'asset_value' => 0.0
+            ];
         }
     }
 
@@ -3366,7 +3397,8 @@ class setup_controller
             $peakCapital = (float)($gridData['peak_capital_usdc'] ?? 0);
 
             $updateData = [
-                'current_capital_usdc' => $currentCapital
+                'current_capital_usdc' => $currentCapital,
+                'last_usdc_balance_usdc' => $this->calculateCurrentCapitalSnapshot((string)($gridData['symbol'] ?? ''))['usdc'] ?? null
             ];
 
             // Atualizar pico se capital atual é maior
@@ -3386,6 +3418,122 @@ class setup_controller
             $gridsModel->save();
         } catch (Exception $e) {
             $this->log("Erro ao atualizar tracking de capital: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Detecta aportes externos quando o capital sobe abruptamente entre ciclos.
+     * Recalibra baseline, capital alocado, pico e capital por nível para que
+     * a proteção de lucro não trate o aporte como performance.
+     */
+    private function autoRegisterContributionIfNeeded(int $gridId, array $gridData, float $currentCapital, float $currentUsdcBalance): array
+    {
+        try {
+            $previousCurrent = (float)($gridData['current_capital_usdc'] ?? 0);
+            if ($previousCurrent <= 0 || $currentCapital <= $previousCurrent) {
+                return $gridData;
+            }
+
+            $increaseAmount = $currentCapital - $previousCurrent;
+            $increasePercent = $increaseAmount / $previousCurrent;
+            $previousUsdcBalance = (float)($gridData['last_usdc_balance_usdc'] ?? 0);
+            $usdcIncrease = $currentUsdcBalance - $previousUsdcBalance;
+
+            if ($increasePercent < self::AUTO_CONTRIBUTION_THRESHOLD_PERCENT) {
+                return $gridData;
+            }
+
+            if ($previousUsdcBalance <= 0 || $usdcIncrease < $increaseAmount) {
+                $this->log(
+                    "Salto de capital >= 25% ignorado no grid #$gridId: delta de USDC insuficiente para confirmar aporte " .
+                        "(anterior \$" . number_format($previousUsdcBalance, 2) .
+                        " | atual \$" . number_format($currentUsdcBalance, 2) .
+                        " | delta \$" . number_format($usdcIncrease, 2) .
+                        " | salto de capital \$" . number_format($increaseAmount, 2) . ").",
+                    'INFO',
+                    'SYSTEM'
+                );
+                return $gridData;
+            }
+
+            $previousInitial = (float)($gridData['initial_capital_usdc'] ?? 0);
+            $previousPeak = (float)($gridData['peak_capital_usdc'] ?? 0);
+            $previousAllocated = (float)($gridData['capital_allocated_usdc'] ?? 0);
+            $previousCapitalPerLevel = (float)($gridData['capital_per_level'] ?? 0);
+
+            $newInitial = $previousInitial + $increaseAmount;
+            $newAllocated = $previousAllocated + $increaseAmount;
+            $newPeak = $currentCapital;
+            $newCapitalPerLevel = $newInitial / self::GRID_LEVELS;
+
+            $gridsModel = new grids_model();
+            $gridsModel->load_byIdx($gridId);
+            $gridsModel->populate([
+                'capital_allocated_usdc' => $newAllocated,
+                'initial_capital_usdc' => $newInitial,
+                'peak_capital_usdc' => $newPeak,
+                'current_capital_usdc' => $currentCapital,
+                'last_usdc_balance_usdc' => $currentUsdcBalance,
+                'capital_per_level' => $newCapitalPerLevel
+            ]);
+            $gridsModel->save();
+
+            $this->saveGridLog(
+                $gridId,
+                'capital_rebased_auto',
+                'success',
+                'Aporte automático detectado por salto de capital. Baseline, pico e capital_per_level recalibrados.',
+                [
+                    'symbol' => $gridData['symbol'] ?? '',
+                    'threshold_percent' => self::AUTO_CONTRIBUTION_THRESHOLD_PERCENT,
+                    'previous_usdc_balance' => $previousUsdcBalance,
+                    'current_usdc_balance' => $currentUsdcBalance,
+                    'usdc_increase' => $usdcIncrease,
+                    'detected_amount' => $increaseAmount,
+                    'increase_percent' => $increasePercent,
+                    'previous_initial' => $previousInitial,
+                    'new_initial' => $newInitial,
+                    'previous_peak' => $previousPeak,
+                    'new_peak' => $newPeak,
+                    'previous_allocated' => $previousAllocated,
+                    'new_allocated' => $newAllocated,
+                    'previous_current' => $previousCurrent,
+                    'new_current' => $currentCapital,
+                    'previous_capital_per_level' => $previousCapitalPerLevel,
+                    'new_capital_per_level' => $newCapitalPerLevel,
+                    'grid_levels' => self::GRID_LEVELS,
+                    'detected_at' => date('Y-m-d H:i:s')
+                ]
+            );
+
+            try {
+                $redis = RedisCache::getInstance();
+                $redis->deletePattern('*grids*');
+                $redis->deletePattern('*dashboard*');
+            } catch (Exception $cacheEx) {
+                $this->log("Erro ao limpar cache após aporte automático: " . $cacheEx->getMessage(), 'WARNING', 'SYSTEM');
+            }
+
+            $this->log(
+                "💰 Aporte automático detectado no grid #$gridId: +" .
+                    number_format($increaseAmount, 2) . " USDC (" .
+                    number_format($increasePercent * 100, 2) .
+                    "%). Baseline recalibrada.",
+                'WARNING',
+                'SYSTEM'
+            );
+
+            $gridData['capital_allocated_usdc'] = $newAllocated;
+            $gridData['initial_capital_usdc'] = $newInitial;
+            $gridData['peak_capital_usdc'] = $newPeak;
+            $gridData['current_capital_usdc'] = $currentCapital;
+            $gridData['last_usdc_balance_usdc'] = $currentUsdcBalance;
+            $gridData['capital_per_level'] = $newCapitalPerLevel;
+
+            return $gridData;
+        } catch (Exception $e) {
+            $this->log("Erro ao detectar aporte automático: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+            return $gridData;
         }
     }
 
@@ -3716,6 +3864,7 @@ class setup_controller
                 'initial_capital_usdc' => $capitalAllocated,
                 'peak_capital_usdc' => $capitalAllocated,
                 'current_capital_usdc' => $capitalAllocated,
+                'last_usdc_balance_usdc' => $capitalAllocated,
                 'stop_loss_triggered' => 'no',
                 'stop_loss_triggered_at' => null,
                 'trailing_stop_triggered' => 'no',

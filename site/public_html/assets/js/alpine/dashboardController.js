@@ -352,7 +352,7 @@ document.addEventListener('alpine:init', () => {
     async registerContribution() {
       const result = await Swal.fire({
         title: 'Registrar aporte',
-        html: '<p class="mb-2">Informe o valor do aporte manual em USDC.</p><p class="text-muted small mb-0">Isso ajusta a baseline de capital para que o trailing stop não trate o aporte como lucro.</p>',
+        html: '<p class="mb-2">Informe o valor do aporte manual em USDC.</p><p class="text-muted small mb-1">Isso ajusta a baseline de capital para que o trailing stop não trate o aporte como lucro.</p><p class="text-muted small mb-0">Saltos de capital iguais ou maiores que 25% em um ciclo também passam a ser recalibrados automaticamente.</p>',
         input: 'number',
         inputLabel: 'Valor do aporte (USDC)',
         inputValue: '',
