@@ -25,7 +25,7 @@ class setup_controller
     private const CAPITAL_ALLOCATION = 0.95;     // 95% do capital USDC disponível
     private const MIN_TRADE_USDC = 11;           // Mínimo por trade
     private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
-    private const INITIAL_BTC_ALLOCATION = 0.40; // 40% do capital inicial convertido em BTC para ordens de venda superiores
+    private const INITIAL_BTC_ALLOCATION = 0.50; // 50% do capital inicial convertido em BTC para ordens de venda superiores
     private const SAFETY_MARGIN = 1.15;          // 15% de margem sobre o mínimo da Binance
     private const CAPITAL_USAGE_PERCENT = 0.85;   // Usa 85% do USDC disponível como fallback
 
@@ -38,6 +38,7 @@ class setup_controller
     private const MIN_PROFIT_TO_ACTIVATE_TRAILING = 0.10;  // Ativa após 10% de lucro
     private const ENABLE_TRAILING_STOP = true;
     private const AUTO_CONTRIBUTION_THRESHOLD_PERCENT = 0.25; // Rebase automático se capital saltar 25% ou mais em um ciclo
+    private const AUTO_CONTRIBUTION_USDC_CONFIRMATION_RATIO = 0.95; // Delta de USDC deve cobrir ao menos 95% do salto para confirmar aporte
 
     // Proteção: Fee Threshold (validação de lucro mínimo)
     private const FEE_PERCENT = 0.001;                     // 0.1% por operação
@@ -1154,6 +1155,28 @@ class setup_controller
             }
 
             $allOk = ($successBuys === $numBuyLevels && $successSells === $numSellLevels);
+
+            // Recalibrar a baseline logo apos criar as ordens iniciais usando o
+            // mesmo snapshot de capital do monitoramento. Isso evita o grid nascer
+            // com initial_capital menor que o capital real observado depois.
+            $baselineSnapshot = $this->calculateCurrentCapitalSnapshot($symbol);
+            $baselineCurrentCapital = (float)($baselineSnapshot['total'] ?? 0.0);
+            $baselineUsdcBalance = (float)($baselineSnapshot['usdc'] ?? 0.0);
+
+            if ($baselineCurrentCapital > 0) {
+                $gridsModel = new grids_model();
+                $gridsModel->set_filter(["idx = '" . $gridId . "'"]);
+                $gridsModel->populate([
+                    'capital_allocated_usdc' => $baselineCurrentCapital,
+                    'initial_capital_usdc' => $baselineCurrentCapital,
+                    'peak_capital_usdc' => $baselineCurrentCapital,
+                    'current_capital_usdc' => $baselineCurrentCapital,
+                    'last_usdc_balance_usdc' => $baselineUsdcBalance,
+                    'capital_per_level' => $baselineCurrentCapital / self::GRID_LEVELS,
+                ]);
+                $gridsModel->save();
+            }
+
             $this->log(
                 "🎉 Grid HÍBRIDO criado para $symbol | BUYs: $successBuys/$numBuyLevels | SELLs: $successSells/$numSellLevels",
                 $allOk ? 'SUCCESS' : 'WARNING',
@@ -1172,7 +1195,9 @@ class setup_controller
                 'sell_orders_failed'  => count($failedSells),
                 'usdc_allocated'      => $capital['usdc_for_buys'],
                 'btc_allocated'       => $capital['btc_for_sells'],
-                'total_capital_usd'   => $totalCapital
+                'total_capital_usd'   => $totalCapital,
+                'baseline_capital_usd' => $baselineCurrentCapital > 0 ? $baselineCurrentCapital : $totalCapital,
+                'baseline_usdc_balance' => $baselineUsdcBalance
             ]);
         } catch (Exception $e) {
             throw new Exception("Erro ao criar grid híbrido para $symbol: " . $e->getMessage());
@@ -3444,7 +3469,9 @@ class setup_controller
                 return $gridData;
             }
 
-            if ($previousUsdcBalance <= 0 || $usdcIncrease < $increaseAmount) {
+            $minimumUsdcIncreaseToConfirm = $increaseAmount * self::AUTO_CONTRIBUTION_USDC_CONFIRMATION_RATIO;
+
+            if ($previousUsdcBalance <= 0 || $usdcIncrease < $minimumUsdcIncreaseToConfirm) {
                 $this->log(
                     "Salto de capital >= 25% ignorado no grid #$gridId: delta de USDC insuficiente para confirmar aporte " .
                         "(anterior \$" . number_format($previousUsdcBalance, 2) .
@@ -3468,7 +3495,7 @@ class setup_controller
             $newCapitalPerLevel = $newInitial / self::GRID_LEVELS;
 
             $gridsModel = new grids_model();
-            $gridsModel->load_byIdx($gridId);
+            $gridsModel->set_filter(["idx = '" . $gridId . "'"]);
             $gridsModel->populate([
                 'capital_allocated_usdc' => $newAllocated,
                 'initial_capital_usdc' => $newInitial,
