@@ -169,11 +169,6 @@ $dashboardJson = json_encode([
                 <div class="d-flex align-items-center gap-2">
                     <small class="last-update d-none d-sm-block" x-text="'Atualizado ' + lastUpdateFormatted"></small>
 
-                    <!-- Theme toggle -->
-                    <button class="btn btn-sm btn-outline-light border-0" id="themeToggle" type="button"
-                            title="Alternar tema" style="min-width:36px; min-height:36px;">
-                        <i class="bi bi-moon-stars"></i>
-                    </button>
                 </div>
             </div>
         </div>
@@ -673,6 +668,11 @@ $dashboardJson = json_encode([
                             <div class="d-flex justify-content-between align-items-end">
                                 <div>
                                     <div class="order-price">$<?php echo number_format($oPrice, 2, '.', ','); ?></div>
+                                    <?php if ($oProfit != 0): ?>
+                                    <div class="order-profit-mobile <?php echo $oProfit > 0 ? 'text-success' : 'text-danger'; ?>" style="margin-top: 0.18rem; font-family: var(--dash-font-mono); font-size: 0.76rem; font-weight: 700;">
+                                        <?php echo ($oProfit > 0 ? '+' : '') . '$' . number_format(abs($oProfit), 4); ?>
+                                    </div>
+                                    <?php endif; ?>
                                     <div class="order-detail">
                                         <i class="bi bi-coin"></i> <?php echo number_format($oQty, 6); ?> un
                                         · ~$<?php echo number_format($oPrice * $oQty, 2); ?>
@@ -900,8 +900,8 @@ $dashboardJson = json_encode([
             <span>Atualizar</span>
         </button>
         <button class="ctrl-btn" @click="toggleAutoRefresh()" aria-label="Alternar auto-refresh">
-            <i class="bi" :class="autoRefresh ? 'bi-pause-circle-fill' : 'bi-play-circle'"></i>
-            <span x-text="autoRefresh ? 'Pausar' : 'Auto'"></span>
+            <i class="bi bi-pause-circle-fill" :class="autoRefresh ? 'bi-pause-circle-fill' : 'bi-play-circle'"></i>
+            <span x-text="autoRefresh ? 'Pausar' : 'Auto'">Pausar</span>
         </button>
         <?php if ($gridStatus === 'active'): ?>
         <button class="ctrl-btn" @click="stopBot()" aria-label="Parar bot">

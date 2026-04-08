@@ -325,6 +325,13 @@ body.theme-dark {
   font-size: 1rem;
 }
 
+.order-card-mobile .order-profit-mobile {
+  margin-top: 0.18rem;
+  font-family: var(--dash-font-mono);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
 .order-card-mobile .order-detail {
   font-size: 0.75rem;
   color: var(--dash-text-muted);
@@ -1104,4 +1111,9 @@ body.theme-dark {
 .nexo-navbar + main .dash-header,
 main .dashboard-wrapper .dash-header {
   border-top: none;
+}
+@media (max-width: 767.98px) {
+  .dashboard-wrapper ~ .nexo-theme-toggle-floating {
+    display: none !important;
+  }
 }

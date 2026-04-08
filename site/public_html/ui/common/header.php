@@ -13,6 +13,14 @@
                         <span class="d-none d-sm-inline text-white-50" style="font-size: 0.75rem;">
                             <?php echo htmlspecialchars($_SESSION[constant("cAppKey")]["credential"]["name"] ?? ''); ?>
                         </span>
+                        <button type="button"
+                                class="btn btn-sm btn-outline-light border-0 d-inline-flex d-md-none align-items-center justify-content-center"
+                                data-theme-toggle
+                                title="Alternar tema"
+                                aria-label="Ativar tema claro"
+                                style="font-size: 0.8rem; padding: 0.25rem 0.5rem; min-width: 36px; min-height: 36px;">
+                            <i class="bi bi-sun"></i>
+                        </button>
                         <a class="btn btn-sm btn-outline-light border-0 d-flex align-items-center gap-1" href="<?php echo $GLOBALS['config_url']; ?>"
                            title="Configurações" style="font-size: 0.8rem; padding: 0.25rem 0.5rem;">
                             <i class="bi bi-gear"></i>
@@ -24,6 +32,14 @@
                             <span class="d-none d-md-inline">Sair</span>
                         </a>
                     <?php } else { ?>
+                        <button type="button"
+                                class="btn btn-sm btn-outline-light border-0 d-inline-flex d-md-none align-items-center justify-content-center"
+                                data-theme-toggle
+                                title="Alternar tema"
+                                aria-label="Ativar tema claro"
+                                style="font-size: 0.8rem; padding: 0.25rem 0.5rem; min-width: 36px; min-height: 36px;">
+                            <i class="bi bi-sun"></i>
+                        </button>
                         <a class="btn btn-sm btn-outline-light border-0" href="<?php echo $GLOBALS['login_url']; ?>">
                             <i class="bi bi-box-arrow-in-right"></i> Entrar
                         </a>
