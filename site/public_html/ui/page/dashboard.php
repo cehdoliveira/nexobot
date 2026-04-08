@@ -28,9 +28,15 @@ $avgProfit      = (float)($stats['performance']['avg_profit_per_order'] ?? 0);
 $roiPercent     = (float)($stats['performance']['roi_percent'] ?? 0);
 $usdcBalance    = (float)($wallet['usdc_balance'] ?? 0);
 $btcBalance     = (float)($wallet['btc_balance'] ?? 0);
-
-// First active grid for header price display
-$firstGrid     = $grids[0] ?? null;
+// Grid corrente para o header e controles: prefere grid ativo; se nao houver, usa o mais recente.
+$activeGridForDisplay = null;
+foreach ($grids as $candidateGrid) {
+    if (($candidateGrid['status'] ?? '') === 'active') {
+        $activeGridForDisplay = $candidateGrid;
+        break;
+    }
+}
+$firstGrid     = $activeGridForDisplay ?? ($grids[0] ?? null);
 $currentPrice  = $firstGrid ? (float)($firstGrid['current_price'] ?? 0) : 0;
 $gridSymbol    = $firstGrid ? ($firstGrid['symbol'] ?? 'BTCUSDC') : 'BTCUSDC';
 $gridStatus    = $firstGrid ? ($firstGrid['status'] ?? 'inactive') : 'inactive';
@@ -42,6 +48,8 @@ $peakCapital      = $firstGrid ? (float)($firstGrid['peak_capital_usdc'] ?? 0) :
 $stopLossTriggered  = $firstGrid ? ($firstGrid['stop_loss_triggered'] ?? 'no') : 'no';
 $trailingTriggered  = $firstGrid ? ($firstGrid['trailing_stop_triggered'] ?? 'no') : 'no';
 $lastMonitor        = $firstGrid ? ($firstGrid['last_monitor_at'] ?? null) : null;
+$showRestartButton = $gridStatus === 'stopped' || ($gridStatus === 'cancelled' && $stopLossTriggered === 'yes');
+$showAwaitingCron = $gridStatus === 'cancelled' && $stopLossTriggered !== 'yes';
 
 $drawdownPct = ($initialCapital > 0) ? (($initialCapital - $currentCapital) / $initialCapital) * 100 : 0;
 $drawdownPct = max(0, $drawdownPct);
@@ -196,11 +204,16 @@ $dashboardJson = json_encode([
                     <i class="bi bi-exclamation-triangle"></i>
                     <span class="d-none d-lg-inline">Emergência</span>
                 </button>
-                <?php elseif (in_array($gridStatus ?? '', ['cancelled', 'stopped'])): ?>
+                <?php elseif ($showRestartButton): ?>
                 <button class="ctrl-btn-desktop btn-restart" @click="restartGrid()"
                         :disabled="actionLoading === 'restartGrid'">
                     <i class="bi bi-play-fill"></i>
                     <span class="d-none d-lg-inline">Religar Bot</span>
+                </button>
+                <?php elseif ($showAwaitingCron): ?>
+                <button class="ctrl-btn-desktop" disabled>
+                    <span class="btn-spinner"></span>
+                    <span class="d-none d-lg-inline">Aguardando CRON</span>
                 </button>
                 <?php endif; ?>
             </div>
@@ -872,6 +885,7 @@ $dashboardJson = json_encode([
     </div><!-- /dashboard-main -->
 
     <!-- === SECTION G: Mobile Bottom Control Bar === -->
+    <!-- === SECTION G: Mobile Bottom Control Bar === -->
     <div class="control-bar-mobile d-md-none" role="toolbar" aria-label="Controles do bot">
         <button class="ctrl-btn ctrl-primary" @click="refreshData()" :disabled="isRefreshing" aria-label="Atualizar dados">
             <i class="bi bi-arrow-clockwise" :class="{ 'spin': isRefreshing }"></i>
@@ -890,10 +904,15 @@ $dashboardJson = json_encode([
             <i class="bi bi-exclamation-triangle-fill"></i>
             <span>Emerg.</span>
         </button>
-        <?php elseif (in_array($gridStatus ?? '', ['cancelled', 'stopped'])): ?>
+        <?php elseif ($showRestartButton): ?>
         <button class="ctrl-btn ctrl-success" @click="restartGrid()" aria-label="Religar bot">
             <i class="bi bi-play-fill"></i>
             <span>Religar</span>
+        </button>
+        <?php elseif ($showAwaitingCron): ?>
+        <button class="ctrl-btn" disabled aria-label="Aguardando cron">
+            <span class="btn-spinner"></span>
+            <span>Aguard.</span>
         </button>
         <?php endif; ?>
     </div>

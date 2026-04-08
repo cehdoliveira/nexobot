@@ -83,6 +83,14 @@ class site_controller
         $gridsModel->set_filter(["active = 'yes'"]);
         $gridsModel->load_data();
         $allGrids = $gridsModel->data;
+        usort($allGrids, function ($a, $b) {
+            $aActive = (($a['status'] ?? '') === 'active') ? 1 : 0;
+            $bActive = (($b['status'] ?? '') === 'active') ? 1 : 0;
+            if ($aActive !== $bActive) {
+                return $bActive <=> $aActive;
+            }
+            return ((int)($b['idx'] ?? 0)) <=> ((int)($a['idx'] ?? 0));
+        });
 
         // === BUSCAR ORDENS DE GRID (com relacionamento manual) ===
         $gridsOrdersModel = new grids_orders_model();
@@ -157,7 +165,7 @@ class site_controller
 
         // Capital total alocado
         $totalCapitalAllocated = 0;
-        foreach ($allGrids as $grid) {
+        foreach ($activeGrids as $grid) {
             $totalCapitalAllocated += (float)($grid['capital_allocated_usdc'] ?? 0);
         }
 
@@ -1426,6 +1434,14 @@ class site_controller
             $gridsModel->set_filter(["active = 'yes'"]);
             $gridsModel->load_data();
             $allGrids = $gridsModel->data;
+            usort($allGrids, function ($a, $b) {
+                $aActive = (($a['status'] ?? '') === 'active') ? 1 : 0;
+                $bActive = (($b['status'] ?? '') === 'active') ? 1 : 0;
+                if ($aActive !== $bActive) {
+                    return $bActive <=> $aActive;
+                }
+                return ((int)($b['idx'] ?? 0)) <=> ((int)($a['idx'] ?? 0));
+            });
 
             $activeGrids = array_filter($allGrids, fn($g) => $g['status'] === 'active');
             $firstGrid = $allGrids[0] ?? null;
@@ -1435,6 +1451,8 @@ class site_controller
             $totalAllocated = 0;
             foreach ($allGrids as $grid) {
                 $totalProfit += (float)($grid['accumulated_profit_usdc'] ?? 0);
+            }
+            foreach ($activeGrids as $grid) {
                 $totalAllocated += (float)($grid['capital_allocated_usdc'] ?? 0);
             }
 
@@ -1774,23 +1792,22 @@ class site_controller
             ], JSON_UNESCAPED_UNICODE);
             exit;
         } catch (Exception $e) {
-            error_log("❌ [{$actionLabel}] Erro: " . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+            error_log("❌ [ajaxCloseAllGridPositions] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
             echo json_encode([
                 'success' => false,
-                'message' => ($stopBot ? 'Erro no desligamento de emergência: ' : 'Erro ao encerrar posições: ') . $e->getMessage()
+                'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
             ], JSON_UNESCAPED_UNICODE);
             exit;
         }
     }
-
     private function ajaxRestartGrid(): void
     {
         try {
             error_log("🟢 [ajaxRestartGrid] Iniciando religamento do bot");
-            
+
             $gridsModel = new grids_model();
             $gridsModel->set_filter([
-                "active = 'yes'", 
+                "active = 'yes'",
                 "status IN ('cancelled', 'stopped')"
             ]);
             $gridsModel->load_data();
@@ -1809,26 +1826,27 @@ class site_controller
             $reactivatedGrids = [];
 
             foreach ($gridsModel->data as $grid) {
-                $gridId = $grid['idx'];
-                
-                error_log("🟢 [ajaxRestartGrid] Desativando grid #$gridId (status: {$grid['status']})");
-                
-                // Desativar grid antigo definitivamente
-                $gridsModel->load_byIdx($gridId);
-                $gridsModel->populate([
-                    'active' => 'no',
-                    'status' => 'completed'
-                ]);
-                $gridsModel->save();
+                $gridId = (int)$grid['idx'];
 
-                // Log
+                error_log("🟢 [ajaxRestartGrid] Liberando recriação automática do grid #{$gridId} (status: {$grid['status']})");
+
+                $gridUpdateModel = new grids_model();
+                $gridUpdateModel->set_filter(["idx = '{$gridId}'"]);
+                $gridUpdateModel->populate([
+                    'status' => 'cancelled',
+                    'stop_loss_triggered' => 'no',
+                    'trailing_stop_triggered' => 'no',
+                    'is_processing' => 'no'
+                ]);
+                $gridUpdateModel->save();
+
                 try {
                     $logModel = new grid_logs_model();
                     $logModel->populate([
                         'grids_id' => $gridId,
                         'log_type' => 'restart_request',
                         'event' => 'Bot religado via dashboard',
-                        'message' => "Grid #$gridId desativado. Novo grid será criado na próxima execução da CRON.",
+                        'message' => "Grid #{$gridId} liberado. Novo grid será criado automaticamente na próxima execução da CRON.",
                         'data' => json_encode([
                             'restarted_at' => date('Y-m-d H:i:s'),
                             'old_status' => $grid['status']
@@ -1846,7 +1864,6 @@ class site_controller
                 ];
             }
 
-            // Limpar cache
             try {
                 $redis = RedisCache::getInstance();
                 $redis->deletePattern('*grids*');
@@ -1855,11 +1872,11 @@ class site_controller
                 error_log("⚠️ [ajaxRestartGrid] Erro ao limpar cache: " . $cacheEx->getMessage());
             }
 
-            error_log("✅ [ajaxRestartGrid] Bot religado com sucesso. Grids desativados: " . count($reactivatedGrids));
+            error_log("✅ [ajaxRestartGrid] Bot religado com sucesso. Grids liberados: " . count($reactivatedGrids));
 
             echo json_encode([
                 'success' => true,
-                'message' => '✅ Bot religado! Novo grid será criado automaticamente na próxima execução (em até 1 minuto).',
+                'message' => '✅ Bot religado! Aguardando a próxima execução da CRON para criar o novo grid.',
                 'reactivated_grids' => $reactivatedGrids
             ], JSON_UNESCAPED_UNICODE);
             exit;
@@ -1872,6 +1889,7 @@ class site_controller
             exit;
         }
     }
+
     private function createBinanceApiClient(bool $requireAuth = false): SpotRestApi
     {
         $binanceConfig = BinanceConfig::getActiveCredentials();
@@ -1898,7 +1916,6 @@ class site_controller
 
         return new SpotRestApi($configurationBuilder->build());
     }
-
     private function getBalanceForAsset(array $balances, string $asset, string $field = 'free'): float
     {
         foreach ($balances as $balance) {
