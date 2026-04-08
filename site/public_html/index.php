@@ -19,9 +19,15 @@ ob_start();
 // use_strict_mode REMOVIDO: conflita com session_write_close() explícito no phpredis —
 //   sessões ficam como "não inicializadas" e são rejeitadas na próxima requisição.
 //   Proteção contra session fixation é feita via session_regenerate_id(true) no login.
+$isHttpsRequest = (
+	(!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ||
+	(!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') ||
+	(!empty($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
+);
+
 session_start([
 	'cookie_httponly'  => true,
-	'cookie_secure'    => true,
+	'cookie_secure'    => $isHttpsRequest,
 	'cookie_samesite'  => 'Lax',
 	'use_only_cookies' => true,
 ]);

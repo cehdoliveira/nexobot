@@ -2,6 +2,8 @@ services:
   apache:
     build: ./core/
     container_name: apache_<NOME_APP>
+    environment:
+      - ENABLE_CRON=true
     depends_on:
       - mysql
       - redis

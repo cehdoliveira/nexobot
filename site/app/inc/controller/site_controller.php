@@ -292,16 +292,11 @@ class site_controller
         $startIndex = ($currentPage - 1) * $itemsPerPage;
         $ordersForDisplay = array_slice($allOrdersforDisplay, $startIndex, $itemsPerPage);
 
-        // === PREPARAR DADOS PARA A VIEW ===
-        $binanceConfig = BinanceConfig::getActiveCredentials();
-
         // === BUSCAR SALDO DE USDC DA CARTEIRA ===
         $usdcBalance = 0;
+        $btcBalance = 0;
         try {
-            $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
-            $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
-            $configurationBuilder->url($binanceConfig['baseUrl']);
-            $api = new SpotRestApi($configurationBuilder->build());
+            $api = $this->createBinanceApiClient(true);
 
             $accountInfo = $api->getAccount();
             $accountData = $accountInfo->getData();
@@ -320,10 +315,11 @@ class site_controller
                     }
                 }
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             // Se falhar, manter saldo em 0
             $usdcBalance = 0;
             $btcBalance  = 0;
+            error_log("site_controller::dashboard wallet sync error: " . $e->getMessage());
         }
 
         $gridDashboardData = [
@@ -477,15 +473,9 @@ class site_controller
         $offset = ($page - 1) * $perPage;
         $closedTrades = array_slice($closedTradesData, $offset, $perPage);
         $totalPages = ceil(count($closedTradesData) / $perPage);
-
-        $binanceConfig = BinanceConfig::getActiveCredentials();
-
         // === BUSCAR SALDO DA CARTEIRA NA BINANCE ===
         try {
-            $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
-            $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
-            $configurationBuilder->url($binanceConfig['baseUrl']);
-            $api = new SpotRestApi($configurationBuilder->build());
+            $api = $this->createBinanceApiClient(true);
 
             $accountInfo = $api->getAccount();
             $accountData = $accountInfo->getData();
@@ -552,7 +542,7 @@ class site_controller
                     }
                 }
             }
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log("Erro ao buscar saldo da carteira: " . $e->getMessage());
             $walletTotal = 0;
             $usdcBalance = 0;
@@ -2142,12 +2132,29 @@ class site_controller
         }
     }
 
-    private function createBinanceApiClient(): SpotRestApi
+    private function createBinanceApiClient(bool $requireAuth = false): SpotRestApi
     {
         $binanceConfig = BinanceConfig::getActiveCredentials();
+        $apiKey = trim((string)($binanceConfig['apiKey'] ?? ''));
+        $secretKey = trim((string)($binanceConfig['secretKey'] ?? ''));
+        $baseUrl = trim((string)($binanceConfig['baseUrl'] ?? ''));
+
+        if ($baseUrl === '') {
+            throw new Exception('URL da Binance não configurada');
+        }
+
+        if ($requireAuth && ($apiKey === '' || $secretKey === '')) {
+            throw new Exception('Credenciais da Binance não configuradas');
+        }
+
         $configurationBuilder = SpotRestApiUtil::getConfigurationBuilder();
-        $configurationBuilder->apiKey($binanceConfig['apiKey'])->secretKey($binanceConfig['secretKey']);
-        $configurationBuilder->url($binanceConfig['baseUrl']);
+        if ($apiKey !== '') {
+            $configurationBuilder->apiKey($apiKey);
+        }
+        if ($secretKey !== '') {
+            $configurationBuilder->secretKey($secretKey);
+        }
+        $configurationBuilder->url($baseUrl);
 
         return new SpotRestApi($configurationBuilder->build());
     }
