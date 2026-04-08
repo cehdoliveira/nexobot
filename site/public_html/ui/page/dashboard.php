@@ -92,6 +92,14 @@ $eventLabels = [
     'bot_restarted'        => 'Bot Religado',
     'order_filled'         => 'Ordem Executada',
 ];
+$logTypeMeta = static function (string $logType): array {
+    return match ($logType) {
+        'success' => ['label' => 'Ok', 'badge' => 'bg-success', 'status' => 'badge-filled', 'dot' => 'dot-success'],
+        'warning', 'restart_request', 'positions_closed', 'bot_stopped' => ['label' => 'Aviso', 'badge' => 'bg-warning text-dark', 'status' => 'badge-partial', 'dot' => 'dot-warning'],
+        'error', 'emergency_shutdown', 'emergency_trailing_stop', 'emergency_stop_loss' => ['label' => 'Erro', 'badge' => 'bg-danger', 'status' => 'badge-canceled', 'dot' => 'dot-danger'],
+        default => ['label' => 'Info', 'badge' => 'bg-info text-dark', 'status' => 'badge-new', 'dot' => 'dot-info'],
+    };
+};
 
 // Calculate buy/sell order counts
 $buyOrders = 0;
@@ -792,6 +800,7 @@ $dashboardJson = json_encode([
         </section>
 
         <!-- === SECTION F: Activity Log === -->
+        <!-- === SECTION F: Activity Log === -->
         <section aria-label="Histórico de Eventos">
             <div class="dash-card">
                 <div class="card-header-custom">
@@ -810,17 +819,13 @@ $dashboardJson = json_encode([
                 <div class="card-body-custom d-md-none custom-scroll" style="max-height: 400px;">
                     <div class="activity-timeline">
                         <?php foreach (array_slice($reversedLogs, 0, 20) as $log): ?>
+                        <?php $timelineMeta = $logTypeMeta((string)($log['log_type'] ?? '')); ?>
                         <div class="timeline-item">
-                            <div class="timeline-dot <?php
-                                echo match($log['log_type'] ?? '') {
-                                    'error' => 'dot-danger', 'success' => 'dot-success',
-                                    'warning' => 'dot-warning', default => 'dot-info'
-                                };
-                            ?>"></div>
+                            <div class="timeline-dot <?php echo $timelineMeta['dot']; ?>"></div>
                             <div class="timeline-content">
                                 <div class="timeline-time">
                                     <?php echo isset($log['created_at']) ? date('d/m H:i:s', strtotime($log['created_at'])) : '--'; ?>
-                                    <span class="badge bg-secondary ms-1" style="font-size: 0.55rem;"><?php echo htmlspecialchars($log['log_type'] ?? ''); ?></span>
+                                    <span class="badge <?php echo $timelineMeta['badge']; ?> ms-1" style="font-size: 0.55rem;"><?php echo $timelineMeta['label']; ?></span>
                                 </div>
                                 <div class="timeline-event"><?php echo htmlspecialchars($eventLabels[$log['event'] ?? ''] ?? ($log['event'] ?? 'N/A')); ?></div>
                                 <?php if (!empty($log['message'])): ?>
@@ -847,13 +852,14 @@ $dashboardJson = json_encode([
                             </thead>
                             <tbody>
                                 <?php foreach (array_slice($reversedLogs, 0, 50) as $log): ?>
+                                <?php $desktopMeta = $logTypeMeta((string)($log['log_type'] ?? '')); ?>
                                 <tr>
                                     <td class="mono">
                                         <small><?php echo isset($log['created_at']) ? date('d/m/Y H:i:s', strtotime($log['created_at'])) : '--'; ?></small>
                                     </td>
                                     <td>
-                                        <span class="badge <?php echo match($log['log_type'] ?? '') { 'error' => 'bg-danger', 'warning' => 'bg-warning text-dark', 'success' => 'bg-success', default => 'bg-secondary' }; ?>" style="font-size: 0.6rem;">
-                                            <?php echo match($log['log_type'] ?? '') { 'error' => 'Erro', 'warning' => 'Aviso', 'success' => 'Ok', default => htmlspecialchars($log['log_type'] ?? '') }; ?>
+                                        <span class="badge <?php echo $desktopMeta['badge']; ?>" style="font-size: 0.6rem;">
+                                            <?php echo $desktopMeta['label']; ?>
                                         </span>
                                     </td>
                                     <td>
@@ -863,8 +869,8 @@ $dashboardJson = json_encode([
                                         <small class="text-dim"><?php echo htmlspecialchars($log['message'] ?? ''); ?></small>
                                     </td>
                                     <td>
-                                        <span class="badge-status <?php echo match($log['log_type'] ?? '') { 'error' => 'badge-canceled', 'warning' => 'badge-partial', default => 'badge-filled' }; ?>" style="font-size: 0.6rem;">
-                                            <?php echo match($log['log_type'] ?? '') { 'error' => 'Erro', 'warning' => 'Aviso', default => 'Ok' }; ?>
+                                        <span class="badge-status <?php echo $desktopMeta['status']; ?>" style="font-size: 0.6rem;">
+                                            <?php echo $desktopMeta['label']; ?>
                                         </span>
                                     </td>
                                 </tr>
@@ -879,6 +885,8 @@ $dashboardJson = json_encode([
                     <p>Nenhum evento registrado</p>
                 </div>
                 <?php endif; ?>
+            </div>
+        </section>
             </div>
         </section>
 
