@@ -52,11 +52,31 @@ class BinanceConfig
         ];
 
         try {
-            return AppSettings::set('binance', 'mode', $settings['mode']) &&
-                   AppSettings::set('binance', 'dev_api_key', $settings['dev_api_key']) &&
-                   AppSettings::set('binance', 'dev_api_secret', $settings['dev_api_secret']) &&
-                   AppSettings::set('binance', 'prod_api_key', $settings['prod_api_key']) &&
-                   AppSettings::set('binance', 'prod_api_secret', $settings['prod_api_secret']);
+            $writes = [
+                ['mode', $settings['mode']],
+                ['dev_api_key', $settings['dev_api_key']],
+                ['dev_api_secret', $settings['dev_api_secret']],
+                ['prod_api_key', $settings['prod_api_key']],
+                ['prod_api_secret', $settings['prod_api_secret']],
+            ];
+
+            foreach ($writes as [$key, $value]) {
+                $currentValue = $current[$key] ?? '';
+                $currentValue = $currentValue === null ? '' : (string)$currentValue;
+                $value = $value === null ? '' : (string)$value;
+
+                // Evita tentar "salvar" vazio sobre vazio, o que no model legado
+                // não gera field populado e acaba retornando false sem necessidade.
+                if ($value === '' && $currentValue === '') {
+                    continue;
+                }
+
+                if (!AppSettings::set('binance', $key, $value)) {
+                    return false;
+                }
+            }
+
+            return true;
         } catch (Exception $e) {
             error_log('BinanceConfig::save DB error: ' . $e->getMessage());
             return false;

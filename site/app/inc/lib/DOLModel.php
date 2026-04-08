@@ -126,13 +126,20 @@ class DOLModel extends rootOBJ
 		$array = [];
 		foreach ($this->schema as $key => $value) {
 			if (isset($data[$key])) {
-				if (strtolower($data[$key])) {
-					$array[$key] = sprintf(
-						" %s = '%s' ",
-						$key,
-						$this->con->real_escape_string($data[$key])
-					);
+				$rawValue = $data[$key];
+				if ($rawValue === null) {
+					continue;
 				}
+
+				if (is_string($rawValue) && trim($rawValue) === '') {
+					continue;
+				}
+
+				$array[$key] = sprintf(
+					" %s = '%s' ",
+					$key,
+					$this->con->real_escape_string($rawValue)
+				);
 			}
 		}
 		if (count($array)) {

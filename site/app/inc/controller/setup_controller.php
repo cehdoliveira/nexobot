@@ -1097,7 +1097,8 @@ class setup_controller
                 $gridMax,
                 $currentPrice,
                 $totalCapital,
-                $capitalPerBuyLevel
+                $capitalPerBuyLevel,
+                (float)$capital['usdc_for_buys']
             );
 
             // 6. CRIAR ORDENS LIMIT DE COMPRA (níveis ABAIXO do preço — usa USDC)
@@ -3834,7 +3835,8 @@ class setup_controller
         float $gridMax,
         float $centerPrice,
         float $capitalAllocated,
-        float $capitalPerLevel
+        float $capitalPerLevel,
+        float $lastUsdcBalance
     ): int {
         try {
             $usersModel = new users_model();
@@ -3846,6 +3848,9 @@ class setup_controller
             }
 
             $userId = (int)$usersModel->data[0]['idx'];
+            if ($userId <= 0) {
+                throw new Exception("Usuário inválido para criar grid");
+            }
 
             $gridsModel = new grids_model();
             $gridsModel->populate([
@@ -3860,23 +3865,29 @@ class setup_controller
                 'capital_per_level' => $capitalPerLevel,
                 'accumulated_profit_usdc' => 0.0,
                 'current_price' => $centerPrice,
-                // Campos de proteção
                 'initial_capital_usdc' => $capitalAllocated,
                 'peak_capital_usdc' => $capitalAllocated,
                 'current_capital_usdc' => $capitalAllocated,
-                'last_usdc_balance_usdc' => $capitalAllocated,
+                'last_usdc_balance_usdc' => $lastUsdcBalance,
                 'stop_loss_triggered' => 'no',
-                'stop_loss_triggered_at' => null,
                 'trailing_stop_triggered' => 'no',
-                'trailing_stop_triggered_at' => null,
                 'is_processing' => 'no',
-                'last_monitor_at' => null
             ]);
 
             $gridId = $gridsModel->save();
 
             if (!$gridId) {
                 throw new Exception("Falha ao salvar grid config: save() retornou vazio");
+            }
+
+            try {
+                $redis = RedisCache::getInstance();
+                if ($redis) {
+                    $redis->deletePattern('*grids*');
+                    $redis->deletePattern('*dashboard*');
+                }
+            } catch (Exception $cacheEx) {
+                $this->log("Erro ao limpar cache após criar grid: " . $cacheEx->getMessage(), 'WARNING', 'SYSTEM');
             }
 
             $this->log(
