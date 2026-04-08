@@ -64,7 +64,7 @@ function initializeTheme() {
 }
 
 function injectFloatingThemeToggle() {
-  if (document.querySelector("[data-theme-toggle]")) {
+  if (document.querySelector(".nexo-theme-toggle-floating")) {
     return;
   }
   const floatingButton = document.createElement("button");
