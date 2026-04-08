@@ -6,7 +6,7 @@
             <div class="container-fluid px-3 px-md-4">
                 <a class="navbar-brand d-flex align-items-center gap-2" href="<?php echo $GLOBALS['home_url']; ?>">
                     <i class="bi bi-robot" style="font-size: 1.2rem;"></i>
-                    <span class="fw-semibold" style="font-size: 0.95rem; letter-spacing: -0.01em;">NexoBot</span>
+                    <span class="fw-semibold" style="font-size: 0.95rem; letter-spacing: -0.01em;">Driftex</span>
                 </a>
                 <div class="d-flex align-items-center gap-2">
                     <?php if (auth_controller::check_login()) { ?>

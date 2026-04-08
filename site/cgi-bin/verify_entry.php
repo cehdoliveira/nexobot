@@ -7,7 +7,7 @@ error_reporting(E_ALL);
 date_default_timezone_set("America/Sao_Paulo");
 
 $_SERVER["DOCUMENT_ROOT"] = dirname(__FILE__) . "/../public_html/";
-$_SERVER["HTTP_HOST"] = "nexobot.local";
+$_SERVER["HTTP_HOST"] = "driftex.local";
 putenv('SERVER_PORT=80');
 putenv('SERVER_PROTOCOL=http');
 

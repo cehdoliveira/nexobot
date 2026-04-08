@@ -8,15 +8,15 @@ services:
       - kafka
     volumes:
       - ../_data/logs/:/var/log/
-      - ../_data/upload/:/var/www/nexobot/site/public_html/assets/upload/
-      - ../site/public_html/:/var/www/nexobot/site/public_html/
-      - ../site/app/:/var/www/nexobot/site/app/
-      - ../site/cgi-bin/:/var/www/nexobot/site/cgi-bin/
-      - ../migrations/:/var/www/nexobot/migrations/
+      - ../_data/upload/:/var/www/driftex/site/public_html/assets/upload/
+      - ../site/public_html/:/var/www/driftex/site/public_html/
+      - ../site/app/:/var/www/driftex/site/app/
+      - ../site/cgi-bin/:/var/www/driftex/site/cgi-bin/
+      - ../migrations/:/var/www/driftex/migrations/
     ports:
       - "80:80"
     networks:
-      nexobot:
+      driftex:
         ipv4_address: 172.29.0.3
   # Data Layer
   mysql:
@@ -26,8 +26,8 @@ services:
     command: --sql_mode=""
     environment:
       - MYSQL_ROOT_PASSWORD=701502@Asdfg
-      - MYSQL_DATABASE=mysql_nexobot
-      - MYSQL_USER=user_nexobot
+      - MYSQL_DATABASE=mysql_driftex
+      - MYSQL_USER=user_driftex
       - MYSQL_PASSWORD=@Sa131822
     volumes:
       - ../_data/mysql-data/:/var/lib/mysql
@@ -36,7 +36,7 @@ services:
     expose:
       - "3306"
     networks:
-      nexobot:
+      driftex:
         ipv4_address: 172.29.0.2
 
   # Cache Layer
@@ -57,7 +57,7 @@ services:
     expose:
       - "6379"
     networks:
-      nexobot:
+      driftex:
         ipv4_address: 172.29.0.4
     healthcheck:
       test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
@@ -94,7 +94,7 @@ services:
       - "9092"
       - "9093"
     networks:
-      nexobot:
+      driftex:
         ipv4_address: 172.29.0.5
     healthcheck:
       test:
@@ -114,16 +114,16 @@ services:
     depends_on:
       - kafka
     environment:
-      KAFKA_CLUSTERS_0_NAME: nexobot_cluster
+      KAFKA_CLUSTERS_0_NAME: driftex_cluster
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       DYNAMIC_CONFIG_ENABLED: "true"
     ports:
       - "8080:8080"
     networks:
-      nexobot:
+      driftex:
         ipv4_address: 172.29.0.6
 networks:
-  nexobot:
+  driftex:
     ipam:
       driver: default
       config:

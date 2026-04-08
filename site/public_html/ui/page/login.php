@@ -11,7 +11,7 @@
                         <div class="nexo-login-icon">
                             <i class="bi bi-robot"></i>
                         </div>
-                        <h4 class="fw-bold mt-3 mb-1" style="color: var(--dash-text);">NexoBot</h4>
+                        <h4 class="fw-bold mt-3 mb-1" style="color: var(--dash-text);">Driftex</h4>
                         <p class="small" style="color: var(--dash-text-muted);">Faça login para acessar o painel</p>
                     </div>
 

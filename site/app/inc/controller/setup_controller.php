@@ -119,7 +119,7 @@ class setup_controller
      */
     private function initializeLogger(): void
     {
-        // /var/log é mapeado para /opt/gridnexobot/logs no host (volume do Portainer)
+        // /var/log é mapeado para /opt/driftex/logs no host (volume do Portainer)
         // Mesmo local onde cron.log é gravado pelo verify_entry.php
         $this->logPath = '/var/log/';
     }

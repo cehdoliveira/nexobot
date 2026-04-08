@@ -14,7 +14,7 @@ O sistema de migrations permite:
 ## 📁 Estrutura
 
 ```
-nexobot/
+driftex/
 ├── migrations/                          # 📂 Pasta de migrations SQL
 │   ├── 001_create_migrations_log.sql
 │   ├── 002_create_table_orders_trades.sql
@@ -41,11 +41,11 @@ nexobot/
 
 ```bash
 # Dev (local Docker)
-docker exec -it apache_nexo php /var/www/nexobot/site/cgi-bin/run-migrations.php
+docker exec -it apache_nexo php /var/www/driftex/site/cgi-bin/run-migrations.php
 
 # Prod (VPS com Portainer)
 ssh usuario@seu-servidor.com
-cd /var/www/nexobot
+cd /var/www/driftex
 php site/cgi-bin/run-migrations.php
 ```
 
@@ -54,7 +54,7 @@ php site/cgi-bin/run-migrations.php
 ========================================
 🚀 Executando Migrations
 ========================================
-📁 Diretório: /home/cehdoliveira/Projetos/nexobot/migrations
+📁 Diretório: /home/cehdoliveira/Projetos/driftex/migrations
    Existe? ✅ SIM
    Arquivos .sql: 6
 
@@ -82,13 +82,13 @@ O sistema está configurado para executar automaticamente a cada 5 minutos:
 
 **Dev:**
 ```
-*/5 * * * * php /var/www/nexobot/site/cgi-bin/run-migrations.php >> /var/log/nexobot/migrations.log 2>&1
+*/5 * * * * php /var/www/driftex/site/cgi-bin/run-migrations.php >> /var/log/driftex/migrations.log 2>&1
 ```
 Localização: `/docker/core/crontab.txt`
 
 **Prod:**
 ```
-*/5 * * * * php /var/www/nexobot/site/cgi-bin/run-migrations.php >> /var/log/nexobot/migrations.log 2>&1
+*/5 * * * * php /var/www/driftex/site/cgi-bin/run-migrations.php >> /var/log/driftex/migrations.log 2>&1
 ```
 Localização: `/docker/prod/crontab.txt`
 
@@ -148,7 +148,7 @@ As credenciais vêm de `/site/app/inc/kernel.php`:
 
 ```php
 define('DB_HOST', 'mysql');        // Host do MySQL
-define('DB_NAME', 'mysql_nexobot'); // Database
+define('DB_NAME', 'mysql_driftex'); // Database
 define('DB_USER', 'root');          // Usuário
 define('DB_PASS', 'senha');         // Senha
 ```
@@ -157,8 +157,8 @@ define('DB_PASS', 'senha');         // Senha
 
 Detectado automaticamente em:
 1. Relativo: `__DIR__/../../../../migrations`
-2. Docker: `/var/www/nexobot/migrations`
-3. Absoluto: `/home/cehdoliveira/Projetos/nexobot/migrations`
+2. Docker: `/var/www/driftex/migrations`
+3. Absoluto: `/home/cehdoliveira/Projetos/driftex/migrations`
 
 ## 🐛 Troubleshooting
 
@@ -172,11 +172,11 @@ Detectado automaticamente em:
 **Solução:**
 ```bash
 # Verificar pasta
-ls -la /home/cehdoliveira/Projetos/nexobot/migrations/
+ls -la /home/cehdoliveira/Projetos/driftex/migrations/
 
 # Verificar permissões
-chmod 755 /home/cehdoliveira/Projetos/nexobot/migrations/
-chmod 644 /home/cehdoliveira/Projetos/nexobot/migrations/*.sql
+chmod 755 /home/cehdoliveira/Projetos/driftex/migrations/
+chmod 644 /home/cehdoliveira/Projetos/driftex/migrations/*.sql
 ```
 
 ### "Operation timed out"
@@ -189,7 +189,7 @@ SQLSTATE[HY000] [2002] Operation timed out
 ℹ️  Tentando modo diagnóstico (sem banco)...
 
 ✅ Estrutura OK:
-   📁 Diretório: /home/cehdoliveira/Projetos/nexobot/migrations
+   📁 Diretório: /home/cehdoliveira/Projetos/driftex/migrations
    📄 Migrations encontradas: 6
 ```
 
@@ -233,11 +233,11 @@ SELECT filename, status, executed_at FROM migrations_log ORDER BY executed_at DE
 
 ```bash
 # Dev (Docker)
-docker exec apache_nexo tail -f /var/log/nexobot/migrations.log
+docker exec apache_nexo tail -f /var/log/driftex/migrations.log
 
 # Prod
 ssh usuario@servidor
-tail -f /var/log/nexobot/migrations.log
+tail -f /var/log/driftex/migrations.log
 ```
 
 ## 🔐 Segurança

@@ -1,9 +1,11 @@
 services:
   # ============================================
-  # 📦 PHP Application Server (Site)
+  # 📦 PHP Application Server (Driftex App)
   # ============================================
   app:
-    image: <SUA_IMAGEM_CUSTOMIZADA>  # Ex.: <NOME_APP>:latest
+    image: <SUA_IMAGEM_CUSTOMIZADA>  # Ex.: driftex:latest
+    environment:
+      - ENABLE_CRON=true
     deploy:
       replicas: 1
       restart_policy:
@@ -20,11 +22,8 @@ services:
         reservations:
           memory: 256M
       labels:
-        # Traefik: Roteamento para Site
         - "traefik.enable=true"
         - "traefik.docker.network=<SUA_REDE_INTERNET_DO_PORTAINER>"
-
-        # Site (<SEU_DOMINIO>)
         - "traefik.http.routers.<NOME_APP>-site.rule=Host(`<SEU_DOMINIO>`)"
         - "traefik.http.routers.<NOME_APP>-site.entrypoints=websecure"
         - "traefik.http.routers.<NOME_APP>-site.tls.certresolver=letsencryptresolver"
@@ -32,21 +31,14 @@ services:
         - "traefik.http.services.<NOME_APP>-site.loadbalancer.server.port=80"
 
     volumes:
-      # Arquivos do Site
       - /opt/<NOME_APP>/site:/var/www/<NOME_APP>/site:rw
-      
-      # Migrations SQL
       - /opt/<NOME_APP>/migrations:/var/www/<NOME_APP>/migrations:rw
-      
-      # Logs compartilhados (garanta que o diretório existe)
       - /opt/<NOME_APP>/logs:/var/log:rw
-
-      # Monta a raiz do projeto em /git para permitir git pull completo
       - /opt/<NOME_APP>:/git:rw
-    
+
     networks:
-      - <SUA_REDE_INTERNET_DO_PORTAINER>  # Conecta à rede para acessar outros serviços se necessário
-    
+      - <SUA_REDE_INTERNET_DO_PORTAINER>
+
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
       interval: 30s
@@ -55,7 +47,7 @@ services:
       start_period: 90s
 
   # ========================================
-  #  Redis Cache
+  # Redis Cache
   # ========================================
   redis:
     image: redis:7-alpine
@@ -68,15 +60,15 @@ services:
           memory: 256M
         reservations:
           memory: 128M
-    
+
     command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
-    
+
     volumes:
       - redis-data:/data
-    
+
     networks:
-      - <SUA_REDE_INTERNET_DO_PORTAINER>  # Conecta à rede para acessar outros serviços se necessário
-    
+      - <SUA_REDE_INTERNET_DO_PORTAINER>
+
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -87,7 +79,9 @@ services:
   # 👷 Email Worker Site (Kafka Consumer)
   # ========================================
   email_worker_site:
-    image: <SUA_IMAGEM_CUSTOMIZADA>  # Mesma imagem customizada
+    image: <SUA_IMAGEM_CUSTOMIZADA>
+    environment:
+      - ENABLE_CRON=false
     deploy:
       replicas: 1
       restart_policy:
@@ -97,35 +91,28 @@ services:
           memory: 512M
         reservations:
           memory: 256M
-    
+
     volumes:
-      # Worker precisa acessar o código do site
       - /opt/<NOME_APP>/site:/var/www/<NOME_APP>/site:ro
-    
+      - /opt/<NOME_APP>/logs:/var/log:rw
+
     networks:
-      - <SUA_REDE_INTERNET_DO_PORTAINER>  # Conecta à rede para acessar outros serviços se necessário
-    
-    # Sobrescrever CMD padrão (apache) para rodar worker
-    entrypoint: []
+      - <SUA_REDE_INTERNET_DO_PORTAINER>
+
+    # Mesmo entrypoint da imagem, sem cron; executa apenas o worker
     command: ["php", "/var/www/<NOME_APP>/site/cgi-bin/kafka_email_worker.php"]
-    
+
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f kafka_email_worker.php || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
-  
-# ========================================
-# 🌐 Networks
-# ========================================
-networks:  
+
+networks:
   <SUA_REDE_INTERNET_DO_PORTAINER>:
     external: true
 
-# ========================================
-# 💾 Volumes
-# ========================================
 volumes:
   redis-data:
     driver: local
