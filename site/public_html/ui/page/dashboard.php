@@ -480,7 +480,7 @@ $dashboardJson = json_encode([
                             $cronIcon  = match($cronStatus) { 'ok' => 'bi-cpu', 'warning' => 'bi-cpu', default => 'bi-cpu-fill' };
                             $cronLabel = match($cronStatus) { 'ok' => 'CRON saudável', 'warning' => 'CRON lento', default => 'CRON parado?' };
                             ?>
-                            <small style="font-size: 0.65rem; color: <?php echo $cronColor; ?>;">
+                            <small style="font-size: 0.65rem; color: <?php echo $cronColor; ?> !important;">
                                 <i class="bi <?php echo $cronIcon; ?>"></i>
                                 <?php echo $cronLabel; ?> &bull; <?php echo number_format($minutesSinceMonitor, 1); ?> min atrás
                             </small>
