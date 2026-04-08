@@ -47,6 +47,7 @@ class setup_controller
 
     // Proteção: Race Condition
     private const LOCK_TIMEOUT_MINUTES = 2;                // Lock travado após 2 minutos
+    private const CRON_STALE_ALERT_MINUTES = 5;            // Considera CRON parada/lenta após 5 minutos sem sucesso
 
     // Sliding Grid
     private const GRID_SLIDE_MAX_ITERATIONS = 6;           // Máximo de slides por ciclo CRON
@@ -3224,6 +3225,8 @@ class setup_controller
                 return false; // Ainda não atingiu lucro mínimo para ativar
             }
 
+            $this->notifyTrailingArmed($gridId, $symbol, $initialCapital, $peakCapital, $currentCapital, $profitPercent);
+
             // 2. Calcular queda do pico
             $dropFromPeak = ($peakCapital - $currentCapital) / $peakCapital;
 
@@ -3346,6 +3349,8 @@ class setup_controller
                 'ERROR',
                 'SYSTEM'
             );
+
+            $this->notifyBotStopped($gridId, $symbol, $reason, $metadata);
         } catch (Exception $e) {
             $this->log(
                 "❌ ERRO CRÍTICO no emergency shutdown: " . $e->getMessage(),
@@ -3353,6 +3358,82 @@ class setup_controller
                 'SYSTEM'
             );
         }
+    }
+
+    private function notifyTrailingArmed(
+        int $gridId,
+        string $symbol,
+        float $initialCapital,
+        float $peakCapital,
+        float $currentCapital,
+        float $profitPercent
+    ): void {
+        $subject = "Driftex: Trailing Stop armado em {$symbol}";
+        $body = sprintf(
+            "<p>O Trailing Stop do grid #%d foi armado.</p>
+            <p><strong>Par:</strong> %s<br>
+            <strong>Capital inicial:</strong> US$ %s<br>
+            <strong>Capital atual:</strong> US$ %s<br>
+            <strong>Pico atual:</strong> US$ %s<br>
+            <strong>Lucro atual:</strong> %s%%</p>
+            <p>O bot segue operando. Se houver queda de %s%% a partir do pico, o bot será parado automaticamente.</p>",
+            $gridId,
+            htmlspecialchars($symbol),
+            number_format($initialCapital, 2, '.', ','),
+            number_format($currentCapital, 2, '.', ','),
+            number_format($peakCapital, 2, '.', ','),
+            number_format($profitPercent * 100, 2, '.', ','),
+            number_format(self::TRAILING_STOP_PERCENT * 100, 0, '.', ',')
+        );
+
+        BotAlertService::sendGridAlertOnce(
+            $gridId,
+            'trailing_stop_armed_email',
+            'warning',
+            $subject,
+            $body,
+            [
+                'symbol' => $symbol,
+                'initial_capital' => $initialCapital,
+                'current_capital' => $currentCapital,
+                'peak_capital' => $peakCapital,
+                'profit_percent' => $profitPercent
+            ]
+        );
+    }
+
+    private function notifyBotStopped(int $gridId, string $symbol, string $reason, array $metadata = []): void
+    {
+        $reasonLabel = $reason === 'stop_loss' ? 'Stop-Loss' : 'Trailing Stop';
+        $subject = "Driftex: {$reasonLabel} acionado em {$symbol}";
+        $body = sprintf(
+            "<p>O bot foi parado automaticamente por %s.</p>
+            <p><strong>Grid:</strong> #%d<br>
+            <strong>Par:</strong> %s</p>
+            <p><strong>Detalhes:</strong></p>
+            <pre style=\"font-family: monospace; white-space: pre-wrap;\">%s</pre>",
+            htmlspecialchars($reasonLabel),
+            $gridId,
+            htmlspecialchars($symbol),
+            htmlspecialchars(json_encode($metadata, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE))
+        );
+
+        BotAlertService::sendGridAlertOnce(
+            $gridId,
+            $reason === 'stop_loss' ? 'stop_loss_email' : 'trailing_stop_triggered_email',
+            'error',
+            $subject,
+            $body,
+            array_merge($metadata, [
+                'symbol' => $symbol,
+                'reason' => $reason
+            ])
+        );
+    }
+
+    public static function getCronStaleAlertMinutes(): int
+    {
+        return self::CRON_STALE_ALERT_MINUTES;
     }
 
     /**

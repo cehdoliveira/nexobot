@@ -92,6 +92,8 @@ class site_controller
             return ((int)($b['idx'] ?? 0)) <=> ((int)($a['idx'] ?? 0));
         });
 
+        $this->checkCronHealthAndNotify($allGrids[0] ?? null);
+
         // === BUSCAR ORDENS DE GRID (com relacionamento manual) ===
         $gridsOrdersModel = new grids_orders_model();
         // Carrega todas as grids_orders (ativas e inativas) usando filtro que sempre é verdadeiro
@@ -1426,6 +1428,48 @@ class site_controller
     /**
      * Retorna dados completos do dashboard em formato JSON (para AJAX polling)
      */
+    private function checkCronHealthAndNotify(?array $grid = null): void
+    {
+        try {
+            $lastSuccessAt = AppSettings::get('monitoring', 'verify_entry_success_at');
+            if (!$lastSuccessAt) {
+                return;
+            }
+
+            $lastSuccessTs = strtotime($lastSuccessAt);
+            if (!$lastSuccessTs) {
+                return;
+            }
+
+            $elapsedMinutes = (time() - $lastSuccessTs) / 60;
+            if ($elapsedMinutes <= setup_controller::getCronStaleAlertMinutes()) {
+                BotAlertService::clearSystemAlert('cron_stale');
+                return;
+            }
+
+            $symbol = $grid['symbol'] ?? 'BTCUSDC';
+            $subject = "Driftex: CRON sem monitoramento recente";
+            $body = sprintf(
+                "<p>A rotina de monitoramento do bot está sem execução bem-sucedida recente.</p>
+                <p><strong>Par:</strong> %s<br>
+                <strong>Último sucesso:</strong> %s<br>
+                <strong>Sem execução há:</strong> %.1f minutos</p>
+                <p>O dashboard pode ficar desatualizado e o bot pode deixar de recriar ou monitorar o grid.</p>",
+                htmlspecialchars($symbol),
+                htmlspecialchars($lastSuccessAt),
+                $elapsedMinutes
+            );
+
+            BotAlertService::sendSystemAlertOnce('cron_stale', $subject, $body, [
+                'symbol' => $symbol,
+                'last_success_at' => $lastSuccessAt,
+                'elapsed_minutes' => $elapsedMinutes
+            ]);
+        } catch (Throwable $e) {
+            error_log('site_controller::checkCronHealthAndNotify error: ' . $e->getMessage());
+        }
+    }
+
     private function ajaxGetGridDashboardData(): void
     {
         try {
@@ -1445,6 +1489,8 @@ class site_controller
 
             $activeGrids = array_filter($allGrids, fn($g) => $g['status'] === 'active');
             $firstGrid = $allGrids[0] ?? null;
+
+            $this->checkCronHealthAndNotify($firstGrid);
 
             // Estatísticas rápidas
             $totalProfit = 0;
