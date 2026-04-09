@@ -539,8 +539,14 @@ document.addEventListener('click', async function (event) {
   }
 
   event.preventDefault();
+
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.className = 'orders-section-loading';
+  loadingOverlay.innerHTML = '<span class="btn-spinner"></span><span>Carregando ordens...</span>';
+  currentSection.appendChild(loadingOverlay);
   currentSection.style.opacity = '0.55';
   currentSection.style.pointerEvents = 'none';
+  currentSection.classList.add('orders-section-is-loading');
 
   try {
     const fetchUrl = new URL(window.location.pathname, window.location.origin);
@@ -572,8 +578,10 @@ document.addEventListener('click', async function (event) {
     currentSection.replaceWith(nextSection);
   } catch (error) {
     console.error('Orders pagination error:', error);
+    loadingOverlay.remove();
     currentSection.style.opacity = '';
     currentSection.style.pointerEvents = '';
+    currentSection.classList.remove('orders-section-is-loading');
 
     if (typeof Swal !== 'undefined') {
       Swal.fire({
