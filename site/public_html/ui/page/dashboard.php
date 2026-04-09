@@ -617,7 +617,7 @@ $dashboardJson = json_encode([
         <?php endif; ?>
 
         <!-- === SECTION E: Active Orders === -->
-        <section aria-label="Ordens do Grid">
+        <section id="grid-orders-section" aria-label="Ordens do Grid">
             <div class="dash-card">
                 <div class="card-header-custom">
                     <h6>

@@ -513,3 +513,78 @@ document.addEventListener('alpine:init', () => {
     }
   }));
 });
+
+document.addEventListener('click', async function (event) {
+  const link = event.target.closest('#grid-orders-section .page-link');
+  if (!link) {
+    return;
+  }
+
+  const pageItem = link.closest('.page-item');
+  if (pageItem && pageItem.classList.contains('disabled')) {
+    event.preventDefault();
+    return;
+  }
+
+  const currentSection = document.getElementById('grid-orders-section');
+  if (!currentSection) {
+    return;
+  }
+
+  const url = new URL(link.href, window.location.origin);
+  const page = parseInt(url.searchParams.get('orders_page') || '1', 10);
+  if (!page) {
+    event.preventDefault();
+    return;
+  }
+
+  event.preventDefault();
+  currentSection.style.opacity = '0.55';
+  currentSection.style.pointerEvents = 'none';
+
+  try {
+    const fetchUrl = new URL(window.location.pathname, window.location.origin);
+    fetchUrl.searchParams.set('orders_page', String(page));
+    fetchUrl.searchParams.set('_t', String(Date.now()));
+
+    const response = await fetch(fetchUrl.toString(), {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error();
+    }
+
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const nextSection = doc.getElementById('grid-orders-section');
+
+    if (!nextSection) {
+      throw new Error('Seção de ordens não encontrada na resposta');
+    }
+
+    currentSection.replaceWith(nextSection);
+  } catch (error) {
+    console.error('Orders pagination error:', error);
+    currentSection.style.opacity = '';
+    currentSection.style.pointerEvents = '';
+
+    if (typeof Swal !== 'undefined') {
+      Swal.fire({
+        icon: 'error',
+        title: 'Erro ao carregar a página de ordens',
+        toast: true,
+        position: window.innerWidth < 768 ? 'top' : 'top-end',
+        showConfirmButton: false,
+        timer: 3000,
+        timerProgressBar: true
+      });
+    }
+  }
+});
