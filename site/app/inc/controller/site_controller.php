@@ -297,6 +297,8 @@ class site_controller
         $startIndex = ($currentPage - 1) * $itemsPerPage;
         $ordersForDisplay = array_slice($allOrdersforDisplay, $startIndex, $itemsPerPage);
 
+        $binanceConfig = BinanceConfig::getActiveCredentials();
+
         // === BUSCAR SALDO DE USDC DA CARTEIRA ===
         $usdcBalance = 0;
         $btcBalance = 0;
