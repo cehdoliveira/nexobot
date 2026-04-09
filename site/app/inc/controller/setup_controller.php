@@ -60,6 +60,7 @@ class setup_controller
     // Cache TTL
     private const CACHE_TTL_ACCOUNT_INFO = 5;    // 5 segundos para account info
     private const CACHE_TTL_EXCHANGE_INFO = 60;  // 60 segundos para exchange info
+    private const BINANCE_RECV_WINDOW = 10000; // Janela de recepcao para chamadas autenticadas da Binance
 
     // Logs
     private const ERROR_LOG = 'error.log';
@@ -120,6 +121,15 @@ class setup_controller
     /**
      * Inicializa sistema de logs
      */
+    private function applyRecvWindowToOrderRequest(NewOrderRequest $orderRequest): NewOrderRequest
+    {
+        if (method_exists($orderRequest, 'setRecvWindow')) {
+            $orderRequest->setRecvWindow(self::BINANCE_RECV_WINDOW);
+        }
+
+        return $orderRequest;
+    }
+
     private function initializeLogger(): void
     {
         // /var/log é mapeado para /opt/driftex/logs no host (volume do Portainer)
@@ -213,7 +223,7 @@ class setup_controller
                 return $this->accountInfoCache;
             }
 
-            $resp = $this->client->getAccount();
+            $resp = $this->client->getAccount(null, self::BINANCE_RECV_WINDOW);
             $accountData = $resp->getData();
             $this->accountInfoCache = json_decode(json_encode($accountData), true);
             $this->accountInfoCacheTime = $now;
@@ -650,7 +660,7 @@ class setup_controller
 
                 try {
                     // Consultar status na Binance
-                    $response = $this->client->getOrder($order['symbol'], $order['binance_order_id']);
+                    $response = $this->client->getOrder($order['symbol'], $order['binance_order_id'], null, self::BINANCE_RECV_WINDOW);
                     $binanceOrder = $response->getData();
 
                     $newStatus   = $this->extractBinanceValue($binanceOrder, 'getStatus', 'status', null);
@@ -740,7 +750,7 @@ class setup_controller
                 }
 
                 try {
-                    $response = $this->client->getOrder($order['symbol'], $binanceOrderId);
+                    $response = $this->client->getOrder($order['symbol'], $binanceOrderId, null, self::BINANCE_RECV_WINDOW);
                     $binanceData = $response->getData();
                     $realQty = (float)$this->extractBinanceValue($binanceData, 'getExecutedQty', 'executedQty', 0);
 
@@ -847,7 +857,7 @@ class setup_controller
                     // Se não está no banco, cancelar (órfã)
                     if (count($ordersModel->data) === 0) {
                         try {
-                            $this->client->deleteOrder($symbol, $binanceOrderId);
+                            $this->client->deleteOrder($symbol, $binanceOrderId, null, null, null, self::BINANCE_RECV_WINDOW);
                             $this->log(
                                 "✅ Ordem órfã {$binanceOrderId} cancelada",
                                 'SUCCESS',
@@ -879,7 +889,7 @@ class setup_controller
                         );
 
                         try {
-                            $this->client->deleteOrder($symbol, $binanceOrderId);
+                            $this->client->deleteOrder($symbol, $binanceOrderId, null, null, null, self::BINANCE_RECV_WINDOW);
                             $ordersModel->load_byIdx($dbOrderIdx);
                             $ordersModel->populate(['status' => 'CANCELED']);
                             $ordersModel->save();
@@ -1012,7 +1022,7 @@ class setup_controller
             $orderReq->setType(OrderType::MARKET);
             $orderReq->setQuantity((float)$adjustedQty);
 
-            $response  = $this->client->newOrder($orderReq);
+            $response  = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
             $orderData = $response->getData();
 
             $executedQty     = $this->extractBinanceValue($orderData, 'getExecutedQty', 'executedQty', $adjustedQty);
@@ -1297,7 +1307,7 @@ class setup_controller
                 try {
                     $binanceOrderId = $buyOrder['binance_order_id'] ?? null;
                     if ($binanceOrderId) {
-                        $response = $this->client->getOrder($symbol, $binanceOrderId);
+                        $response = $this->client->getOrder($symbol, $binanceOrderId, null, self::BINANCE_RECV_WINDOW);
                         $binanceData = $response->getData();
                         $realQty = (float)$this->extractBinanceValue($binanceData, 'getExecutedQty', 'executedQty', 0);
 
@@ -2321,7 +2331,7 @@ class setup_controller
             // Garante que ordens órfãs (não rastreadas) também sejam canceladas,
             // liberando qualquer BTC bloqueado antes de consultar o saldo.
             try {
-                $this->client->deleteOpenOrders($symbol);
+                $this->client->deleteOpenOrders($symbol, self::BINANCE_RECV_WINDOW);
                 $this->log("Todas as ordens abertas em $symbol canceladas na Binance", 'INFO', 'TRADE');
             } catch (Exception $e) {
                 $this->log("Aviso ao cancelar ordens restantes na Binance: " . $e->getMessage(), 'WARNING', 'TRADE');
@@ -2480,7 +2490,7 @@ class setup_controller
 
                         // Passo 2: cancelar na Binance
                         try {
-                            $this->client->deleteOrder($symbol, $sellToCancel['binance_order_id']);
+                            $this->client->deleteOrder($symbol, $sellToCancel['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
                         } catch (Exception $e) {
                             $this->log("⚠️ Slide DOWN: erro ao cancelar SELL #{$sellToCancel['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
                             $this->syncOrdersWithBinance($gridId);
@@ -2606,7 +2616,7 @@ class setup_controller
 
                         // Passo 2: cancelar na Binance
                         try {
-                            $this->client->deleteOrder($symbol, $buyToCancel['binance_order_id']);
+                            $this->client->deleteOrder($symbol, $buyToCancel['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
                         } catch (Exception $e) {
                             $this->log("⚠️ Slide UP: erro ao cancelar BUY #{$buyToCancel['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
                             $this->syncOrdersWithBinance($gridId);
@@ -2848,7 +2858,7 @@ class setup_controller
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$quantity);
 
-            $response = $this->client->newOrder($orderReq);
+            $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
             $orderData = $response->getData();
 
             $binanceOrderId       = $this->extractBinanceValue($orderData, 'getOrderId', 'orderId', null);
@@ -2947,7 +2957,7 @@ class setup_controller
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$adjustedQty);
 
-            $response = $this->client->newOrder($orderReq);
+            $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
             $orderData = $response->getData();
 
             $binanceOrderId       = $this->extractBinanceValue($orderData, 'getOrderId', 'orderId', null);
@@ -3022,7 +3032,7 @@ class setup_controller
             $sellReq->setType(OrderType::MARKET);
             $sellReq->setQuantity((float)number_format($safeQty, $decimalPlacesQty, '.', ''));
 
-            $resp = $this->client->newOrder($sellReq);
+            $resp = $this->client->newOrder($this->applyRecvWindowToOrderRequest($sellReq));
             $data = $resp->getData();
 
             $orderId = $this->extractBinanceValue($data, 'getOrderId', 'orderId', null);
@@ -4253,7 +4263,7 @@ class setup_controller
 
                 if ($order && in_array($order['status'], ['NEW', 'PARTIALLY_FILLED'])) {
                     try {
-                        $this->client->deleteOrder($order['symbol'], $order['binance_order_id']);
+                        $this->client->deleteOrder($order['symbol'], $order['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
                         $this->log("Ordem {$order['binance_order_id']} cancelada", 'INFO', 'TRADE');
                     } catch (Exception $e) {
                         $this->log("Erro ao cancelar ordem {$order['binance_order_id']}: " . $e->getMessage(), 'WARNING', 'TRADE');

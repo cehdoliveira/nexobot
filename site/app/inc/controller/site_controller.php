@@ -8,6 +8,8 @@ use Binance\Client\Spot\Model\OrderType;
 
 class site_controller
 {
+    private const BINANCE_RECV_WINDOW = 10000;
+
 
     /**
      * Dashboard do Grid Trading
@@ -305,7 +307,7 @@ class site_controller
         try {
             $api = $this->createBinanceApiClient(true);
 
-            $accountInfo = $api->getAccount();
+            $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
             $accountData = $accountInfo->getData();
 
             if ($accountData && isset($accountData["balances"])) {
@@ -484,7 +486,7 @@ class site_controller
         try {
             $api = $this->createBinanceApiClient(true);
 
-            $accountInfo = $api->getAccount();
+            $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
             $accountData = $accountInfo->getData();
 
             $walletTotal = 0;
@@ -574,7 +576,7 @@ class site_controller
 
                         try {
                             // Buscar status atual na Binance
-                            $orderResp = $api->getOrder($symbol, $binanceOrderId);
+                            $orderResp = $api->getOrder($symbol, $binanceOrderId, null, self::BINANCE_RECV_WINDOW);
                             $orderData = $orderResp->getData();
 
                             // Converter para array se necessário
@@ -752,7 +754,7 @@ class site_controller
 
             // Consultar status na Binance
             try {
-                $response = $api->getOrder($symbol, $binanceOrderId);
+                $response = $api->getOrder($symbol, $binanceOrderId, null, self::BINANCE_RECV_WINDOW);
                 $orderData = $response->getData();
             } catch (Exception $apiEx) {
                 // Ordem não existe mais na Binance (comum em testnet)
@@ -1129,7 +1131,7 @@ class site_controller
                         $actualOrderData = null;
 
                         try {
-                            $response = $api->getOrder($symbol, $binanceOrderId);
+                            $response = $api->getOrder($symbol, $binanceOrderId, null, self::BINANCE_RECV_WINDOW);
                             $actualOrderData = $response->getData();
                             $actualStatus = is_array($actualOrderData) ? ($actualOrderData['status'] ?? null) : $actualOrderData->getStatus();
                         } catch (Exception $apiEx) {
@@ -1173,7 +1175,7 @@ class site_controller
                         } else {
                             // Ordem está aberta (NEW, PARTIALLY_FILLED, etc) - CANCELAR
                             try {
-                                $api->deleteOrder($symbol, $binanceOrderId);
+                                $api->deleteOrder($symbol, $binanceOrderId, null, null, null, self::BINANCE_RECV_WINDOW);
                             } catch (Exception $cancelEx) {
                                 // Código -2011 = "Unknown order sent" = ordem já foi FILLED ou deletada
                                 if (strpos($cancelEx->getMessage(), '-2011') === false && !isBinanceOrderNotFoundError($cancelEx)) {
@@ -1209,7 +1211,7 @@ class site_controller
                     $asset = str_replace('USDC', '', $symbol);
 
                     // Buscar saldo atual da conta
-                    $accountInfo = $api->getAccount();
+                    $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
                     $accountData = $accountInfo->getData();
 
                     $assetFound = false;
@@ -1228,7 +1230,7 @@ class site_controller
                                     $newOrderReq->setType(OrderType::MARKET);
                                     $newOrderReq->setQuantity($free);
 
-                                    $response = $api->newOrder($newOrderReq);
+                                    $response = $api->newOrder($this->applyRecvWindowToOrderRequest($newOrderReq));
 
                                     $orderData = $response->getData();
                                     $orderId = method_exists($orderData, 'getOrderId') ? $orderData->getOrderId() : ($orderData['orderId'] ?? null);
@@ -1297,7 +1299,7 @@ class site_controller
                                 if ($filledOrder['symbol'] === $symbol) {
                                     // Buscar detalhes da ordem FILLED na Binance
                                     try {
-                                        $orderResp = $api->getOrder($symbol, $filledOrder['orderId']);
+                                        $orderResp = $api->getOrder($symbol, $filledOrder['orderId'], null, self::BINANCE_RECV_WINDOW);
                                         $orderData = $orderResp->getData();
 
                                         if (!is_array($orderData)) {
@@ -1686,7 +1688,7 @@ class site_controller
                         }
 
                         try {
-                            $api->deleteOrder($symbol, $orderId);
+                            $api->deleteOrder($symbol, $orderId, null, null, null, self::BINANCE_RECV_WINDOW);
                             $cancelledOrders[] = [
                                 'grid_id' => $gridId,
                                 'symbol' => $symbol,
@@ -1708,7 +1710,7 @@ class site_controller
                 }
 
                 try {
-                    $accountInfo = $api->getAccount();
+                    $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
                     $accountData = $accountInfo->getData();
 
                     if (!$accountData || !isset($accountData['balances'])) {
@@ -1739,7 +1741,7 @@ class site_controller
                                 $newOrderReq->setType(OrderType::MARKET);
                                 $newOrderReq->setQuantity($finalQty);
 
-                                $response = $api->newOrder($newOrderReq);
+                                $response = $api->newOrder($this->applyRecvWindowToOrderRequest($newOrderReq));
                                 $orderData = $response->getData();
                                 $sellOrderId = method_exists($orderData, 'getOrderId')
                                     ? $orderData->getOrderId()
@@ -1985,7 +1987,7 @@ class site_controller
     {
         $baseAsset = str_replace('USDC', '', $symbol);
 
-        $accountResponse = $api->getAccount();
+        $accountResponse = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
         $accountData = $accountResponse->getData();
         $accountInfo = json_decode(json_encode($accountData), true);
 
