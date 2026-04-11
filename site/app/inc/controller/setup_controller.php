@@ -21,7 +21,7 @@ class setup_controller
     private const GRID_LEVELS = 6;              // 6 níveis por grid
     private const GRID_RANGE_PERCENT = 0.05;     // ±5% do preço atual
     private const GRID_SPACING_PERCENT = 0.01;   // 1% entre níveis
-    private const REBALANCE_THRESHOLD = 0.03;    // Rebalancear se sair 3% do range
+    private const REBALANCE_THRESHOLD = 0.01;    // Rebalancear se sair 1% do range
     private const CAPITAL_ALLOCATION = 0.95;     // 95% do capital USDC disponível
     private const MIN_TRADE_USDC = 11;           // Mínimo por trade
     private const MAX_ALGO_ORDERS = 5;           // Limite Binance de ordens algorítmicas
@@ -2387,7 +2387,7 @@ class setup_controller
     }
 
     /**
-     * Sliding Grid: desloca o grid quando o preço sai 5% além do range (REBALANCE_THRESHOLD).
+     * Sliding Grid: desloca o grid quando o preço sai 1% além do range (REBALANCE_THRESHOLD).
      * Slide DOWN (SELL→SELL): cancela SELL mais distante (maior preço) → cria nova SELL 1% abaixo da mais próxima.
      * Slide UP   (BUY→BUY):  cancela BUY  mais distante (menor preço) → cria nova BUY  1% acima da mais próxima.
      */
