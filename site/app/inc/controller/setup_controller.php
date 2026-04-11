@@ -2387,7 +2387,8 @@ class setup_controller
     }
 
     /**
-     * Sliding Grid: desloca o grid quando o preço sai 1% além do range (REBALANCE_THRESHOLD).
+     * Sliding Grid: desloca o grid quando o preço sai além do range estrutural
+     * pelo desvio definido em REBALANCE_THRESHOLD.
      * Slide DOWN (SELL→SELL): cancela SELL mais distante (maior preço) → cria nova SELL 1% abaixo da mais próxima.
      * Slide UP   (BUY→BUY):  cancela BUY  mais distante (menor preço) → cria nova BUY  1% acima da mais próxima.
      */
@@ -2432,10 +2433,10 @@ class setup_controller
                 return;
             }
 
-            // ── GATE: só deslizar se o preço saiu 5% do range do grid ──────────────
+            // ── GATE: só deslizar se o preço saiu do range do grid além do limiar ──
             // O slide é uma operação extrema — a lógica reativa (BUY→SELL, SELL→BUY)
             // cuida de oscilações dentro do range. O slide só deve atuar quando o preço
-            // se afastou significativamente (REBALANCE_THRESHOLD) do range original
+            // se afastou mais que REBALANCE_THRESHOLD do range estrutural atual do grid
             // definido por lower_price / upper_price.
             $gridMin = (float)($gridData['lower_price'] ?? 0);
             $gridMax = (float)($gridData['upper_price'] ?? 0);
@@ -2454,7 +2455,7 @@ class setup_controller
                 }
 
                 if (!$belowRange && !$aboveRange) {
-                    // Preço ainda dentro do range (ou saiu menos de 5%) — não deslizar
+                    // Preço ainda dentro do range ou fora dele abaixo do limiar — não deslizar
                     return;
                 }
             }
@@ -2705,19 +2706,15 @@ class setup_controller
                 }
             }
 
-            // ── Atualizar current_price após slides ───────────────────────────────
-            // Recalcula o center price como midpoint entre a maior BUY e menor SELL
-            // ainda ativas. Mantém normalizeToGrid/hasActiveOrderAtSlot coerentes
-            // com o estado real do grid após cada ciclo de deslizamento.
+            // ── Atualizar centro e range estrutural após slides ───────────────────
+            // Reancora o grid no novo centro válido e persiste lower/upper usando
+            // a mesma geometria da criação inicial (GRID_RANGE_PERCENT).
+            $newCenterPrice = null;
+
             if (!empty($activeBuyOrders) && !empty($activeSellOrders)) {
                 $highestActiveBuy = max(array_column($activeBuyOrders,  'price'));
                 $lowestActiveSell = min(array_column($activeSellOrders, 'price'));
                 $newCenterPrice   = ($lowestActiveSell + $highestActiveBuy) / 2.0;
-
-                $gridsCenter = new grids_model();
-                $gridsCenter->set_filter(["idx = '{$gridId}'"]);
-                $gridsCenter->populate(['current_price' => number_format($newCenterPrice, 8, '.', '')]);
-                $gridsCenter->save();
 
                 $this->log(
                     "📍 Center price atualizado: \$" . number_format($newCenterPrice, 2) .
@@ -2728,10 +2725,7 @@ class setup_controller
                 );
             } elseif (!empty($activeSellOrders)) {
                 $lowestActiveSell = min(array_column($activeSellOrders, 'price'));
-                $gridsCenter = new grids_model();
-                $gridsCenter->set_filter(["idx = '{$gridId}'"]);
-                $gridsCenter->populate(['current_price' => number_format($lowestActiveSell, 8, '.', '')]);
-                $gridsCenter->save();
+                $newCenterPrice = $lowestActiveSell;
 
                 $this->log(
                     "📍 Center price atualizado: \$" . number_format($lowestActiveSell, 2) .
@@ -2741,14 +2735,33 @@ class setup_controller
                 );
             } elseif (!empty($activeBuyOrders)) {
                 $highestActiveBuy = max(array_column($activeBuyOrders, 'price'));
-                $gridsCenter = new grids_model();
-                $gridsCenter->set_filter(["idx = '{$gridId}'"]);
-                $gridsCenter->populate(['current_price' => number_format($highestActiveBuy, 8, '.', '')]);
-                $gridsCenter->save();
+                $newCenterPrice = $highestActiveBuy;
 
                 $this->log(
                     "📍 Center price atualizado: \$" . number_format($highestActiveBuy, 2) .
                         " (apenas BUYs ativas — maior BUY)",
+                    'INFO',
+                    'TRADE'
+                );
+            }
+
+            if ($newCenterPrice !== null && $newCenterPrice > 0) {
+                $newLowerPrice = $newCenterPrice * (1 - self::GRID_RANGE_PERCENT);
+                $newUpperPrice = $newCenterPrice * (1 + self::GRID_RANGE_PERCENT);
+
+                $gridsCenter = new grids_model();
+                $gridsCenter->set_filter(["idx = '{$gridId}'"]);
+                $gridsCenter->populate([
+                    'current_price' => number_format($newCenterPrice, 8, '.', ''),
+                    'lower_price' => number_format($newLowerPrice, 8, '.', ''),
+                    'upper_price' => number_format($newUpperPrice, 8, '.', ''),
+                ]);
+                $gridsCenter->save();
+
+                $this->log(
+                    "🧭 Range estrutural atualizado: center \$" . number_format($newCenterPrice, 2) .
+                        " | lower \$" . number_format($newLowerPrice, 2) .
+                        " | upper \$" . number_format($newUpperPrice, 2),
                     'INFO',
                     'TRADE'
                 );
