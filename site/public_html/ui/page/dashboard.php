@@ -298,13 +298,13 @@ $dashboardJson = json_encode([
                     <div class="d-flex align-items-start gap-2">
                         <div class="metric-icon icon-info"><i class="bi bi-arrows-expand"></i></div>
                         <div>
-                            <div class="metric-label">Range do Grid</div>
+                            <div class="metric-label">Range Estrutural</div>
                             <?php if ($firstGrid): ?>
                             <div class="metric-value" style="font-size: 0.85rem;">
                                 $<?php echo number_format((float)$firstGrid['lower_price'], 0, '.', ','); ?> — $<?php echo number_format((float)$firstGrid['upper_price'], 0, '.', ','); ?>
                             </div>
                             <div class="metric-sub">
-                                Espaçamento: <?php echo number_format((float)($firstGrid['grid_spacing_percent'] ?? 0) * 100, 1); ?>%
+                                Centro atual: $<?php echo number_format((float)$firstGrid['current_price'], 0, '.', ','); ?> · Espaçamento: <?php echo number_format((float)($firstGrid['grid_spacing_percent'] ?? 0) * 100, 1); ?>%
                             </div>
                             <?php else: ?>
                             <div class="metric-value">--</div>
