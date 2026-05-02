@@ -1405,6 +1405,7 @@ class setup_controller
             // ══════ ATUALIZAR TRACKING DE CAPITAL ══════
             if ($currentCapital > 0) {
                 $this->updateCapitalTracking((int)$gridId, $currentCapital);
+                $this->maybeRecordCapitalSnapshot((int)$gridId, $symbol);
             }
 
             // 0. SINCRONIZAR STATUS DAS ORDENS COM A BINANCE
@@ -3913,6 +3914,45 @@ class setup_controller
             $gridsModel->save();
         } catch (Exception $e) {
             $this->log("Erro ao atualizar tracking de capital: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    private function maybeRecordCapitalSnapshot(int $gridId, string $symbol): void
+    {
+        try {
+            $snapModel = new capital_snapshots_model();
+            $snapModel->set_filter(["grids_id = '{$gridId}'"]);
+            $snapModel->set_order(["created_at DESC"]);
+            $snapModel->set_paginate([1]);
+            $snapModel->load_data();
+
+            $lastSnapshot = $snapModel->data[0] ?? null;
+            $lastTime = $lastSnapshot ? strtotime($lastSnapshot['created_at']) : 0;
+            if (time() - $lastTime < 3600) {
+                return; // Último snapshot < 1h
+            }
+
+            $capitalSnapshot = $this->calculateCurrentCapitalSnapshot($symbol);
+            $totalCapital = (float)($capitalSnapshot['total'] ?? 0.0);
+            $usdcBalance = (float)($capitalSnapshot['usdc'] ?? 0.0);
+            $btcHolding = (float)($capitalSnapshot['btc'] ?? 0.0);
+            $btcPrice = $this->getCurrentPrice($symbol);
+
+            $gridData = $this->getGridById($gridId);
+            $accumulatedPnl = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
+
+            $newSnap = new capital_snapshots_model();
+            $newSnap->populate([
+                'grids_id' => $gridId,
+                'total_capital_usdc' => $totalCapital,
+                'usdc_balance' => $usdcBalance,
+                'btc_holding' => $btcHolding,
+                'btc_price' => $btcPrice,
+                'accumulated_spread_pnl' => $accumulatedPnl,
+            ]);
+            $newSnap->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao registrar capital snapshot: " . $e->getMessage(), 'WARNING', 'SYSTEM');
         }
     }
 

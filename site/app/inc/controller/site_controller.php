@@ -664,6 +664,200 @@ class site_controller
     }
 
     /**
+     * Endpoint JSON com métricas avançadas do grid (Sharpe, Sortino, drawdown, etc)
+     */
+    public function gridMetrics($info)
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        if (!auth_controller::check_login()) {
+            echo json_encode(['success' => false, 'message' => 'Não autenticado']);
+            return;
+        }
+
+        $gridId = (int)($_GET['grid_id'] ?? 0);
+        if ($gridId <= 0) {
+            echo json_encode(['success' => false, 'message' => 'grid_id inválido']);
+            return;
+        }
+
+        $cacheKey = "metrics:grid:{$gridId}";
+        $redis = RedisCache::getInstance();
+        $cached = $redis->get($cacheKey);
+        if ($cached !== false) {
+            echo $cached;
+            return;
+        }
+
+        // Buscar snapshots horários dos últimos 30 dias
+        $snapModel = new capital_snapshots_model();
+        $snapModel->set_filter([
+            "grids_id = '{$gridId}'",
+            "created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+        ]);
+        $snapModel->set_order(["created_at ASC"]);
+        $snapModel->load_data();
+        $snapshots = $snapModel->data;
+
+        $returns = [];
+        $maxDrawdown = 0.0;
+        $peak = 0.0;
+        $totalCapitalChange = 0.0;
+        $btcMtm = 0.0;
+
+        if (count($snapshots) > 1) {
+            $firstCap = (float)($snapshots[0]['total_capital_usdc'] ?? 0);
+            $lastCap = (float)($snapshots[count($snapshots) - 1]['total_capital_usdc'] ?? 0);
+            $totalCapitalChange = $firstCap > 0 ? ($lastCap - $firstCap) / $firstCap : 0;
+
+            for ($i = 1; $i < count($snapshots); $i++) {
+                $prev = (float)($snapshots[$i - 1]['total_capital_usdc'] ?? 0);
+                $curr = (float)($snapshots[$i]['total_capital_usdc'] ?? 0);
+                if ($prev > 0) {
+                    $ret = ($curr - $prev) / $prev;
+                    $returns[] = $ret;
+                    if ($curr > $peak) $peak = $curr;
+                    $dd = $peak > 0 ? ($peak - $curr) / $peak : 0;
+                    if ($dd > $maxDrawdown) $maxDrawdown = $dd;
+                }
+            }
+        }
+
+        $sharpe = 0.0;
+        $sortino = 0.0;
+        if (count($returns) > 1) {
+            $mean = array_sum($returns) / count($returns);
+            $variance = array_sum(array_map(fn($r) => pow($r - $mean, 2), $returns)) / count($returns);
+            $stdDev = sqrt($variance);
+            $annualFactor = sqrt(24 * 365);
+            $sharpe = $stdDev > 0 ? ($mean * $annualFactor) / ($stdDev * $annualFactor) : 0;
+
+            $downsideReturns = array_filter($returns, fn($r) => $r < 0);
+            $downsideVariance = count($downsideReturns) > 0 ? array_sum(array_map(fn($r) => pow($r, 2), $downsideReturns)) / count($downsideReturns) : 0;
+            $downsideDev = sqrt($downsideVariance);
+            $sortino = $downsideDev > 0 ? ($mean * $annualFactor) / ($downsideDev * $annualFactor) : 0;
+        }
+
+        // Win rate e profit factor usando grid_logs
+        $logsModel = new grid_logs_model();
+        $logsModel->set_filter(["grids_id = '{$gridId}'", "event_type = 'pair_closed'"]);
+        $logsModel->load_data();
+        $pairLogs = $logsModel->data;
+        $wins = 0;
+        $losses = 0;
+        $totalProfit = 0.0;
+        $totalLoss = 0.0;
+        foreach ($pairLogs as $log) {
+            $data = json_decode($log['data'] ?? '{}', true);
+            $profit = (float)($data['profit'] ?? 0);
+            if ($profit > 0) {
+                $wins++;
+                $totalProfit += $profit;
+            } else {
+                $losses++;
+                $totalLoss += abs($profit);
+            }
+        }
+        $totalTrades = $wins + $losses;
+        $winRate = $totalTrades > 0 ? ($wins / $totalTrades) * 100 : 0;
+        $profitFactor = $totalLoss > 0 ? $totalProfit / $totalLoss : ($totalProfit > 0 ? INF : 0);
+
+        // Maker ratio
+        $ordersModel = new orders_model();
+        $ordersModel->set_filter([
+            "grids_id = '{$gridId}'",
+            "status = 'FILLED'",
+            "is_maker IS NOT NULL"
+        ]);
+        $ordersModel->load_data();
+        $filledOrders = $ordersModel->data;
+        $makerCount = 0;
+        foreach ($filledOrders as $o) {
+            if ((int)($o['is_maker'] ?? 0) === 1) $makerCount++;
+        }
+        $makerRatio = count($filledOrders) > 0 ? ($makerCount / count($filledOrders)) * 100 : 0;
+
+        // Fills por dia (últimos 7 dias)
+        $ordersModel2 = new orders_model();
+        $ordersModel2->set_filter([
+            "grids_id = '{$gridId}'",
+            "status = 'FILLED'",
+            "order_created_at >= " . (round(microtime(true) * 1000) - 7 * 86400 * 1000)
+        ]);
+        $ordersModel2->load_data();
+        $fillsPerDay = count($ordersModel2->data) / 7.0;
+
+        // Spread PnL total
+        $spreadPnl = array_sum(array_column($snapshots, 'accumulated_spread_pnl'));
+
+        $result = [
+            'success' => true,
+            'grid_id' => $gridId,
+            'spread_pnl_total' => (float)($snapshots[count($snapshots) - 1]['accumulated_spread_pnl'] ?? 0),
+            'btc_mtm' => $btcMtm,
+            'total_capital_change' => $totalCapitalChange,
+            'sharpe_ratio' => $sharpe,
+            'sortino_ratio' => $sortino,
+            'max_drawdown' => $maxDrawdown,
+            'win_rate' => $winRate,
+            'profit_factor' => is_finite($profitFactor) ? $profitFactor : null,
+            'fills_per_day' => round($fillsPerDay, 2),
+            'maker_ratio' => $makerRatio,
+        ];
+
+        $json = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $redis->set($cacheKey, $json, 60);
+        echo $json;
+    }
+
+    /**
+     * Endpoint JSON com histórico de capital do grid (últimos 30 dias, agrupado por hora)
+     */
+    public function gridCapitalHistory($info)
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        if (!auth_controller::check_login()) {
+            echo json_encode(['success' => false, 'message' => 'Não autenticado']);
+            return;
+        }
+
+        $gridId = (int)($_GET['grid_id'] ?? 0);
+        if ($gridId <= 0) {
+            echo json_encode(['success' => false, 'message' => 'grid_id inválido']);
+            return;
+        }
+
+        $snapModel = new capital_snapshots_model();
+        $snapModel->set_filter([
+            "grids_id = '{$gridId}'",
+            "created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+        ]);
+        $snapModel->set_order(["created_at ASC"]);
+        $snapModel->load_data();
+
+        $grouped = [];
+        foreach ($snapModel->data as $row) {
+            $hour = date('Y-m-d H:00:00', strtotime($row['created_at']));
+            if (!isset($grouped[$hour]) || (float)$row['total_capital_usdc'] > $grouped[$hour]['total_capital_usdc']) {
+                $grouped[$hour] = [
+                    'hour' => $hour,
+                    'total_capital_usdc' => (float)$row['total_capital_usdc'],
+                    'usdc_balance' => (float)$row['usdc_balance'],
+                    'btc_holding' => (float)$row['btc_holding'],
+                    'btc_price' => (float)$row['btc_price'],
+                ];
+            }
+        }
+
+        echo json_encode([
+            'success' => true,
+            'grid_id' => $gridId,
+            'data' => array_values($grouped)
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
      * Verifica trades abertos e fecha automaticamente aqueles cujo TAKE_PROFIT foi executado
      * Suporta múltiplos TPs (TP1 e TP2)
      * 

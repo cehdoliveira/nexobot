@@ -42,6 +42,13 @@ class config_controller
 
         $saved = BinanceConfig::save($mode, $devKey, $devSecret, $prodKey, $prodSecret);
 
+        // Fee configuration via AppSettings
+        if ($saved) {
+            AppSettings::set('binance', 'bnb_burn', ($info['post']['bnb_burn'] ?? '0') === '1' ? '1' : '0');
+            AppSettings::set('binance', 'fee_maker', trim($info['post']['fee_maker'] ?? '0.1000'));
+            AppSettings::set('binance', 'fee_taker', trim($info['post']['fee_taker'] ?? '0.1000'));
+        }
+
         $_SESSION['config_status'] = [
             'success' => $saved,
             'mode' => $mode,

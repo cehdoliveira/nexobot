@@ -315,6 +315,65 @@ $dashboardJson = json_encode([
             </div>
         </section>
 
+        <!-- === SECTION B.5: Métricas Avançadas (via grid-metrics endpoint) === -->
+        <section aria-label="Métricas Avançadas" id="advanced-metrics-section" style="margin-top: 1rem;">
+            <div class="metrics-grid">
+                <div class="metric-card metric-success" id="metric-spread-pnl">
+                    <div class="d-flex align-items-start gap-2">
+                        <div class="metric-icon icon-success"><i class="bi bi-graph-up-arrow"></i></div>
+                        <div>
+                            <div class="metric-label">Spread P&L</div>
+                            <div class="metric-value">--</div>
+                            <div class="metric-sub">Lucro real do grid (após fees)</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="metric-card metric-primary" id="metric-btc-mtm">
+                    <div class="d-flex align-items-start gap-2">
+                        <div class="metric-icon icon-primary"><i class="bi bi-currency-bitcoin"></i></div>
+                        <div>
+                            <div class="metric-label">BTC Mark-to-Market</div>
+                            <div class="metric-value">--</div>
+                            <div class="metric-sub">Variação do BTC acumulado</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="metric-card metric-info" id="metric-capital-change">
+                    <div class="d-flex align-items-start gap-2">
+                        <div class="metric-icon icon-info"><i class="bi bi-bank"></i></div>
+                        <div>
+                            <div class="metric-label">Capital Total</div>
+                            <div class="metric-value">--</div>
+                            <div class="metric-sub">Variação vs capital inicial</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Collapsible metrics table -->
+            <div class="dash-card mt-3" style="margin-top: 1rem;">
+                <div class="card-header-custom" data-bs-toggle="collapse" data-bs-target="#metricsDetailTable" style="cursor:pointer;">
+                    <h6><i class="bi bi-table"></i> Métricas Detalhadas</h6>
+                    <i class="bi bi-chevron-down"></i>
+                </div>
+                <div class="collapse" id="metricsDetailTable">
+                    <div class="card-body-custom">
+                        <table class="table table-sm table-dark table-striped mb-0">
+                            <tbody>
+                                <tr><td>Sharpe Ratio</td><td class="font-mono" id="val-sharpe">--</td><td><small class="text-muted">Retorno ajustado ao risco</small></td></tr>
+                                <tr><td>Sortino Ratio</td><td class="font-mono" id="val-sortino">--</td><td><small class="text-muted">Retorno ajustado ao risco de queda</small></td></tr>
+                                <tr><td>Max Drawdown %</td><td class="font-mono" id="val-drawdown">--</td><td><small class="text-muted">Maior queda do pico</small></td></tr>
+                                <tr><td>Win Rate %</td><td class="font-mono" id="val-winrate">--</td><td><small class="text-muted">% de trades lucrativos</small></td></tr>
+                                <tr><td>Profit Factor</td><td class="font-mono" id="val-pf">--</td><td><small class="text-muted">Lucro total / Prejuízo total</small></td></tr>
+                                <tr><td>Fills/dia</td><td class="font-mono" id="val-fills">--</td><td><small class="text-muted">Execuções médias por dia</small></td></tr>
+                                <tr><td>Maker Ratio %</td><td class="font-mono" id="val-maker">--</td><td><small class="text-muted">% de ordens maker (menor fee)</small></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- === SECTION C: Performance Metrics + Protection Status === -->
         <section aria-label="Performance e Proteções">
             <div class="section-grid">
@@ -702,6 +761,7 @@ $dashboardJson = json_encode([
                                         <th>Quantidade</th>
                                         <th>Valor</th>
                                         <th>Status</th>
+                                        <th class="d-none d-lg-table-cell">Execução</th>
                                         <th class="d-none d-lg-table-cell">Lucro</th>
                                         <th class="d-none d-xl-table-cell">Data</th>
                                     </tr>
@@ -718,6 +778,7 @@ $dashboardJson = json_encode([
                                     $oSliding = (int)($order['is_sliding_level'] ?? 0) === 1;
                                     $oProfit  = (float)($order['profit_usdc'] ?? 0);
                                     $oLevel   = $order['grid_level'] ?? '--';
+                                    $isMaker  = $od['is_maker'] ?? null;
                                     ?>
                                     <tr <?php echo !$isOpen ? 'style="opacity: 0.6;"' : ''; ?>>
                                         <td><span class="badge bg-info" style="font-size: 0.7rem;"><?php echo htmlspecialchars($od['symbol'] ?? 'N/A'); ?></span></td>
@@ -740,6 +801,15 @@ $dashboardJson = json_encode([
                                                     'PARTIALLY_FILLED' => 'Parcial', default => $oStatus
                                                 }; ?>
                                             </span>
+                                        </td>
+                                        <td class="d-none d-lg-table-cell">
+                                            <?php if ($isMaker === null): ?>
+                                                <small class="text-dim">—</small>
+                                            <?php elseif ((int)$isMaker === 1): ?>
+                                                <span class="badge bg-success" style="font-size:0.7rem;">MAKER</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-warning text-dark" style="font-size:0.7rem;">TAKER</span>
+                                            <?php endif; ?>
                                         </td>
                                         <td class="d-none d-lg-table-cell">
                                             <?php if ($oProfit != 0): ?>
@@ -924,5 +994,90 @@ $dashboardJson = json_encode([
         </button>
         <?php endif; ?>
     </div>
+
+    <!-- Chart.js + métricas avançadas -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script>
+    (function() {
+        const gridId = <?php echo json_encode((int)($firstGrid['idx'] ?? 0)); ?>;
+        if (!gridId) return;
+
+        async function loadMetrics() {
+            try {
+                const resp = await fetch('/grid-metrics?grid_id=' + gridId);
+                const data = await resp.json();
+                if (!data.success) return;
+
+                const fmt = n => typeof n === 'number' ? n.toFixed(2) : '--';
+                const fmtPct = n => typeof n === 'number' ? (n * 100).toFixed(2) + '%' : '--';
+
+                document.querySelector('#metric-spread-pnl .metric-value').textContent = '$' + fmt(data.spread_pnl_total);
+                document.querySelector('#metric-btc-mtm .metric-value').textContent = fmtPct(data.btc_mtm);
+                document.querySelector('#metric-capital-change .metric-value').textContent = fmtPct(data.total_capital_change);
+
+                document.getElementById('val-sharpe').textContent = fmt(data.sharpe_ratio);
+                document.getElementById('val-sortino').textContent = fmt(data.sortino_ratio);
+                document.getElementById('val-drawdown').textContent = fmtPct(data.max_drawdown);
+                document.getElementById('val-winrate').textContent = fmtPct(data.win_rate / 100);
+                document.getElementById('val-pf').textContent = data.profit_factor !== null ? fmt(data.profit_factor) : '--';
+                document.getElementById('val-fills').textContent = fmt(data.fills_per_day);
+                document.getElementById('val-maker').textContent = fmtPct(data.maker_ratio / 100);
+            } catch (e) {
+                console.warn('Erro ao carregar métricas:', e);
+            }
+        }
+
+        async function loadCapitalChart() {
+            try {
+                const resp = await fetch('/grid-capital-history?grid_id=' + gridId);
+                const data = await resp.json();
+                if (!data.success || !data.data.length) return;
+
+                const ctx = document.getElementById('capitalChart');
+                if (!ctx) return;
+
+                const labels = data.data.map(d => d.hour.slice(5, 16));
+                const total = data.data.map(d => d.total_capital_usdc);
+                const usdc = data.data.map(d => d.usdc_balance);
+                const btcVal = data.data.map(d => d.btc_holding * d.btc_price);
+
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [
+                            { label: 'Capital Total', data: total, borderColor: '#0dcaf0', backgroundColor: 'rgba(13,202,240,0.1)', tension: 0.3, fill: true },
+                            { label: 'USDC', data: usdc, borderColor: '#20c997', borderDash: [5,5], tension: 0.3, fill: false },
+                            { label: 'BTC Value', data: btcVal, borderColor: '#ffc107', borderDash: [2,2], tension: 0.3, fill: false }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { position: 'top' } },
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+                        },
+                        interaction: { mode: 'index', intersect: false }
+                    }
+                });
+            } catch (e) {
+                console.warn('Erro ao carregar gráfico:', e);
+            }
+        }
+
+        loadMetrics();
+        setInterval(loadMetrics, 60000);
+
+        const metricsSection = document.getElementById('advanced-metrics-section');
+        if (metricsSection) {
+            const chartDiv = document.createElement('div');
+            chartDiv.className = 'dash-card mt-3';
+            chartDiv.innerHTML = '<div class="card-header-custom"><h6><i class="bi bi-graph-up"></i> Histórico de Capital</h6></div><div class="card-body-custom"><canvas id="capitalChart" height="120"></canvas></div>';
+            metricsSection.appendChild(chartDiv);
+            loadCapitalChart();
+        }
+    })();
+    </script>
 
 </div><!-- /dashboard-wrapper -->

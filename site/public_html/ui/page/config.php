@@ -122,6 +122,39 @@
                                 </div>
                             </div>
 
+                            <hr style="border-color: var(--dash-border);">
+
+                            <!-- Fee Configuration -->
+                            <div class="mb-4">
+                                <h6 class="d-flex align-items-center gap-2 mb-3" style="color: var(--dash-text); font-size: 0.85rem;">
+                                    <i class="bi bi-percent"></i> Configuração de Fees
+                                </h6>
+
+                                <div class="mb-3">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="bnbBurn" name="bnb_burn"
+                                            <?php echo ($stored['bnb_burn'] ?? '0') === '1' ? 'checked' : ''; ?>>
+                                        <label class="form-check-label" for="bnbBurn" style="font-size: 0.8rem; color: var(--dash-text);">
+                                            BNB Burn ativo (desconto de 25% nas fees)
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="row g-2">
+                                    <div class="col-6">
+                                        <label for="feeMaker" class="nexo-form-label">Fee Maker (%)</label>
+                                        <input type="number" step="0.0001" class="nexo-form-input font-mono" id="feeMaker" name="fee_maker"
+                                            placeholder="0.1000" value="<?php echo htmlspecialchars($stored['fee_maker'] ?? '0.1000'); ?>">
+                                    </div>
+                                    <div class="col-6">
+                                        <label for="feeTaker" class="nexo-form-label">Fee Taker (%)</label>
+                                        <input type="number" step="0.0001" class="nexo-form-input font-mono" id="feeTaker" name="fee_taker"
+                                            placeholder="0.1000" value="<?php echo htmlspecialchars($stored['fee_taker'] ?? '0.1000'); ?>">
+                                    </div>
+                                </div>
+                                <small style="color: var(--dash-text-muted); font-size: 0.7rem;">Fees usadas no cálculo de P&L. Padrão Binance Spot: 0.10% maker / 0.10% taker.</small>
+                            </div>
+
                             <button type="submit" class="nexo-btn-primary d-flex align-items-center gap-2">
                                 <i class="bi bi-save"></i> Salvar configurações
                             </button>
