@@ -208,6 +208,14 @@ class setup_controller
         if (!empty($params)) {
             $message .= " | Parâmetros: " . json_encode($params);
         }
+
+        // Rate limit detection: 429 / 418 / Too many requests
+        if (str_contains($error, '429') || str_contains($error, '418') || str_contains($error, 'Too many requests')) {
+            $retryAfter = 60; // default se header não disponível
+            BinanceRateLimitGuard::recordRateLimit($retryAfter);
+            $this->log("🚫 Rate limit Binance — backoff {$retryAfter}s ativado", 'ERROR', 'SYSTEM');
+        }
+
         $this->log($message, 'ERROR', 'API');
     }
 
@@ -363,11 +371,29 @@ class setup_controller
                 return $this->exchangeInfoCache[$symbol];
             }
 
-            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
-            $response = file_get_contents($url);
+            // Cache Redis por 600s
+            $cacheKey = 'binance:exchangeInfo:' . $symbol;
+            $redis = RedisCache::getInstance();
+            $cached = $redis->get($cacheKey);
+            if ($cached !== false) {
+                $decoded = json_decode($cached, true);
+                $this->exchangeInfoCache[$symbol] = $decoded;
+                return $decoded;
+            }
 
-            if ($response === false) {
-                throw new Exception("Erro ao acessar a API da Binance (exchangeInfo).");
+            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 5,
+                CURLOPT_CONNECTTIMEOUT => 3,
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (!$response || $httpCode !== 200) {
+                throw new \Exception("exchangeInfo HTTP $httpCode");
             }
 
             $exchangeData = json_decode($response, true);
@@ -375,6 +401,7 @@ class setup_controller
                 throw new Exception("Símbolo {$symbol} não encontrado na API da Binance.");
             }
 
+            $redis->set($cacheKey, $response, 600);
             $this->exchangeInfoCache[$symbol] = $exchangeData['symbols'][0];
             return $this->exchangeInfoCache[$symbol];
         } catch (Exception $e) {
@@ -396,10 +423,21 @@ class setup_controller
             $minNotional = (float)$filters['NOTIONAL']['minNotional'];
         }
 
+        $pps = null;
+        if (isset($filters['PERCENT_PRICE_BY_SIDE'])) {
+            $pps = [
+                'bidMultiplierUp'   => (float)$filters['PERCENT_PRICE_BY_SIDE']['bidMultiplierUp'],
+                'bidMultiplierDown' => (float)$filters['PERCENT_PRICE_BY_SIDE']['bidMultiplierDown'],
+                'askMultiplierUp'   => (float)$filters['PERCENT_PRICE_BY_SIDE']['askMultiplierUp'],
+                'askMultiplierDown' => (float)$filters['PERCENT_PRICE_BY_SIDE']['askMultiplierDown'],
+            ];
+        }
+
         return [
             $filters['LOT_SIZE']['stepSize'],
             $filters['PRICE_FILTER']['tickSize'],
-            $minNotional
+            $minNotional,
+            $pps
         ];
     }
 
@@ -472,6 +510,12 @@ class setup_controller
             // Log de início com separador visual
             $this->log("════════════════════════════════════════════════════════════", 'INFO', 'SYSTEM');
             $this->log("=== Grid Trading Bot INICIADO | Exec: {$this->executionId} | Host: " . gethostname() . " ===", 'INFO', 'SYSTEM');
+
+            // Rate limit guard: se Binance está em backoff, pular ciclo inteiro
+            if (BinanceRateLimitGuard::isInBackoff()) {
+                $this->log("⏸️ Backoff Binance ativo — ciclo pulado", 'WARNING', 'SYSTEM');
+                return;
+            }
 
             // Rotação de logs antigos
             $this->rotateOldLogs();
@@ -1007,7 +1051,7 @@ class setup_controller
     {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
             $stepSizeFloat  = (float)$stepSize;
             $adjustedQty    = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
@@ -1929,7 +1973,7 @@ class setup_controller
 
                 // 3. Validar se atinge quantidade mínima
                 $symbolData = $this->getExchangeInfo($symbol);
-                list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
                 $minQty = (float)($symbolData['filters'][array_search('LOT_SIZE', array_column($symbolData['filters'], 'filterType'))]['minQty'] ?? 0.00001);
 
                 if ($btcPerSell < $minQty) {
@@ -2463,7 +2507,7 @@ class setup_controller
             // ── Preparar dados comuns para slides ──────────────────────────────
             $gridSpacing = $this->getGridSpacing($symbol);
             $symbolData  = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
             $filters = array_column($symbolData['filters'], null, 'filterType');
             $minQty  = isset($filters['LOT_SIZE']['minQty']) ? (float)$filters['LOT_SIZE']['minQty'] : 0.00001;
 
@@ -2842,10 +2886,21 @@ class setup_controller
 
             // 1. Obter filtros do símbolo
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
             // 2. Ajustar preço ao tickSize
             $adjustedPrice = $this->adjustPriceToTickSize($price, $tickSize);
+
+            // 2.5 Validar PERCENT_PRICE_BY_SIDE
+            if ($pps !== null && $_cp > 0) {
+                $minPrice = $_cp * $pps['bidMultiplierDown'];
+                $maxPrice = $_cp * $pps['bidMultiplierUp'];
+                if ((float)$adjustedPrice < $minPrice || (float)$adjustedPrice > $maxPrice) {
+                    $oldPrice = $adjustedPrice;
+                    $adjustedPrice = number_format(max($minPrice, min((float)$adjustedPrice, $maxPrice)), $this->getDecimalPlaces($tickSize), '.', '');
+                    $this->log("⚠️ BUY preço ajustado por PPS: \${$oldPrice} → \${$adjustedPrice} (range: \${$minPrice}-\${$maxPrice})", 'WARNING', 'TRADE');
+                }
+            }
 
             // 3. Calcular quantidade
             $quantity = $this->calculateAdjustedQuantity($capitalUsdc, (float)$adjustedPrice, $stepSize);
@@ -2938,10 +2993,22 @@ class setup_controller
 
             // 1. Obter filtros do símbolo
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
             // 2. Ajustar preço ao tickSize
             $adjustedPrice = $this->adjustPriceToTickSize($price, $tickSize);
+
+            // 2.5 Validar PERCENT_PRICE_BY_SIDE
+            $_cp2 = (float)($_gd['current_price'] ?? 0);
+            if ($pps !== null && $_cp2 > 0) {
+                $minPrice = $_cp2 * $pps['askMultiplierDown'];
+                $maxPrice = $_cp2 * $pps['askMultiplierUp'];
+                if ((float)$adjustedPrice < $minPrice || (float)$adjustedPrice > $maxPrice) {
+                    $oldPrice = $adjustedPrice;
+                    $adjustedPrice = number_format(max($minPrice, min((float)$adjustedPrice, $maxPrice)), $this->getDecimalPlaces($tickSize), '.', '');
+                    $this->log("⚠️ SELL preço ajustado por PPS: \${$oldPrice} → \${$adjustedPrice} (range: \${$minPrice}-\${$maxPrice})", 'WARNING', 'TRADE');
+                }
+            }
 
             // 3. Ajustar quantidade ao stepSize
             $stepSizeFloat = (float)$stepSize;
@@ -3020,7 +3087,7 @@ class setup_controller
     {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
             $stepSizeFloat = (float)$stepSize;
             $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
 
