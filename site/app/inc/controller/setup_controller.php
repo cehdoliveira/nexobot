@@ -305,24 +305,28 @@ class setup_controller
      * @param array $gridData Dados atuais do grid
      * @return float Capital ajustado com reinvestimento de lucros
      */
+    private const REINVESTMENT_THRESHOLD = 10.0;
+
     private function getCapitalForNewBuyOrder(int $gridId, array $gridData): float
     {
         try {
             $baseCapital = (float)$gridData['capital_per_level'];
             $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
 
-            // Distribui o lucro acumulado entre os 6 níveis do grid
-            $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
-            $capitalWithReinvestment = $baseCapital + $profitReinvestmentPerOrder;
-
-            if ($profitReinvestmentPerOrder > 0) {
+            // Reinvestimento em batch: só reinveste quando acumula >= $10
+            $extraCapital = 0.0;
+            if ($accumulatedProfit >= self::REINVESTMENT_THRESHOLD) {
+                $extraCapital = $accumulatedProfit;
+                $this->resetAccumulatedProfit($gridId);
                 $this->log(
-                    "💰 Capital reinvestido para BUY: \$" . number_format($profitReinvestmentPerOrder, 2) .
-                        " (lucro acumulado: \$" . number_format($accumulatedProfit, 2) . ")",
+                    "💰 Reinvestimento batch: \$" . number_format($extraCapital, 2) .
+                        " adicionado ao capital (threshold: " . self::REINVESTMENT_THRESHOLD . ")",
                     'INFO',
                     'TRADE'
                 );
             }
+
+            $capitalWithReinvestment = $baseCapital + $extraCapital;
 
             // PRIORIDADE 1: Verificar se USDC livre comporta o capital base
             $availableUsdc = $this->getAvailableUsdcBalance(true);
@@ -1406,6 +1410,20 @@ class setup_controller
             // 0. SINCRONIZAR STATUS DAS ORDENS COM A BINANCE
             $this->syncOrdersWithBinance($gridId);
 
+            // 0.5 RECONCILIAÇÃO PERIÓDICA (~a cada 10 min com cron 15s)
+            try {
+                $redis = RedisCache::getInstance();
+                $reconcileKey = "nexobot:reconcile_counter:{$gridId}";
+                $counter = (int)$redis->get($reconcileKey);
+                $counter++;
+                $redis->set($reconcileKey, $counter, 3600);
+                if ($counter % 40 === 0) {
+                    $this->reconcileWithBinance((int)$gridId, (string)$symbol);
+                }
+            } catch (Exception $reconcileEx) {
+                $this->log("Erro no contador de reconciliação: " . $reconcileEx->getMessage(), 'WARNING', 'SYSTEM');
+            }
+
             // 1. BUSCAR ORDENS EXECUTADAS MAS NÃO PROCESSADAS
             $executedOrders = $this->getExecutedUnprocessedOrders($gridId);
 
@@ -1430,6 +1448,83 @@ class setup_controller
         }
     }
 
+
+    /**
+     * Reconcilia ordens do banco com a Binance periodicamente.
+     * Recupera órfãos da Binance e marca como CANCELED ordens que sumiram.
+     */
+    private function reconcileWithBinance(int $gridId, string $symbol): void
+    {
+        try {
+            // 1. Ordens abertas na Binance
+            $openOrdersResp = $this->client->getOpenOrders($symbol, self::BINANCE_RECV_WINDOW);
+            $openOrdersData = $openOrdersResp->getData();
+            $binanceOrders = [];
+            if (is_array($openOrdersData)) {
+                foreach ($openOrdersData as $o) {
+                    $binanceOrders[$o['clientOrderId'] ?? $o['orderId']] = $o;
+                }
+            }
+
+            // 2. Ordens pendentes no banco
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'",
+                "orders_id IN (SELECT idx FROM orders WHERE status IN ('NEW', 'PARTIALLY_FILLED'))"
+            ]);
+            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            $dbOrders = [];
+            foreach ($gridsOrdersModel->data as $go) {
+                $ord = $go['orders_attach'][0] ?? null;
+                if ($ord) {
+                    $dbOrders[$ord['binance_client_order_id'] ?? $ord['binance_order_id']] = $ord;
+                }
+            }
+
+            // 3. Binance-only (órfãos)
+            foreach ($binanceOrders as $clientId => $bo) {
+                if (str_starts_with((string)$clientId, "nx-{$gridId}-") && !isset($dbOrders[$clientId])) {
+                    // Inserir como órfão recuperado
+                    $orderParams = [
+                        'grids_id' => $gridId,
+                        'binance_order_id' => $bo['orderId'],
+                        'binance_client_order_id' => $clientId,
+                        'symbol' => $symbol,
+                        'side' => $bo['side'],
+                        'type' => $bo['type'],
+                        'price' => $bo['price'],
+                        'quantity' => $bo['origQty'],
+                        'executed_qty' => $bo['executedQty'],
+                        'status' => $bo['status'],
+                        'recovered_orphan' => 1,
+                        'order_created_at' => round(microtime(true) * 1000)
+                    ];
+                    $this->saveGridOrder($orderParams);
+                    $this->log("🔄 Órfão recuperado: {$clientId} @ {$symbol} (status: {$bo['status']})", 'WARNING', 'TRADE');
+                }
+            }
+
+            // 4. Banco-only (sumidas da Binance)
+            foreach ($dbOrders as $clientId => $dbOrder) {
+                $isNew = ($dbOrder['status'] ?? '') === 'NEW';
+                $createdAt = (int)($dbOrder['order_created_at'] ?? 0);
+                $minutesOld = (round(microtime(true) * 1000) - $createdAt) / 60000;
+
+                if ($isNew && $minutesOld > 5 && !isset($binanceOrders[$clientId])) {
+                    $ordersModel = new orders_model();
+                    $ordersModel->set_filter(["idx = '{$dbOrder['idx']}'"]);
+                    $ordersModel->populate(['status' => 'CANCELED']);
+                    $ordersModel->save();
+                    $this->log("🗑️ Ordem sumida da Binance marcada CANCELED: {$clientId}", 'WARNING', 'TRADE');
+                }
+            }
+        } catch (Exception $e) {
+            $this->log("Erro na reconciliação: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
 
     /**
      * Processa a execução de uma ordem de compra
@@ -1958,8 +2053,12 @@ class setup_controller
                 $gridData = $this->getGridById($gridId);
                 $baseCapitalPerLevel = (float)($gridData['capital_per_level'] ?? 0.0);
                 $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
-                $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
-                $capitalCapPerBuy = $baseCapitalPerLevel + $profitReinvestmentPerOrder;
+                $extraCapital = 0.0;
+                if ($accumulatedProfit >= self::REINVESTMENT_THRESHOLD) {
+                    $extraCapital = $accumulatedProfit;
+                    $this->resetAccumulatedProfit($gridId);
+                }
+                $capitalCapPerBuy = $baseCapitalPerLevel + $extraCapital;
                 $capitalPerBuy = min($capitalPerBuyRaw, $capitalCapPerBuy);
 
                 $this->log(
@@ -3194,18 +3293,18 @@ class setup_controller
     {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
-                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
             $stepSizeFloat = (float)$stepSize;
             $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+            $decimalPlacesPrice = $this->getDecimalPlaces($tickSize);
 
-            // Obter minQty do LOT_SIZE diretamente dos filtros do símbolo
             $filters = array_column($symbolData['filters'], null, 'filterType');
             $minQty = isset($filters['LOT_SIZE']['minQty']) ? (float)$filters['LOT_SIZE']['minQty'] : 0.00001;
 
-            $safeQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
-            if ($safeQty <= 0 || $safeQty < $minQty) {
+            $remainingQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
+            if ($remainingQty <= 0 || $remainingQty < $minQty) {
                 $this->log(
-                    "Quantidade insuficiente para venda a mercado: " . number_format($safeQty, 8) .
+                    "Quantidade insuficiente para venda a mercado: " . number_format($remainingQty, 8) .
                         " (mínimo LOT_SIZE: " . number_format($minQty, 8) . ")",
                     'WARNING',
                     'TRADE'
@@ -3213,31 +3312,81 @@ class setup_controller
                 return;
             }
 
-            $sellReq = new NewOrderRequest();
-            $sellReq->setSymbol($symbol);
-            $sellReq->setSide(Side::SELL);
-            $sellReq->setType(OrderType::MARKET);
-            $sellReq->setQuantity((float)number_format($safeQty, $decimalPlacesQty, '.', ''));
+            $tickSizeFloat = (float)$tickSize;
+            $currentPrice = $this->getCurrentPrice($symbol);
 
-            $resp = $this->client->newOrder($this->applyRecvWindowToOrderRequest($sellReq));
-            $data = $resp->getData();
+            // Tentativa 1: LIMIT IOC agressiva (bid - 1 tick)
+            // Tentativa 2: LIMIT IOC agressiva (bid - 5 ticks)
+            // Tentativa 3: MARKET com quantidade restante
+            $attempts = [
+                ['type' => 'LIMIT_IOC', 'offset' => 1 * $tickSizeFloat, 'label' => 'LIMIT IOC -1 tick'],
+                ['type' => 'LIMIT_IOC', 'offset' => 5 * $tickSizeFloat, 'label' => 'LIMIT IOC -5 ticks'],
+                ['type' => 'MARKET', 'offset' => 0, 'label' => 'MARKET'],
+            ];
 
-            $orderId = $this->extractBinanceValue($data, 'getOrderId', 'orderId', null);
-            $status  = $this->extractBinanceValue($data, 'getStatus', 'status', 'UNKNOWN');
+            foreach ($attempts as $attempt) {
+                if ($remainingQty < $minQty || $remainingQty <= 0) {
+                    break;
+                }
 
-            $this->log("Venda de emergência executada: $symbol (Qty: $safeQty, Status: $status)", 'SUCCESS', 'TRADE');
+                $sellReq = new NewOrderRequest();
+                $sellReq->setSymbol($symbol);
+                $sellReq->setSide(Side::SELL);
+                $sellReq->setQuantity((float)number_format($remainingQty, $decimalPlacesQty, '.', ''));
 
-            $this->saveGridLog(
-                $gridId,
-                'emergency_sell',
-                'success',
-                "Venda a mercado durante rebalanceamento",
-                [
-                    'quantity' => $safeQty,
-                    'order_id' => $orderId,
-                    'status' => $status
-                ]
-            );
+                if ($attempt['type'] === 'LIMIT_IOC') {
+                    $limitPrice = max($tickSizeFloat, $currentPrice - $attempt['offset']);
+                    $sellReq->setType(OrderType::LIMIT);
+                    $sellReq->setPrice((float)number_format($limitPrice, $decimalPlacesPrice, '.', ''));
+                    $sellReq->setTimeInForce('IOC');
+                } else {
+                    $sellReq->setType(OrderType::MARKET);
+                }
+
+                try {
+                    $resp = $this->client->newOrder($this->applyRecvWindowToOrderRequest($sellReq));
+                    $data = $resp->getData();
+
+                    $orderId = $this->extractBinanceValue($data, 'getOrderId', 'orderId', null);
+                    $status  = $this->extractBinanceValue($data, 'getStatus', 'status', 'UNKNOWN');
+                    $executedQty = (float)$this->extractBinanceValue($data, 'getExecutedQty', 'executedQty', 0);
+
+                    $this->log("Venda de emergência [{$attempt['label']}]: $symbol (Qty: {$remainingQty}, Executed: {$executedQty}, Status: $status)", 'SUCCESS', 'TRADE');
+
+                    $remainingQty -= $executedQty;
+
+                    if ($remainingQty < $minQty) {
+                        $this->saveGridLog(
+                            $gridId,
+                            'emergency_sell',
+                            'success',
+                            "Venda escalonada concluída",
+                            [
+                                'quantity_total' => $quantity,
+                                'quantity_sold' => $quantity - $remainingQty,
+                                'quantity_remaining' => $remainingQty,
+                                'order_id' => $orderId,
+                                'status' => $status
+                            ]
+                        );
+                        return;
+                    }
+
+                    // Aguardar 10s antes da próxima tentativa
+                    if ($attempt['type'] !== 'MARKET') {
+                        sleep(10);
+                    }
+                } catch (Exception $attemptEx) {
+                    $this->log("Erro na tentativa {$attempt['label']}: " . $attemptEx->getMessage(), 'WARNING', 'TRADE');
+                    if ($attempt['type'] !== 'MARKET') {
+                        sleep(10);
+                    }
+                }
+            }
+
+            if ($remainingQty > 0) {
+                $this->log("⚠️ Venda escalonada incompleta: " . number_format($remainingQty, 8) . " $symbol não vendido", 'WARNING', 'TRADE');
+            }
         } catch (Exception $e) {
             $this->log("Erro ao executar venda a mercado: " . $e->getMessage(), 'ERROR', 'TRADE');
             $this->saveGridLog(
@@ -3358,30 +3507,72 @@ class setup_controller
             );
 
             if ($drawdown >= self::MAX_DRAWDOWN_PERCENT) {
-                $lossPercent = number_format($drawdown * 100, 2);
-                $this->log(
-                    "🚨🚨🚨 STOP-LOSS ACIONADO! Grid #$gridId | Perda: {$lossPercent}% " .
-                        "(>\$" . number_format(self::MAX_DRAWDOWN_PERCENT * 100, 0) . "%) | " .
-                        "Inicial: \$" . number_format($initialCapital, 2) . " → Atual: \$" . number_format($currentCapital, 2),
-                    'ERROR',
-                    'SYSTEM'
-                );
+                if (empty($gridData['pending_shutdown_at'])) {
+                    // Primeiro disparo — armar o timer
+                    $this->setPendingShutdown($gridId, 'stop_loss');
+                    $this->log("⚠️ Drawdown {$drawdown}% — circuit breaker armado (aguardando 10min)", 'WARNING', 'RISK');
+                    return false;
+                }
+                $minutesWaiting = (time() - strtotime($gridData['pending_shutdown_at'])) / 60;
+                if ($minutesWaiting < 10) {
+                    $this->log("⏳ Circuit breaker aguardando ({$minutesWaiting}min/10min)", 'INFO', 'RISK');
+                    return false;
+                }
+                if ($drawdown >= (self::MAX_DRAWDOWN_PERCENT - 0.02)) {
+                    $this->log("🛑 Circuit breaker confirmado — executando shutdown", 'ERROR', 'RISK');
+                    $lossPercent = number_format($drawdown * 100, 2);
+                    $this->log(
+                        "🚨🚨🚨 STOP-LOSS ACIONADO! Grid #$gridId | Perda: {$lossPercent}% " .
+                            "(>\$" . number_format(self::MAX_DRAWDOWN_PERCENT * 100, 0) . "%) | " .
+                            "Inicial: \$" . number_format($initialCapital, 2) . " → Atual: \$" . number_format($currentCapital, 2),
+                        'ERROR',
+                        'SYSTEM'
+                    );
 
-                $this->emergencyShutdown($gridId, $symbol, 'stop_loss', [
-                    'initial_capital' => $initialCapital,
-                    'current_capital' => $currentCapital,
-                    'drawdown_percent' => $drawdown,
-                    'max_drawdown_allowed' => self::MAX_DRAWDOWN_PERCENT
-                ]);
+                    $this->emergencyShutdown($gridId, $symbol, 'stop_loss', [
+                        'initial_capital' => $initialCapital,
+                        'current_capital' => $currentCapital,
+                        'drawdown_percent' => $drawdown,
+                        'max_drawdown_allowed' => self::MAX_DRAWDOWN_PERCENT
+                    ]);
 
-                return true;
+                    return true;
+                }
+                // Recuperou — desarmar
+                $this->clearPendingShutdown($gridId);
+                $this->log("✅ Drawdown recuperou — circuit breaker desarmado", 'INFO', 'RISK');
+                return false;
             }
-
+            if (!empty($gridData['pending_shutdown_at'])) {
+                $this->clearPendingShutdown($gridId);
+            }
             return false;
         } catch (Exception $e) {
             $this->log("Erro no checkStopLoss: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return false; // Em caso de erro, não acionar (conservador)
         }
+    }
+
+    private function setPendingShutdown(int $gridId, string $reason): void
+    {
+        $gridsModel = new grids_model();
+        $gridsModel->set_filter(["idx = '{$gridId}'"]);
+        $gridsModel->populate([
+            'pending_shutdown_at' => date('Y-m-d H:i:s'),
+            'pending_shutdown_reason' => $reason
+        ]);
+        $gridsModel->save();
+    }
+
+    private function clearPendingShutdown(int $gridId): void
+    {
+        $gridsModel = new grids_model();
+        $gridsModel->set_filter(["idx = '{$gridId}'"]);
+        $gridsModel->populate([
+            'pending_shutdown_at' => null,
+            'pending_shutdown_reason' => null
+        ]);
+        $gridsModel->save();
     }
 
     /**
@@ -3854,65 +4045,25 @@ class setup_controller
     private function acquireGridLock(int $gridId): bool
     {
         try {
-            $gridsModel = new grids_model();
-            $gridsModel->set_filter(["idx = '{$gridId}'"]);
-            $gridsModel->load_data();
+            $pdo = (new local_pdo())->getPdo();
+            $stmt = $pdo->prepare("
+                UPDATE grids
+                SET    is_processing   = 'yes',
+                       last_monitor_at = NOW()
+                WHERE  idx = :id
+                  AND  (is_processing = 'no'
+                        OR last_monitor_at < (NOW() - INTERVAL :timeout MINUTE))
+            ");
+            $stmt->execute([':id' => $gridId, ':timeout' => self::LOCK_TIMEOUT_MINUTES]);
+            $acquired = $stmt->rowCount() === 1;
 
-            if (empty($gridsModel->data)) {
-                return false;
+            if ($acquired) {
+                $this->log("🔒 Lock adquirido para grid #$gridId", 'INFO', 'SYSTEM');
+            } else {
+                $this->log("🔒 Grid #$gridId bloqueado por outra instância (lock atômico).", 'INFO', 'SYSTEM');
             }
 
-            $grid = $gridsModel->data[0];
-            $isProcessing = ($grid['is_processing'] ?? 'no') === 'yes';
-            $lastMonitorAt = $grid['last_monitor_at'] ?? null;
-
-            if ($isProcessing) {
-                // Verificar se lock travou (timeout)
-                if ($lastMonitorAt) {
-                    $lastMonitorTime = strtotime($lastMonitorAt);
-                    $elapsedSeconds = time() - $lastMonitorTime;
-                    $timeoutSeconds = self::LOCK_TIMEOUT_MINUTES * 60;
-
-                    if ($elapsedSeconds > $timeoutSeconds) {
-                        // Lock travado → forçar liberação (recovery)
-                        $this->log(
-                            "🔓 Lock TRAVADO detectado no grid #$gridId " .
-                                "(último monitor há " . round($elapsedSeconds / 60, 1) . " min). " .
-                                "Forçando liberação (recovery)...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
-                    } else {
-                        // Lock legítimo, outra instância está processando
-                        $this->log(
-                            "🔒 Grid #$gridId bloqueado por outra instância " .
-                                "(último monitor há " . round($elapsedSeconds / 60, 1) . " min). Lock legítimo.",
-                            'INFO',
-                            'SYSTEM'
-                        );
-                        return false;
-                    }
-                } else {
-                    // is_processing=yes mas sem timestamp → situação anômala → forçar liberação
-                    $this->log(
-                        "🔓 Lock sem timestamp no grid #$gridId. Forçando liberação...",
-                        'WARNING',
-                        'SYSTEM'
-                    );
-                }
-            }
-
-            // Adquirir lock
-            $gridsModel = new grids_model();
-            $gridsModel->set_filter(["idx = '{$gridId}'"]);
-            $gridsModel->populate([
-                'is_processing' => 'yes',
-                'last_monitor_at' => date('Y-m-d H:i:s')
-            ]);
-            $gridsModel->save();
-
-            $this->log("🔒 Lock adquirido para grid #$gridId", 'INFO', 'SYSTEM');
-            return true;
+            return $acquired;
         } catch (Exception $e) {
             $this->log("Erro ao adquirir lock: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return false;
@@ -3975,10 +4126,9 @@ class setup_controller
             $totalFees = $capitalUsdc * (self::FEE_PERCENT * 2); // buy fee + sell fee
             $expectedNetProfit = $expectedGrossProfit - $totalFees;
 
-            // Threshold dinâmico baseado no capital por nível
-            $minProfit = ($capitalUsdc < 50.0)
-                ? self::MIN_PROFIT_USDC_LOW   // 0.0025 USDC
-                : self::MIN_PROFIT_USDC_HIGH; // 0.25 USDC
+            // Threshold proporcional ao capital
+            $worstCaseFee = $capitalUsdc * (self::FEE_PERCENT * 2);
+            $minProfit = max($capitalUsdc * 0.001, $worstCaseFee * 1.5);
 
             if ($expectedNetProfit < $minProfit) {
                 $this->log(
@@ -4398,6 +4548,22 @@ class setup_controller
             $gridsModel->save();
         } catch (Exception $e) {
             $this->log("Erro ao incrementar lucro do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    private function resetAccumulatedProfit(int $gridId): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate(['accumulated_profit_usdc' => 0.0]);
+            $gridsModel->save();
+
+            $this->saveGridLog($gridId, 'profit_reinvested', 'success', 'Lucro acumulado reinvestido em batch', [
+                'reinvestment_threshold' => self::REINVESTMENT_THRESHOLD,
+            ]);
+        } catch (Exception $e) {
+            $this->log("Erro ao zerar lucro acumulado: " . $e->getMessage(), 'ERROR', 'SYSTEM');
         }
     }
 
