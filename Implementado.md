@@ -23,6 +23,7 @@ Este branch implementa melhorias críticas de precisão de P&L, robustez operaci
 | `12abdb6` | `docs: relatório de mudanças, checklist de deploy e atualização do README` | Documentação de entrega |
 | `c7a7dc3` | `fix: remove IF NOT EXISTS do MySQL em migrations 023 e 024` | Correção de sintaxe MySQL |
 | `d42732b` | `fix: corrige chave duplicada em calculateAndSaveSellProfit e null check no Redis cache` | Correção de syntax PHP + null safety |
+| `dc3fcbe` | `feat(setup_controller): otimizações financeiras e robustez do grid trading` | Gate reativo, clientOrderId, LIMIT_MAKER, reancoragem bookTicker, getFeeRate |
 
 ---
 
@@ -43,6 +44,58 @@ Este branch implementa melhorias críticas de precisão de P&L, robustez operaci
 - **Mudança:** Substituído `file_get_contents` por `curl_init` com timeout 5s/3s
 - **Cache:** Chave `binance:exchangeInfo:{symbol}` com TTL 600s no Redis
 - **Fallback:** Cache em memória (`$this->exchangeInfoCache`) mantido para hits rápidos
+
+---
+
+## Fase 1 e 2 — Robustez e Eficiência de Execução (Gaps Descobertos)
+
+### 1.1 Gate Reativo no slideGrid
+- **Arquivo modificado:** `site/app/inc/controller/setup_controller.php`
+- **Mudança:** Substituição do gate baseado em `lower_price`/`upper_price` + `REBALANCE_THRESHOLD` por gate reativo:
+  - `needSlideDown = $currentPrice < $lowestSellPrice` (preço caiu abaixo da SELL mais próxima)
+  - `needSlideUp = $currentPrice > $highestBuyPrice` (preço subiu acima da BUY mais próxima)
+- **Impacto:** Slide mais responsivo às ordens reais, menos dependente de limites fixos
+
+### 1.2 clientOrderId Determinístico e Tratamento -2010
+- **Arquivo modificado:** `site/app/inc/controller/setup_controller.php`
+- **Mudança em `placeBuyOrder()` e `placeSellOrder()`:**
+  - `clientOrderId` no formato `driftex_{gridId}_{SIDE}_{level}_{timestamp_ms}`
+  - Captura de `-2010` (saldo insuficiente) com log e retorno `null` (skip gracefully)
+- **Impacto:** Prevenção de duplicatas, rastreabilidade e tratamento de erro financeiro
+
+### 1.3 Remoção de cancelObsoleteOrders
+- **Arquivo modificado:** `site/app/inc/controller/setup_controller.php`
+- **Ação:** Deleção da função `cancelObsoleteOrders()` (951 linhas)
+- **Motivo:** Função órfã — nunca era chamada por nenhum outro código
+- **Impacto:** Código mais enxuto, menos manutenção
+
+### 1.4 getFeeRate() Dinâmico
+- **Arquivo modificado:** `site/app/inc/controller/setup_controller.php`
+- **Método novo:** `getFeeRate()` lê `settings.fee_rate` (fallback 0.001)
+- **Substituições:** `self::FEE_PERCENT` → `$this->getFeeRate()` em:
+  - `calculatePairProfit()` (fallback de fee)
+  - `isTradeViable()` (cálculo de totalFees e worstCaseFee)
+- **Migration 022:** `migrations/022_add_fee_settings.sql` — configuração `fee_rate = 0.001`
+- **Impacto:** Fee configurável sem deploy de código
+
+### 2.1 LIMIT_MAKER com Fallback
+- **Arquivo modificado:** `site/app/inc/controller/setup_controller.php`
+- **Mudança em `placeBuyOrder()` e `placeSellOrder()`:**
+  - Tentativa 1: `OrderType::LIMIT_MAKER` (zero fee de taker)
+  - Se rejeitado por "immediately match": fallback para `OrderType::LIMIT` + `GTC`
+- **Preservado:** `LIMIT_IOC` em `handleBuyOrderFilled()` (venda de emergência)
+- **Impacto:** Redução potencial de fees quando ordem é maker
+
+### 2.2 Reancoragem via fetchBookTicker
+- **Arquivo modificado:** `site/app/inc/controller/setup_controller.php`
+- **Método novo:** `fetchBookTicker($symbol)` via cURL para `/api/v3/ticker/bookTicker`
+- **4 pontos de reancoragem atualizados:**
+  1. `handleBuyOrderFilled()` → SELL: `$bookTicker['ask'] * (1 + $gridSpacing)`
+  2. `handleSellOrderFilled()` → BUY: `$bookTicker['bid'] * (1 - $gridSpacing)`
+  3. `handleBuyOrderFilled()` (BUY→SELL) → SELL: `$bookTicker['ask'] * (1 + $gridSpacing)`
+  4. `handleSellOrderFilled()` (SELL→BUY) → BUY: `$bookTicker['bid'] * (1 - $gridSpacing)`
+- **Fallback:** Se bookTicker indisponível, usa preço da ordem oposta (comportamento anterior)
+- **Impacto:** Preços mais alinhados ao book em tempo real, melhor preenchimento
 
 ---
 
@@ -184,7 +237,7 @@ Este branch implementa melhorias críticas de precisão de P&L, robustez operaci
 
 ## Estado Atual do Sistema (2026-05-02 14:00+)
 
-- ✅ Migrations 023, 024, 025 aplicadas com sucesso
+- ✅ Migrations 022, 023, 024, 025 aplicadas com sucesso
 - ✅ Bot criou grid híbrido (3 BUYs + 3 SELLs) na Binance Testnet
 - ✅ Lock atômico operacional (sem race conditions)
 - ✅ Reconciliação periódica ativa
@@ -192,6 +245,11 @@ Este branch implementa melhorias críticas de precisão de P&L, robustez operaci
 - ✅ Dashboard exibindo métricas avançadas e gráfico
 - ✅ Badges MAKER/TAKER visíveis na tabela de ordens
 - ✅ Configuração de fees persistida no banco
+- ✅ Gate reativo no slideGrid (needSlideUp/needSlideDown)
+- ✅ clientOrderId determinístico em todas as ordens
+- ✅ LIMIT_MAKER com fallback automático para LIMIT
+- ✅ Reancoragem via bookTicker em 4 pontos críticos
+- ✅ Taxa de fee dinâmica via `settings.fee_rate`
 
 ---
 
@@ -201,6 +259,8 @@ Este branch implementa melhorias críticas de precisão de P&L, robustez operaci
 2. **Testar circuit breaker:** Simular drawdown temporário para validar delay de 10min
 3. **Verificar maker ratio:** Se < 50%, ajustar estratégia de colocação de ordens para capturar mais liquidez maker
 4. **Avaliar Sharpe/Sortino:** Se Sharpe < 1.0, considerar reduzir grid spacing ou aumentar capital por nível
+5. **Validar LIMIT_MAKER fallback:** Verificar logs por "LIMIT_MAKER rejeitado" e confirmar que fallback funciona sem duplicatas
+6. **Testar bookTicker:** Confirmar que reancoragem não gera preços fora dos limites PPS em volatilidade alta
 
 ---
 
