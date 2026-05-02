@@ -737,6 +737,11 @@ class setup_controller
                             'INFO',
                             'API'
                         );
+
+                        // Fills reais: quando muda para FILLED ou PARTIALLY_FILLED, buscar myTrades
+                        if ($statusChanged && in_array($newStatus, ['FILLED', 'PARTIALLY_FILLED'])) {
+                            $this->fetchAndStoreFillDetails((int)$order['idx'], (string)$order['binance_order_id'], (string)$order['symbol']);
+                        }
                     }
                 } catch (Exception $e) {
                     // Silencioso para evitar spam de logs (ex: timestamp errors)
@@ -752,6 +757,105 @@ class setup_controller
             $this->fixFilledOrdersWithZeroQty($gridId);
         } catch (Exception $e) {
             $this->log("Erro ao sincronizar ordens: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Busca dados reais de fills (myTrades) na Binance e persiste commission/is_maker.
+     */
+    private function fetchAndStoreFillDetails(int $orderDbId, string $binanceOrderId, string $symbol): void
+    {
+        try {
+            $creds = BinanceConfig::getActiveCredentials();
+            $apiKey = $creds['apiKey'];
+            $secretKey = $creds['secretKey'];
+            $baseUrl = $creds['baseUrl'] ?? 'https://api.binance.com';
+
+            $timestamp = round(microtime(true) * 1000);
+            $query = "symbol={$symbol}&orderId={$binanceOrderId}&timestamp={$timestamp}";
+            $signature = hash_hmac('sha256', $query, $secretKey);
+            $url = "{$baseUrl}/api/v3/myTrades?{$query}&signature={$signature}";
+
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 5,
+                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_HTTPHEADER     => ["X-MBX-APIKEY: {$apiKey}"],
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (!$response || $httpCode !== 200) {
+                $this->log("myTrades HTTP {$httpCode} para ordem #{$binanceOrderId}", 'WARNING', 'API');
+                return;
+            }
+
+            $trades = json_decode($response, true);
+            if (empty($trades) || !is_array($trades)) {
+                return;
+            }
+
+            $totalCommission = 0.0;
+            $commissionAsset = null;
+            $isMaker = null;
+
+            foreach ($trades as $trade) {
+                $commission = (float)($trade['commission'] ?? 0);
+                $asset = $trade['commissionAsset'] ?? '';
+                if ($commissionAsset === null) {
+                    $commissionAsset = $asset;
+                }
+                $totalCommission += $commission;
+                if ($isMaker === null) {
+                    $isMaker = ($trade['isMaker'] ?? false) ? 1 : 0;
+                }
+            }
+
+            $commissionUsdc = null;
+            if ($commissionAsset === 'USDC') {
+                $commissionUsdc = $totalCommission;
+            } elseif ($commissionAsset && $totalCommission > 0) {
+                $tickerKey = 'ticker:' . $commissionAsset . 'USDC';
+                $redis = RedisCache::getInstance();
+                $rate = $redis->get($tickerKey);
+                if ($rate === false) {
+                    $tickerUrl = "{$baseUrl}/api/v3/ticker/price?symbol=" . $commissionAsset . "USDC";
+                    $tickerCh = curl_init($tickerUrl);
+                    curl_setopt_array($tickerCh, [
+                        CURLOPT_RETURNTRANSFER => true,
+                        CURLOPT_TIMEOUT        => 3,
+                        CURLOPT_CONNECTTIMEOUT => 2,
+                    ]);
+                    $tickerResp = curl_exec($tickerCh);
+                    curl_close($tickerCh);
+                    if ($tickerResp) {
+                        $tickerData = json_decode($tickerResp, true);
+                        $rate = (float)($tickerData['price'] ?? 0);
+                        if ($rate > 0) {
+                            $redis->set($tickerKey, $rate, 60);
+                        }
+                    }
+                }
+                if ($rate && (float)$rate > 0) {
+                    $commissionUsdc = $totalCommission * (float)$rate;
+                }
+            }
+
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter(["idx = '{$orderDbId}'"]);
+            $ordersModel->populate([
+                'commission' => $totalCommission > 0 ? $totalCommission : null,
+                'commission_asset' => $commissionAsset,
+                'commission_usdc_equivalent' => $commissionUsdc !== null ? $commissionUsdc : null,
+                'is_maker' => $isMaker,
+            ]);
+            $ordersModel->save();
+
+            $this->log("Fill details persistido para ordem #{$binanceOrderId} (commission: {$totalCommission} {$commissionAsset})", 'INFO', 'API');
+        } catch (Exception $e) {
+            $this->log("Erro em fetchAndStoreFillDetails: " . $e->getMessage(), 'ERROR', 'API');
         }
     }
 
@@ -2074,12 +2178,12 @@ class setup_controller
      * @param float $sellPrice   Preço de venda
      * @return float             Lucro líquido em USDC
      */
-    private function calculatePairProfit(float $executedQty, float $buyPrice, float $sellPrice): float
+    private function calculatePairProfit(float $executedQty, float $buyPrice, float $sellPrice, ?array $buyOrder = null, ?array $sellOrder = null): float
     {
-        $buyValue  = $executedQty * $buyPrice;
-        $sellValue = $executedQty * $sellPrice;
-        $buyFee    = $buyValue  * self::FEE_PERCENT;
-        $sellFee   = $sellValue * self::FEE_PERCENT;
+        $buyValue  = (float)($buyOrder['cumulative_quote_qty'] ?? ($executedQty * $buyPrice));
+        $sellValue = (float)($sellOrder['cumulative_quote_qty'] ?? ($executedQty * $sellPrice));
+        $buyFee    = (float)($buyOrder['commission_usdc_equivalent'] ?? $buyValue * self::FEE_PERCENT);
+        $sellFee   = (float)($sellOrder['commission_usdc_equivalent'] ?? $sellValue * self::FEE_PERCENT);
         return $sellValue - $buyValue - $buyFee - $sellFee;
     }
 
@@ -2101,7 +2205,7 @@ class setup_controller
             $slidingCostPrice = (float)($sellOrder['original_cost_price'] ?? 0);
 
             if ($isSlidingLevel && $slidingCostPrice > 0) {
-                $profit = $this->calculatePairProfit($executedQty, $slidingCostPrice, $sellPrice);
+                $profit = $this->calculatePairProfit($executedQty, $slidingCostPrice, $sellPrice, null, $sellOrder);
 
                 $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                 $this->incrementGridProfit($gridId, $profit);
@@ -2138,7 +2242,7 @@ class setup_controller
             if ($buyOrder) {
                 // CASO 1: SELL reativa — TEM ordem de compra pareada
                 $buyPrice = (float)$buyOrder['price'];
-                $profit   = $this->calculatePairProfit($executedQty, $buyPrice, $sellPrice);
+                $profit   = $this->calculatePairProfit($executedQty, $buyPrice, $sellPrice, $buyOrder, $sellOrder);
 
                 $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                 $this->incrementGridProfit($gridId, $profit);
@@ -2157,7 +2261,7 @@ class setup_controller
                 $btcCostPrice = (float)($gridData['current_price'] ?? 0);
 
                 if ($btcCostPrice > 0) {
-                    $profit = $this->calculatePairProfit($executedQty, $btcCostPrice, $sellPrice);
+                    $profit = $this->calculatePairProfit($executedQty, $btcCostPrice, $sellPrice, null, $sellOrder);
 
                     $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                     $this->incrementGridProfit($gridId, $profit);
@@ -2168,7 +2272,10 @@ class setup_controller
                         'SUCCESS',
                         'TRADE'
                     );
+                } else {
+                    $this->log("SELL HÍBRIDO em $symbol: current_price não disponível para calcular lucro", 'WARNING', 'TRADE');
                 }
+            }
             }
         } catch (Exception $e) {
             $this->log(
