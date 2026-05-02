@@ -379,7 +379,7 @@ class setup_controller
             $cacheKey = 'binance:exchangeInfo:' . $symbol;
             $redis = RedisCache::getInstance();
             $cached = $redis->get($cacheKey);
-            if ($cached !== false) {
+            if ($cached !== false && $cached !== null) {
                 $decoded = json_decode($cached, true);
                 $this->exchangeInfoCache[$symbol] = $decoded;
                 return $decoded;
@@ -2375,7 +2375,6 @@ class setup_controller
                 } else {
                     $this->log("SELL HÍBRIDO em $symbol: current_price não disponível para calcular lucro", 'WARNING', 'TRADE');
                 }
-            }
             }
         } catch (Exception $e) {
             $this->log(
