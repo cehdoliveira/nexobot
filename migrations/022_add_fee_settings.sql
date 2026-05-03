@@ -1,4 +1,4 @@
-INSERT INTO settings (namespace, `key`, value, created_at)
+INSERT INTO settings (namespace, cfg_key, value, created_at)
 VALUES
   ('binance', 'fee_maker', '0.001', NOW()),
   ('binance', 'fee_taker', '0.001', NOW())
