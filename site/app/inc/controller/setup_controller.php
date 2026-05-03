@@ -385,7 +385,9 @@ class setup_controller
                 return $decoded;
             }
 
-            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
+            $creds = BinanceConfig::getActiveCredentials();
+            $baseUrl = $creds['baseUrl'] ?? 'https://api.binance.com';
+            $url = "{$baseUrl}/api/v3/exchangeInfo?symbol={$symbol}";
             $ch = curl_init($url);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
@@ -3416,7 +3418,9 @@ class setup_controller
     private function fetchBookTicker(string $symbol): ?array
     {
         try {
-            $url = "https://api.binance.com/api/v3/ticker/bookTicker?symbol=" . urlencode($symbol);
+            $creds = BinanceConfig::getActiveCredentials();
+            $baseUrl = $creds['baseUrl'] ?? 'https://api.binance.com';
+            $url = "{$baseUrl}/api/v3/ticker/bookTicker?symbol=" . urlencode($symbol);
             $ch = curl_init($url);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
