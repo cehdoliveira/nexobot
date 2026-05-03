@@ -486,19 +486,10 @@ class setup_controller
     /**
      * Retorna a taxa de fee por operação (default 0.1% = 0.001)
      */
-    private function getFeeRate(): float
+    private function getFeeRate(string $type = 'taker'): float
     {
-        try {
-            $settingsModel = new settings_model();
-            $settingsModel->set_filter(["`key` = 'fee_rate'"]);
-            $settingsModel->load_data();
-            if (!empty($settingsModel->data)) {
-                return (float)$settingsModel->data[0]['value'];
-            }
-        } catch (Exception $e) {
-            // fallback silencioso
-        }
-        return 0.001;
+        $key = ($type === 'maker') ? 'fee_maker' : 'fee_taker';
+        return (float) AppSettings::get('binance', $key, '0.001');
     }
 
     /**
@@ -1524,10 +1515,14 @@ class setup_controller
 
             // 3. CALCULAR PREÇO DE VENDA (1 grid spacing acima do melhor ask)
             $gridSpacing = $this->getGridSpacing($symbol);
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
+            $sellPrice = $buyPrice * (1 + $gridSpacing);
             $bookTicker = $this->fetchBookTicker($symbol);
-            $sellPrice = $bookTicker
-                ? $bookTicker['ask'] * (1 + $gridSpacing)
-                : $buyPrice * (1 + $gridSpacing);
+            if ($bookTicker && $bookTicker['ask'] > 0) {
+                $sellPrice = max($sellPrice, $bookTicker['ask'] + (float)$tickSize);
+                $sellPrice = (float)$this->adjustPriceToTickSize($sellPrice, $tickSize);
+            }
 
             // 4. CRIAR SELL PAREADA COM A QUANTIDADE EXATA
             $sellOrderId = $this->placeSellOrder(
@@ -1981,12 +1976,16 @@ class setup_controller
                         try {
                             $sellPrice = (float)$sellOrder['price'];
                             $gridSpacing = $this->getGridSpacing($symbol);
+                            $symbolData = $this->getExchangeInfo($symbol);
+                            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
                             // Preço da BUY: 1% ABAIXO do melhor bid (ou do preço da SELL como fallback)
+                            $buyPrice = $sellPrice * (1 - $gridSpacing);
                             $bookTicker = $this->fetchBookTicker($symbol);
-                            $buyPrice = $bookTicker
-                                ? $bookTicker['bid'] * (1 - $gridSpacing)
-                                : $sellPrice * (1 - $gridSpacing);
+                            if ($bookTicker && $bookTicker['bid'] > 0) {
+                                $buyPrice = min($buyPrice, $bookTicker['bid'] - (float)$tickSize);
+                                $buyPrice = (float)$this->adjustPriceToTickSize($buyPrice, $tickSize);
+                            }
 
                             // Proteção anti-duplicação: pular se slot canônico já está ocupado por BUY ativa
                             $_gd_b = $this->getGridById($gridId);
@@ -2089,10 +2088,12 @@ class setup_controller
                             $gridSpacing = $this->getGridSpacing($symbol);
 
                             // Preço da SELL: 1% ACIMA do melhor ask (ou do preço da BUY como fallback)
+                            $sellPrice = $buyPrice * (1 + $gridSpacing);
                             $bookTicker = $this->fetchBookTicker($symbol);
-                            $sellPrice = $bookTicker
-                                ? $bookTicker['ask'] * (1 + $gridSpacing)
-                                : $buyPrice * (1 + $gridSpacing);
+                            if ($bookTicker && $bookTicker['ask'] > 0) {
+                                $sellPrice = max($sellPrice, $bookTicker['ask'] + (float)$tickSize);
+                                $sellPrice = (float)$this->adjustPriceToTickSize($sellPrice, $tickSize);
+                            }
 
                             // Guard: notional mínimo (qty × price >= minNotional da Binance)
                             $notionalValue = $btcPerSell * $sellPrice;
@@ -2174,8 +2175,8 @@ class setup_controller
     {
         $buyValue  = (float)($buyOrder['cumulative_quote_qty'] ?? ($executedQty * $buyPrice));
         $sellValue = (float)($sellOrder['cumulative_quote_qty'] ?? ($executedQty * $sellPrice));
-        $buyFee    = (float)($buyOrder['commission_usdc_equivalent'] ?? $buyValue * $this->getFeeRate());
-        $sellFee   = (float)($sellOrder['commission_usdc_equivalent'] ?? $sellValue * $this->getFeeRate());
+        $buyFee    = (float)($buyOrder['commission_usdc_equivalent'] ?? $buyValue * $this->getFeeRate('taker'));
+        $sellFee   = (float)($sellOrder['commission_usdc_equivalent'] ?? $sellValue * $this->getFeeRate('taker'));
         return $sellValue - $buyValue - $buyFee - $sellFee;
     }
 
@@ -2383,10 +2384,14 @@ class setup_controller
 
             // Recriar ordem de COMPRA no mesmo nível
             $gridSpacing = $this->getGridSpacing($symbol);
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
+            $buyPrice = $sellPrice * (1 - $gridSpacing);
             $bookTicker = $this->fetchBookTicker($symbol);
-            $buyPrice = $bookTicker
-                ? $bookTicker['bid'] * (1 - $gridSpacing)
-                : $sellPrice * (1 - $gridSpacing);
+            if ($bookTicker && $bookTicker['bid'] > 0) {
+                $buyPrice = min($buyPrice, $bookTicker['bid'] - (float)$tickSize);
+                $buyPrice = (float)$this->adjustPriceToTickSize($buyPrice, $tickSize);
+            }
 
             // Calcular capital com fallback flexível (já valida USDC disponível internamente)
             $capitalForBuy = $this->getCapitalForNewBuyOrder($gridId, $gridData);
@@ -3014,7 +3019,7 @@ class setup_controller
             $orderReq->setSide(Side::BUY);
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$quantity);
-            $clientOrderId = sprintf('driftex_%d_BUY_%d_%d', $gridId, $gridLevel, (int)(microtime(true) * 1000));
+            $clientOrderId = sprintf('nx-%d-%d-buy-%d', $gridId, $gridLevel, intdiv(time(), 60));
             $orderReq->setNewClientOrderId($clientOrderId);
 
             try {
@@ -3029,7 +3034,34 @@ class setup_controller
                     $orderReq->setTimeInForce('GTC');
                     $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
                 } elseif (str_contains($msg, '-2010')) {
-                    $this->log("⚠️ Saldo insuficiente (-2010) ao criar BUY $symbol @ $adjustedPrice — pulando", 'WARNING', 'TRADE');
+                    $existing = null;
+                    try {
+                        $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
+                    } catch (Exception $ignored) {}
+                    if ($existing) {
+                        $this->log("⚠️ Ordem duplicada recuperada: $clientOrderId", 'WARNING', 'TRADE');
+                        $existingData = $existing->getData();
+                        $orderParams = [
+                            'grids_id' => $gridId,
+                            'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
+                            'binance_client_order_id' => $clientOrderId,
+                            'symbol' => $symbol,
+                            'side' => 'BUY',
+                            'type' => 'LIMIT',
+                            'grid_level' => $gridLevel,
+                            'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
+                            'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $quantity),
+                            'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
+                            'order_created_at' => round(microtime(true) * 1000)
+                        ];
+                        if ($isSlidingLevel) {
+                            $orderParams['is_sliding_level'] = 1;
+                            if ($originalCostPrice > 0) {
+                                $orderParams['original_cost_price'] = $originalCostPrice;
+                            }
+                        }
+                        return $this->saveGridOrder($orderParams);
+                    }
                     return null;
                 } else {
                     throw $e;
@@ -3142,7 +3174,7 @@ class setup_controller
             $orderReq->setSide(Side::SELL);
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$adjustedQty);
-            $clientOrderId = sprintf('driftex_%d_SELL_%d_%d', $gridId, $gridLevel, (int)(microtime(true) * 1000));
+            $clientOrderId = sprintf('nx-%d-%d-sell-%d', $gridId, $gridLevel, intdiv(time(), 60));
             $orderReq->setNewClientOrderId($clientOrderId);
 
             try {
@@ -3157,7 +3189,35 @@ class setup_controller
                     $orderReq->setTimeInForce('GTC');
                     $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
                 } elseif (str_contains($msg, '-2010')) {
-                    $this->log("⚠️ Saldo insuficiente (-2010) ao criar SELL $symbol @ $adjustedPrice — pulando", 'WARNING', 'TRADE');
+                    $existing = null;
+                    try {
+                        $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
+                    } catch (Exception $ignored) {}
+                    if ($existing) {
+                        $this->log("⚠️ Ordem duplicada recuperada: $clientOrderId", 'WARNING', 'TRADE');
+                        $existingData = $existing->getData();
+                        $orderParams = [
+                            'grids_id' => $gridId,
+                            'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
+                            'binance_client_order_id' => $clientOrderId,
+                            'symbol' => $symbol,
+                            'side' => 'SELL',
+                            'type' => 'LIMIT',
+                            'grid_level' => $gridLevel,
+                            'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
+                            'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $adjustedQty),
+                            'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
+                            'order_created_at' => round(microtime(true) * 1000),
+                            'paired_order_id' => $pairedBuyOrderId
+                        ];
+                        if ($isSlidingLevel) {
+                            $orderParams['is_sliding_level'] = 1;
+                            if ($originalCostPrice > 0) {
+                                $orderParams['original_cost_price'] = $originalCostPrice;
+                            }
+                        }
+                        return $this->saveGridOrder($orderParams);
+                    }
                     return null;
                 } else {
                     throw $e;
@@ -4109,11 +4169,11 @@ class setup_controller
 
             $gridSpacing = $this->getGridSpacing($symbol);
             $expectedGrossProfit = $capitalUsdc * $gridSpacing;
-            $totalFees = $capitalUsdc * ($this->getFeeRate() * 2); // buy fee + sell fee
+            $totalFees = $capitalUsdc * ($this->getFeeRate('taker') * 2); // buy fee + sell fee
             $expectedNetProfit = $expectedGrossProfit - $totalFees;
 
             // Threshold proporcional ao capital
-            $worstCaseFee = $capitalUsdc * ($this->getFeeRate() * 2);
+            $worstCaseFee = $capitalUsdc * ($this->getFeeRate('taker') * 2);
             $minProfit = max($capitalUsdc * 0.001, $worstCaseFee * 1.5);
 
             if ($expectedNetProfit < $minProfit) {
