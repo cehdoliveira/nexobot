@@ -316,7 +316,7 @@ $dashboardJson = json_encode([
         </section>
 
         <!-- === SECTION B.5: Métricas Avançadas (via grid-metrics endpoint) === -->
-        <section aria-label="Métricas Avançadas" id="advanced-metrics-section" style="margin-top: 1rem;">
+        <section aria-label="Métricas Avançadas" id="advanced-metrics-section">
             <div class="metrics-grid">
                 <div class="metric-card metric-success" id="metric-spread-pnl">
                     <div class="d-flex align-items-start gap-2">
@@ -370,6 +370,26 @@ $dashboardJson = json_encode([
                             </tbody>
                         </table>
                     </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- === SECTION B.6: Capital Growth Chart === -->
+        <section aria-label="Crescimento do Capital">
+            <div class="dash-card" id="capital-chart-section" style="display:none;">
+                <div class="card-header-custom">
+                    <h6><i class="bi bi-graph-up-arrow"></i> Crescimento do Capital</h6>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span class="chart-legend-dot" style="background:#0dcaf0;"></span>
+                        <small class="text-dim" style="font-size:0.7rem;">Capital Total</small>
+                        <span class="chart-legend-dot ms-1" style="background:#20c997;"></span>
+                        <small class="text-dim" style="font-size:0.7rem;">USDC</small>
+                        <span class="chart-legend-dot ms-1" style="background:#f59e0b;"></span>
+                        <small class="text-dim" style="font-size:0.7rem;">BTC</small>
+                    </div>
+                </div>
+                <div class="capital-chart-container">
+                    <canvas id="capitalChart"></canvas>
                 </div>
             </div>
         </section>
@@ -1033,12 +1053,29 @@ $dashboardJson = json_encode([
                 const data = await resp.json();
                 if (!data.success || !data.data.length) return;
 
+                const chartSection = document.getElementById('capital-chart-section');
+                if (chartSection) chartSection.style.display = '';
+
                 const ctx = document.getElementById('capitalChart');
                 if (!ctx) return;
 
+                const isDark = document.body.classList.contains('theme-dark');
+                const gridColor    = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
+                const textColor    = isDark ? '#64748b' : '#94a3b8';
+                const tooltipBg    = isDark ? '#1a1f2b' : '#ffffff';
+                const tooltipTitle = isDark ? '#e2e8f0' : '#2d3748';
+                const tooltipBody  = isDark ? '#94a3b8' : '#718096';
+                const tooltipBord  = isDark ? '#2d3748' : '#e2e8f0';
+
+                const chartCtx = ctx.getContext('2d');
+                const grad = chartCtx.createLinearGradient(0, 0, 0, 280);
+                grad.addColorStop(0,    'rgba(13,202,240,0.22)');
+                grad.addColorStop(0.65, 'rgba(13,202,240,0.06)');
+                grad.addColorStop(1,    'rgba(13,202,240,0)');
+
                 const labels = data.data.map(d => d.hour.slice(5, 16));
-                const total = data.data.map(d => d.total_capital_usdc);
-                const usdc = data.data.map(d => d.usdc_balance);
+                const total  = data.data.map(d => d.total_capital_usdc);
+                const usdc   = data.data.map(d => d.usdc_balance);
                 const btcVal = data.data.map(d => d.btc_holding * d.btc_price);
 
                 new Chart(ctx, {
@@ -1046,19 +1083,84 @@ $dashboardJson = json_encode([
                     data: {
                         labels,
                         datasets: [
-                            { label: 'Capital Total', data: total, borderColor: '#0dcaf0', backgroundColor: 'rgba(13,202,240,0.1)', tension: 0.3, fill: true },
-                            { label: 'USDC', data: usdc, borderColor: '#20c997', borderDash: [5,5], tension: 0.3, fill: false },
-                            { label: 'BTC Value', data: btcVal, borderColor: '#ffc107', borderDash: [2,2], tension: 0.3, fill: false }
+                            {
+                                label: 'Capital Total',
+                                data: total,
+                                borderColor: '#0dcaf0',
+                                backgroundColor: grad,
+                                tension: 0.4,
+                                fill: true,
+                                borderWidth: 2,
+                                pointRadius: 2,
+                                pointHoverRadius: 5,
+                                pointBackgroundColor: '#0dcaf0'
+                            },
+                            {
+                                label: 'USDC',
+                                data: usdc,
+                                borderColor: '#20c997',
+                                borderDash: [4, 4],
+                                tension: 0.4,
+                                fill: false,
+                                borderWidth: 1.5,
+                                pointRadius: 0,
+                                pointHoverRadius: 4
+                            },
+                            {
+                                label: 'BTC Valor',
+                                data: btcVal,
+                                borderColor: '#f59e0b',
+                                borderDash: [2, 3],
+                                tension: 0.4,
+                                fill: false,
+                                borderWidth: 1.5,
+                                pointRadius: 0,
+                                pointHoverRadius: 4
+                            }
                         ]
                     },
                     options: {
                         responsive: true,
-                        plugins: { legend: { position: 'top' } },
-                        scales: {
-                            x: { grid: { display: false } },
-                            y: { grid: { color: 'rgba(255,255,255,0.05)' } }
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                mode: 'index',
+                                intersect: false,
+                                backgroundColor: tooltipBg,
+                                titleColor: tooltipTitle,
+                                bodyColor: tooltipBody,
+                                borderColor: tooltipBord,
+                                borderWidth: 1,
+                                padding: 10,
+                                callbacks: {
+                                    label: c => ' ' + c.dataset.label + ': $' + c.parsed.y.toFixed(2)
+                                }
+                            }
                         },
-                        interaction: { mode: 'index', intersect: false }
+                        scales: {
+                            x: {
+                                grid: { display: false },
+                                ticks: {
+                                    color: textColor,
+                                    font: { size: 10, family: "'JetBrains Mono', monospace" },
+                                    maxTicksLimit: 8,
+                                    maxRotation: 0
+                                },
+                                border: { color: gridColor }
+                            },
+                            y: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    color: textColor,
+                                    font: { size: 10, family: "'JetBrains Mono', monospace" },
+                                    callback: v => '$' + Number(v).toFixed(0)
+                                },
+                                border: { color: 'transparent' }
+                            }
+                        },
+                        interaction: { mode: 'index', intersect: false },
+                        animation: { duration: 600, easing: 'easeOutQuart' }
                     }
                 });
             } catch (e) {
@@ -1068,15 +1170,7 @@ $dashboardJson = json_encode([
 
         loadMetrics();
         setInterval(loadMetrics, 60000);
-
-        const metricsSection = document.getElementById('advanced-metrics-section');
-        if (metricsSection) {
-            const chartDiv = document.createElement('div');
-            chartDiv.className = 'dash-card mt-3';
-            chartDiv.innerHTML = '<div class="card-header-custom"><h6><i class="bi bi-graph-up"></i> Histórico de Capital</h6></div><div class="card-body-custom"><canvas id="capitalChart" height="120"></canvas></div>';
-            metricsSection.appendChild(chartDiv);
-            loadCapitalChart();
-        }
+        loadCapitalChart();
     })();
     </script>
 
