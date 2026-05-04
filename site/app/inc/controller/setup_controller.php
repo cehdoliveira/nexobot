@@ -285,14 +285,8 @@ class setup_controller
      */
     private function getAvailableUsdcBalance(bool $forceRefresh = false): float
     {
-        try {
-            $accountInfo = $this->getAccountInfo($forceRefresh);
-
-            return $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
-        } catch (Exception $e) {
-            $this->log("Erro ao obter saldo USDC disponível: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-            return 0.0;
-        }
+        $accountInfo = $this->getAccountInfo($forceRefresh);
+        return $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
     }
 
     /**
@@ -1927,15 +1921,25 @@ class setup_controller
                     $this->calculateAndSaveSellProfit($gridId, $sellOrder);
                 }
 
-                // 2. Buscar USDC disponível
-                $availableUsdc = $this->getAvailableUsdcBalance(true);
+                // 2. Buscar USDC disponível (fallback para capital_per_level se API indisponível)
+                $gridData = $this->getGridById($gridId);
+                $baseCapitalPerLevel = (float)($gridData['capital_per_level'] ?? 0.0);
+                try {
+                    $availableUsdc = $this->getAvailableUsdcBalance(true);
+                } catch (Exception $e) {
+                    $this->log(
+                        "⚠️ API indisponível ao buscar USDC no batch: " . $e->getMessage() .
+                            " — usando capital_per_level × $sellCount como fallback",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    $availableUsdc = $baseCapitalPerLevel * $sellCount;
+                }
 
                 // 3. Dividir capital igualmente entre as SELLs
                 $capitalPerBuyRaw = $availableUsdc / $sellCount;
 
                 // 4. Aplicar teto por nível para evitar que uma única BUY consuma caixa em excesso
-                $gridData = $this->getGridById($gridId);
-                $baseCapitalPerLevel = (float)($gridData['capital_per_level'] ?? 0.0);
                 $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
                 $extraCapital = 0.0;
                 if ($accumulatedProfit >= self::REINVESTMENT_THRESHOLD) {
