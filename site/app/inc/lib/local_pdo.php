@@ -126,7 +126,7 @@ class local_pdo
 			if ($this->inTransaction) {
 				$this->rollback();
 			}
-			die("SQL error: $query \n " . $this->error);
+			throw new \RuntimeException("SQL error: " . $this->error . " | Query: " . $query);
 		}
 	}
 

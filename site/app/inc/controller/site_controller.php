@@ -1818,6 +1818,8 @@ class site_controller
      */
     private function executeGridLiquidation(bool $stopBot): void
     {
+        header('Content-Type: application/json; charset=utf-8');
+
         $actionLabel = $stopBot ? 'ajaxEmergencyShutdown' : 'ajaxCloseAllGridPositions';
         $logIcon = $stopBot ? '🔴' : '🟡';
 
