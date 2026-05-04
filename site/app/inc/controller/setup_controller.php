@@ -369,14 +369,17 @@ class setup_controller
                 return $this->exchangeInfoCache[$symbol];
             }
 
-            // Cache Redis por 600s
+            // Cache Redis por 600s — armazena apenas symbols[0] (não o response completo)
             $cacheKey = 'binance:exchangeInfo:' . $symbol;
             $redis = RedisCache::getInstance();
             $cached = $redis->get($cacheKey);
             if ($cached !== false && $cached !== null) {
                 $decoded = json_decode($cached, true);
-                $this->exchangeInfoCache[$symbol] = $decoded;
-                return $decoded;
+                if (isset($decoded['filters'])) {
+                    $this->exchangeInfoCache[$symbol] = $decoded;
+                    return $decoded;
+                }
+                // Cache corrompido (resposta completa em vez de symbols[0]): ignora e busca de novo
             }
 
             $creds = BinanceConfig::getActiveCredentials();
@@ -401,9 +404,10 @@ class setup_controller
                 throw new Exception("Símbolo {$symbol} não encontrado na API da Binance.");
             }
 
-            $redis->set($cacheKey, $response, 600);
-            $this->exchangeInfoCache[$symbol] = $exchangeData['symbols'][0];
-            return $this->exchangeInfoCache[$symbol];
+            $symbolData = $exchangeData['symbols'][0];
+            $redis->set($cacheKey, json_encode($symbolData), 600);
+            $this->exchangeInfoCache[$symbol] = $symbolData;
+            return $symbolData;
         } catch (Exception $e) {
             throw new Exception("Erro ao obter exchange info: " . $e->getMessage());
         }
