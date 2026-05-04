@@ -1908,52 +1908,65 @@ class site_controller
                 }
 
                 try {
-                    $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
-                    $accountData = $accountInfo->getData();
-
-                    if (!$accountData || !isset($accountData['balances'])) {
-                        throw new Exception('Não foi possível obter saldos da conta');
-                    }
-
-                    $assetBalance = null;
-                    foreach ($accountData['balances'] as $balance) {
-                        if (($balance['asset'] ?? '') === $asset) {
-                            $assetBalance = $balance;
-                            break;
+                    // Tentar obter saldo via API; fallback: somar qty das SELLs canceladas no DB
+                    $free = 0.0;
+                    try {
+                        $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
+                        $accountData = $accountInfo->getData();
+                        if ($accountData && isset($accountData['balances'])) {
+                            foreach ($accountData['balances'] as $balance) {
+                                if (($balance['asset'] ?? '') === $asset) {
+                                    $free = (float)($balance['free'] ?? 0);
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (Exception $apiEx) {
+                        error_log("⚠️ [{$actionLabel}] getAccount falhou ({$apiEx->getMessage()}); calculando qty via DB");
+                        // Fallback: somar executed_qty das SELLs que foram canceladas agora
+                        $pdo = (new local_pdo())->getPdo();
+                        $stmt = $pdo->prepare("
+                            SELECT COALESCE(SUM(o.quantity), 0) AS total_qty
+                            FROM orders o
+                            JOIN grids_orders go ON go.orders_id = o.idx
+                            WHERE go.grids_id = :gid
+                              AND o.side = 'SELL'
+                              AND o.status IN ('CANCELED','NEW')
+                        ");
+                        $stmt->execute([':gid' => $gridId]);
+                        $free = (float)($stmt->fetchColumn() ?? 0);
+                        if ($free > 0) {
+                            error_log("ℹ️ [{$actionLabel}] Qty BTC via DB fallback: {$free}");
                         }
                     }
 
-                    if ($assetBalance) {
-                        $free = (float)($assetBalance['free'] ?? 0);
+                    if ($free >= 0.00001) {
+                        $exchangeInfo = $this->getExchangeInfo($symbol);
+                        $lotSizeFilter = $this->extractLotSizeFilter($exchangeInfo);
+                        $finalQty = $this->adjustQuantityToStepSize($free, $lotSizeFilter['stepSize']);
+                        $finalQtyFloat = (float)$finalQty;
 
-                        if ($free >= 0.00001) {
-                            $exchangeInfo = $this->getExchangeInfo($symbol);
-                            $lotSizeFilter = $this->extractLotSizeFilter($exchangeInfo);
-                            $finalQty = $this->adjustQuantityToStepSize($free, $lotSizeFilter['stepSize']);
-                            $finalQtyFloat = (float)$finalQty;
+                        if ($finalQtyFloat >= (float)$lotSizeFilter['minQty']) {
+                            $newOrderReq = new NewOrderRequest();
+                            $newOrderReq->setSymbol($symbol);
+                            $newOrderReq->setSide(Side::SELL);
+                            $newOrderReq->setType(OrderType::MARKET);
+                            $newOrderReq->setQuantity($finalQty);
 
-                            if ($finalQtyFloat >= (float)$lotSizeFilter['minQty']) {
-                                $newOrderReq = new NewOrderRequest();
-                                $newOrderReq->setSymbol($symbol);
-                                $newOrderReq->setSide(Side::SELL);
-                                $newOrderReq->setType(OrderType::MARKET);
-                                $newOrderReq->setQuantity($finalQty);
+                            $response = $api->newOrder($this->applyRecvWindowToOrderRequest($newOrderReq));
+                            $orderData = $response->getData();
+                            $sellOrderId = method_exists($orderData, 'getOrderId')
+                                ? $orderData->getOrderId()
+                                : ($orderData['orderId'] ?? null);
 
-                                $response = $api->newOrder($this->applyRecvWindowToOrderRequest($newOrderReq));
-                                $orderData = $response->getData();
-                                $sellOrderId = method_exists($orderData, 'getOrderId')
-                                    ? $orderData->getOrderId()
-                                    : ($orderData['orderId'] ?? null);
-
-                                $soldAssets[] = [
-                                    'grid_id' => $gridId,
-                                    'symbol' => $symbol,
-                                    'asset' => $asset,
-                                    'quantity' => $finalQty,
-                                    'quantity_original' => $free,
-                                    'order_id' => $sellOrderId
-                                ];
-                            }
+                            $soldAssets[] = [
+                                'grid_id' => $gridId,
+                                'symbol' => $symbol,
+                                'asset' => $asset,
+                                'quantity' => $finalQty,
+                                'quantity_original' => $free,
+                                'order_id' => $sellOrderId
+                            ];
                         }
                     }
                 } catch (Exception $e) {
