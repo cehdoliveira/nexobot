@@ -1026,7 +1026,7 @@ $dashboardJson = json_encode([
 
         async function loadMetrics() {
             try {
-                const resp = await fetch('/grid-metrics?grid_id=' + gridId);
+                const resp = await fetch('/grid-metrics?grid_id=' + gridId, { credentials: 'include' });
                 const data = await resp.json();
                 if (!data.success) return;
 
@@ -1051,7 +1051,7 @@ $dashboardJson = json_encode([
 
         async function loadCapitalChart() {
             try {
-                const resp = await fetch('/grid-capital-history?grid_id=' + gridId);
+                const resp = await fetch('/grid-capital-history?grid_id=' + gridId, { credentials: 'include' });
                 const data = await resp.json();
                 if (!data.success || !data.data.length) return;
 
