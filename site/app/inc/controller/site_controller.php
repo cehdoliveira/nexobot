@@ -23,6 +23,7 @@ class site_controller
 
         // Verificar se é uma ação AJAX
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            ob_start();
             header('Content-Type: application/json; charset=utf-8');
 
             $input = $_POST;
@@ -2028,6 +2029,7 @@ class site_controller
                 $message .= ' | ' . count($errors) . ' erro(s)';
             }
 
+            ob_clean();
             echo json_encode([
                 'success' => true,
                 'message' => $message,
@@ -2039,6 +2041,7 @@ class site_controller
             exit;
         } catch (Exception $e) {
             error_log("❌ [ajaxCloseAllGridPositions] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
+            ob_clean();
             echo json_encode([
                 'success' => false,
                 'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
