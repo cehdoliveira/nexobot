@@ -836,6 +836,7 @@ class site_controller
         $json = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $redis->set($cacheKey, $json, 60);
         echo $json;
+        exit;
     }
 
     /**
@@ -883,6 +884,7 @@ class site_controller
             'grid_id' => $gridId,
             'data' => array_values($grouped)
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
     }
 
     /**
