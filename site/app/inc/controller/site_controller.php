@@ -23,6 +23,7 @@ class site_controller
 
         // Verificar se é uma ação AJAX
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            ini_set('display_errors', 0);
             ob_start();
             header('Content-Type: application/json; charset=utf-8');
 
@@ -2029,7 +2030,10 @@ class site_controller
                 $message .= ' | ' . count($errors) . ' erro(s)';
             }
 
-            ob_clean();
+            $spurious = ob_get_clean();
+            if (!empty(trim($spurious))) {
+                error_log("⚠️ [{$actionLabel}] Saída espúria capturada antes do JSON: " . substr($spurious, 0, 500));
+            }
             echo json_encode([
                 'success' => true,
                 'message' => $message,
@@ -2039,9 +2043,14 @@ class site_controller
                 'stop_bot' => $stopBot
             ], JSON_UNESCAPED_UNICODE);
             exit;
-        } catch (Exception $e) {
-            error_log("❌ [ajaxCloseAllGridPositions] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
-            ob_clean();
+        } catch (\Throwable $e) {
+            error_log("❌ [{$actionLabel}] Erro: " . $e->getMessage() . " | " . get_class($e) . " | Trace: " . $e->getTraceAsString());
+            if (ob_get_level() > 0) {
+                $spurious = ob_get_clean();
+                if (!empty(trim($spurious))) {
+                    error_log("⚠️ [{$actionLabel}] Buffer no erro: " . substr($spurious, 0, 500));
+                }
+            }
             echo json_encode([
                 'success' => false,
                 'message' => 'Erro ao encerrar posições: ' . $e->getMessage()
