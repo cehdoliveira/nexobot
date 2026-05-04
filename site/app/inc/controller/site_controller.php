@@ -10,6 +10,14 @@ class site_controller
 {
     private const BINANCE_RECV_WINDOW = 10000;
 
+    private function applyRecvWindowToOrderRequest(NewOrderRequest $req): NewOrderRequest
+    {
+        if (method_exists($req, 'setRecvWindow')) {
+            $req->setRecvWindow(self::BINANCE_RECV_WINDOW);
+        }
+        return $req;
+    }
+
 
     /**
      * Dashboard do Grid Trading
