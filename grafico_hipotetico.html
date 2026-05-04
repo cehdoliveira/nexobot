@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Driftex — Visualização Grid Trading</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0f1115;
+    color: #e2e8f0;
+    font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #94a3b8;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .subtitle { font-size: 11px; color: #475569; margin-bottom: 20px; }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+  .tab-btn {
+    padding: 7px 16px;
+    border: 1px solid #2d3748;
+    background: #1a1f2b;
+    color: #64748b;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .tab-btn:hover { color: #94a3b8; border-color: #475569; }
+  .tab-btn.active { background: #1e2a3a; color: #38bdf8; border-color: #38bdf8; }
+
+  .chart-wrap {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    padding: 12px 8px 8px;
+    position: relative;
+  }
+  canvas { display: block; }
+
+  .scenario-desc {
+    margin-top: 14px;
+    padding: 12px 16px;
+    background: #1a1f2b;
+    border: 1px solid #2d3748;
+    border-radius: 6px;
+    line-height: 1.7;
+  }
+  .scenario-desc h3 { color: #38bdf8; font-size: 12px; margin-bottom: 8px; }
+  .scenario-desc p  { color: #94a3b8; font-size: 11px; }
+  .scenario-desc .tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    margin-right: 4px;
+  }
+  .tag-buy  { background: rgba(16,185,129,.18); color: #10b981; }
+  .tag-sell { background: rgba(239,68,68,.18); color: #ef4444; }
+  .tag-slide{ background: rgba(245,158,11,.18); color: #f59e0b; }
+  .tag-stop { background: rgba(239,68,68,.3);  color: #fca5a5; }
+  .tag-info { background: rgba(59,130,246,.18); color: #60a5fa; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 12px;
+    padding: 10px 16px;
+    background: #0d1117;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; }
+  .legend-line {
+    width: 28px; height: 2px; border-radius: 1px;
+    display: inline-block;
+  }
+  .legend-line.dashed {
+    background: repeating-linear-gradient(90deg, currentColor 0, currentColor 5px, transparent 5px, transparent 8px);
+  }
+</style>
+</head>
+<body>
+
+<h1>Driftex — Comportamento do Grid Trading</h1>
+<p class="subtitle">Capital: $1.000 · Entrada BTC: $95.000 · Spacing: 1% · Proteção: Stop-Loss 20% · Trailing 15% (após +10%)</p>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="selectScenario(0)">Cenário 1 — Lateral</button>
+  <button class="tab-btn"        onclick="selectScenario(1)">Cenário 2 — Alta Forte</button>
+  <button class="tab-btn"        onclick="selectScenario(2)">Cenário 3 — Queda Forte</button>
+</div>
+
+<div class="chart-wrap">
+  <canvas id="chart" width="1080" height="540"></canvas>
+</div>
+
+<div class="scenario-desc" id="desc"></div>
+
+<div class="legend">
+  <div class="legend-item"><span class="legend-line" style="background:#ef4444;height:2px"></span> SELL ativa (aguardando)</div>
+  <div class="legend-item"><span class="legend-line" style="background:#10b981;height:2px"></span> BUY ativa (aguardando)</div>
+  <div class="legend-item"><span class="legend-line dashed" style="color:#f87171;height:2px"></span> SELL reativa (criada pós-fill)</div>
+  <div class="legend-item"><span class="legend-line dashed" style="color:#34d399;height:2px"></span> BUY reativa (criada pós-fill)</div>
+  <div class="legend-item"><span class="legend-line" style="background:#f59e0b;height:2px"></span> Ordem deslizante (Slide)</div>
+  <div class="legend-item"><span class="legend-line dashed" style="color:#6b7280;height:2px"></span> Ordem cancelada</div>
+  <div class="legend-item">▲ Compra executada (BUY fill)</div>
+  <div class="legend-item">▼ Venda executada (SELL fill)</div>
+  <div class="legend-item">⚡ Slide ativado</div>
+  <div class="legend-item">🛡 Trailing Stop</div>
+  <div class="legend-item">🛑 Stop-Loss</div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// DADOS DOS CENÁRIOS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Candle: [open, high, low, close]
+// OrderLine: { price, from, to, color, label, dash, thin }
+//   from/to: candle indices (inclusive), -1 means "edge of chart"
+// Event: { candle, pos:'above'|'below', color, symbol, text }
+
+const SCENARIOS = [
+
+  // ─── CENÁRIO 1: LATERAL ──────────────────────────────────────────────────
+  {
+    name: "Cenário 1 — Mercado Lateral",
+    priceMin: 91200,
+    priceMax: 98800,
+    candles: [
+      [95000, 95800, 94600, 95100],  // D0
+      [95100, 95350, 94050, 95200],  // D1  B1 toca
+      [95200, 95950, 94700, 95800],  // D2  S1 executa
+      [95800, 96300, 94900, 95050],  // D3
+      [95050, 95400, 94050, 94200],  // D4  B1 toca novamente
+      [94200, 96100, 94100, 95900],  // D5
+      [95900, 96900, 95200, 96700],  // D6  S2 executa
+      [96700, 97200, 95500, 95600],  // D7
+      [95600, 95800, 93100, 93600],  // D8  B2 toca
+      [93600, 95200, 93200, 95000],  // D9
+    ],
+    orderLines: [
+      // ── Iniciais (toda a série)
+      { price:97850, from:0, to:9, color:'#ef4444', label:'S3  $97.850', dash:false },
+      { price:96900, from:0, to:9, color:'#ef4444', label:'S2  $96.900', dash:false },
+      { price:95950, from:0, to:9, color:'#ef4444', label:'S1  $95.950', dash:false },
+      { price:94050, from:0, to:9, color:'#10b981', label:'B1  $94.050', dash:false },
+      { price:93100, from:0, to:9, color:'#10b981', label:'B2  $93.100', dash:false },
+      { price:92150, from:0, to:9, color:'#10b981', label:'B3  $92.150', dash:false },
+      // ── Reativas criadas após fills
+      { price:94990, from:1, to:9, color:'#f87171', label:'SELL-B1 $94.990', dash:true },
+      { price:94940, from:2, to:9, color:'#34d399', label:'BUY-S1  $94.940', dash:true },
+      { price:94031, from:8, to:9, color:'#f87171', label:'SELL-B2 $94.031', dash:true },
+    ],
+    events: [
+      { candle:1, pos:'below', color:'#10b981', symbol:'▲', text:'B1 ✓' },
+      { candle:2, pos:'above', color:'#ef4444', symbol:'▼', text:'S1 ✓ · +$1,34' },
+      { candle:4, pos:'below', color:'#10b981', symbol:'▲', text:'B1 ✓' },
+      { candle:6, pos:'above', color:'#ef4444', symbol:'▼', text:'S2 ✓ · +$1,34' },
+      { candle:8, pos:'below', color:'#10b981', symbol:'▲', text:'B2 ✓' },
+    ],
+    desc: `
+      <h3>Mercado Lateral — Grid capturando spread a cada oscilação</h3>
+      <p>
+        <span class="tag tag-buy">BUY</span> O preço toca B1 ($94.050) no Dia 1 → ordem de compra executada (0,001772 BTC comprados com $166,67).<br>
+        Bot cria imediatamente <span class="tag tag-sell">SELL reativa</span> em $94.990 (1% acima do fill).<br><br>
+        No Dia 2 o preço sobe até S1 ($95.950) → SELL inicial executada.<br>
+        Bot cria <span class="tag tag-buy">BUY reativa</span> em $94.940. <strong>Lucro do ciclo: $1,34.</strong><br><br>
+        No Dia 6 S2 executa → +$1,34. No Dia 8 B2 toca → nova SELL criada.<br><br>
+        Nenhum slide ocorre: o preço nunca saiu dos limites das ordens ativas.<br>
+        Cada ciclo BUY→SELL gera ~<strong>$1,34 líquido</strong> (0,80% por nível).
+        Após 30 ciclos: <strong>~+$40 de lucro</strong>.
+      </p>
+    `
+  },
+
+  // ─── CENÁRIO 2: ALTA FORTE ───────────────────────────────────────────────
+  {
+    name: "Cenário 2 — Alta Forte (+10% → Trailing Stop)",
+    priceMin: 91000,
+    priceMax: 108000,
+    candles: [
+      [95000, 95600, 94700, 95400],   // D0
+      [95400, 96050, 95100, 95950],   // D1  S1 executa (H=95950)
+      [95950, 97050, 95700, 96900],   // D2  S2 executa (H=96900)
+      [96900, 98100, 96700, 97850],   // D3  S3 executa (H=97850)
+      [97850, 99600, 97600, 99300],   // D4  Slide UP ativa (preço>BUYs)
+      [99300, 101200, 98900, 100700], // D5  Slides continuam
+      [100700, 103100, 100300, 102200],// D6
+      [102200, 105100, 101800, 104500],// D7  Pico · Trailing ARMA
+      [104500, 104900, 100200, 99600], // D8  Reversão
+      [99600,  99800,  92800, 92500],  // D9  TRAILING STOP acionado
+    ],
+    orderLines: [
+      // ── SELLs iniciais (executam e somem)
+      { price:95950, from:0, to:1, color:'#ef4444', label:'S1  $95.950 ✓ D1', dash:false },
+      { price:96900, from:0, to:2, color:'#ef4444', label:'S2  $96.900 ✓ D2', dash:false },
+      { price:97850, from:0, to:3, color:'#ef4444', label:'S3  $97.850 ✓ D3', dash:false },
+      // ── BUYs iniciais (canceladas por slides D4-D6)
+      { price:92150, from:0, to:3, color:'#10b981', label:'B3  $92.150', dash:false },
+      { price:93100, from:0, to:4, color:'#10b981', label:'B2  $93.100', dash:false },
+      { price:94050, from:0, to:5, color:'#10b981', label:'B1  $94.050', dash:false },
+      // ── BUYs reativas criadas pelos fills de S1/S2/S3
+      { price:94990, from:1, to:8, color:'#34d399', label:'BUY-S1 $94.990', dash:true },
+      { price:95940, from:2, to:8, color:'#34d399', label:'BUY-S2 $95.940', dash:true },
+      { price:96890, from:3, to:8, color:'#34d399', label:'BUY-S3 $96.890', dash:true },
+      // ── BUYs deslizantes (SLIDE UP — laranja)
+      { price:97869, from:4, to:9, color:'#f59e0b', label:'⟳ Slide $97.869', dash:false },
+      { price:98848, from:5, to:9, color:'#f59e0b', label:'⟳ Slide $98.848', dash:false },
+      { price:99836, from:6, to:9, color:'#f59e0b', label:'⟳ Slide $99.836', dash:false },
+      { price:100835,from:7, to:9, color:'#f59e0b', label:'⟳ Slide $100.835',dash:false },
+    ],
+    events: [
+      { candle:1, pos:'above', color:'#ef4444', symbol:'▼', text:'S1 ✓' },
+      { candle:2, pos:'above', color:'#ef4444', symbol:'▼', text:'S2 ✓' },
+      { candle:3, pos:'above', color:'#ef4444', symbol:'▼', text:'S3 ✓' },
+      { candle:4, pos:'above', color:'#f59e0b', symbol:'⚡', text:'Slide UP #1 — B3 cancelada' },
+      { candle:5, pos:'above', color:'#f59e0b', symbol:'⚡', text:'Slide UP #2 — B2 cancelada' },
+      { candle:6, pos:'above', color:'#f59e0b', symbol:'⚡', text:'Slide UP #3 — B1 cancelada' },
+      { candle:7, pos:'above', color:'#38bdf8', symbol:'🛡', text:'Trailing ARMADO (+10% lucro)' },
+      { candle:9, pos:'below', color:'#ef4444', symbol:'🛑', text:'TRAILING STOP — Shutdown!' },
+    ],
+    desc: `
+      <h3>Alta Forte — Slides UP acompanham o preço; Trailing Stop fecha posição</h3>
+      <p>
+        <strong>Dias 1–3:</strong> <span class="tag tag-sell">SELLs</span> S1, S2 e S3 executam conforme o preço sobe. Cada fill gera +$1,34.
+        O bot cria <span class="tag tag-buy">BUYs reativas</span> abaixo do preço, que ficam aguardando (preço não volta).<br><br>
+
+        <strong>Dia 4 em diante:</strong> Preço ultrapassa a BUY mais alta → <span class="tag tag-slide">Slide UP</span> ativa.
+        O bot <strong>cancela a BUY mais baixa</strong> (mais distante do preço atual), libera o USDC travado,
+        e cria uma <strong>nova BUY 1% acima da mais alta</strong>. Isso repete a cada ciclo CRON enquanto o preço subir.
+        As BUYs "escalam" junto com o mercado — o grid acompanha sem cancelar tudo.<br><br>
+
+        <strong>Dia 7:</strong> Capital marcado supera +10% → <span class="tag tag-info">Trailing Stop armado</span>. E-mail enviado.<br><br>
+
+        <strong>Dia 9:</strong> Preço reverte de $104.500 → $92.500. Capital cai 15% do pico →
+        <span class="tag tag-stop">TRAILING STOP acionado</span>:
+        todas as ordens canceladas, BTC vendido a mercado, grid parado.
+        Requer clique manual em "Religar Bot" para retomar.
+      </p>
+    `
+  },
+
+  // ─── CENÁRIO 3: QUEDA FORTE ──────────────────────────────────────────────
+  {
+    name: "Cenário 3 — Queda Forte (Stop-Loss −20%)",
+    priceMin: 72000,
+    priceMax: 98500,
+    candles: [
+      [95000, 95400, 94100, 94300],  // D0
+      [94300, 94600, 94050, 94150],  // D1  B1 executa (L=94050)
+      [94150, 94400, 93100, 93400],  // D2  B2 executa (L=93100)
+      [93400, 93600, 92150, 92600],  // D3  B3 executa (L=92150)
+      [92600, 92800, 89200, 90000],  // D4  Slide DOWN ativa (preço<SELLs)
+      [90000, 90400, 86200, 87000],  // D5  Slides continuam
+      [87000, 87600, 82800, 83500],  // D6
+      [83500, 84100, 79200, 80000],  // D7
+      [80000, 80600, 75400, 76100],  // D8  Circuit Breaker armado (~DD 20%)
+      [76100, 76300, 73900, 74500],  // D9  STOP-LOSS acionado
+    ],
+    orderLines: [
+      // ── SELLs iniciais (canceladas pelos slides, de cima pra baixo)
+      { price:97850, from:0, to:3, color:'#ef4444', label:'S3  $97.850', dash:false },
+      { price:96900, from:0, to:4, color:'#ef4444', label:'S2  $96.900', dash:false },
+      { price:95950, from:0, to:5, color:'#ef4444', label:'S1  $95.950', dash:false },
+      // ── BUYs iniciais (executam dias 1-3)
+      { price:94050, from:0, to:1, color:'#10b981', label:'B1  $94.050 ✓ D1', dash:false },
+      { price:93100, from:0, to:2, color:'#10b981', label:'B2  $93.100 ✓ D2', dash:false },
+      { price:92150, from:0, to:3, color:'#10b981', label:'B3  $92.150 ✓ D3', dash:false },
+      // ── SELLs reativas criadas pelos fills (aguardam recuperação que não vem)
+      { price:94990, from:1, to:6, color:'#f87171', label:'SELL-B1 $94.990', dash:true },
+      { price:94031, from:2, to:7, color:'#f87171', label:'SELL-B2 $94.031', dash:true },
+      { price:93071, from:3, to:8, color:'#f87171', label:'SELL-B3 $93.071', dash:true },
+      // ── SELLs deslizantes (SLIDE DOWN — laranja cascateando para baixo)
+      { price:92140, from:4, to:9, color:'#f59e0b', label:'⟳ Slide $92.140', dash:false },
+      { price:91219, from:4, to:9, color:'#f59e0b', label:'⟳ Slide $91.219', dash:false },
+      { price:90307, from:5, to:9, color:'#f59e0b', label:'⟳ Slide $90.307', dash:false },
+      { price:89404, from:5, to:9, color:'#f59e0b', label:'⟳ Slide $89.404', dash:false },
+      { price:88000, from:6, to:9, color:'#f59e0b', label:'⟳ Slide $88.000', dash:false },
+      { price:86500, from:7, to:9, color:'#f59e0b', label:'⟳ Slide $86.500', dash:false },
+    ],
+    events: [
+      { candle:1, pos:'below', color:'#10b981', symbol:'▲', text:'B1 ✓  — comprou 0,001772 BTC' },
+      { candle:2, pos:'below', color:'#10b981', symbol:'▲', text:'B2 ✓  — comprou 0,001790 BTC' },
+      { candle:3, pos:'below', color:'#10b981', symbol:'▲', text:'B3 ✓  — comprou 0,001809 BTC' },
+      { candle:4, pos:'below', color:'#f59e0b', symbol:'⚡', text:'Slide DOWN #1/#2 — S3 e S2 canceladas' },
+      { candle:5, pos:'below', color:'#f59e0b', symbol:'⚡', text:'Slide DOWN — S1 cancelada' },
+      { candle:6, pos:'below', color:'#f59e0b', symbol:'⚡', text:'Slide DOWN — SELL-B1 cancelada' },
+      { candle:7, pos:'below', color:'#f59e0b', symbol:'⚡', text:'Slide DOWN — SELL-B2 cancelada' },
+      { candle:8, pos:'below', color:'#fbbf24', symbol:'⚠', text:'Circuit Breaker ARMADO (DD ≈20%)' },
+      { candle:9, pos:'below', color:'#ef4444', symbol:'🛑', text:'STOP-LOSS — BTC vendido a mercado' },
+    ],
+    desc: `
+      <h3>Queda Forte — Slides DOWN acompanham o preço; Stop-Loss encerra em −20%</h3>
+      <p>
+        <strong>Dias 1–3:</strong> <span class="tag tag-buy">BUYs</span> B1, B2 e B3 executam conforme o preço cai.
+        O bot acumula BTC ($94.050, $93.100, $92.150) e cria <span class="tag tag-sell">SELLs reativas</span>
+        1% acima de cada fill — mas o preço não recupera, então ficam aguardando.<br><br>
+
+        <strong>Dia 4 em diante:</strong> Preço cai abaixo da SELL mais baixa → <span class="tag tag-slide">Slide DOWN</span> ativa.
+        O bot <strong>cancela a SELL mais alta</strong> (a mais distante, com BTC travado no topo),
+        libera esse BTC e cria uma <strong>nova SELL 1% abaixo da mais baixa</strong>.
+        Isso repete até 6x por ciclo CRON. As SELLs "cascateiam" para baixo acompanhando o preço.
+        O BTC não é vendido com prejuízo — ele é <em>reposicionado</em> mais próximo ao mercado.
+        O <code>original_cost_price</code> é preservado para cálculo correto do lucro quando executar.<br><br>
+
+        <strong>Dias 5–7:</strong> Slides continuam. O bot está 100% em BTC (≈0,0106 BTC).
+        Capital marcado cai junto com o preço.<br><br>
+
+        <strong>Dia 8:</strong> Drawdown atinge 20% →
+        <span class="tag tag-info">Circuit Breaker ARMADO</span>: bot aguarda 10 minutos
+        para confirmar (evita flash-crash falso).<br><br>
+
+        <strong>Dia 9:</strong> Drawdown persiste acima de 18% após 10min →
+        <span class="tag tag-stop">STOP-LOSS acionado</span>: ordens canceladas,
+        todo BTC vendido a mercado (~$74.500), grid parado.
+        Capital final: ~$792 (perda ≈ −$208 / −20,8%).
+      </p>
+    `
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDERER
+// ─────────────────────────────────────────────────────────────────────────────
+
+const canvas  = document.getElementById('chart');
+const ctx     = canvas.getContext('2d');
+const descEl  = document.getElementById('desc');
+
+// Layout
+const ML = 72, MR = 220, MT = 24, MB = 42;
+const CW = canvas.width  - ML - MR;
+const CH = canvas.height - MT - MB;
+
+let activeScenario = 0;
+
+function xOf(i, n) {
+  const slotW = CW / n;
+  return ML + slotW * i + slotW / 2;
+}
+
+function yOf(price, pmin, pmax) {
+  return MT + CH - (price - pmin) / (pmax - pmin) * CH;
+}
+
+function drawChart(idx) {
+  const S = SCENARIOS[idx];
+  const { priceMin, priceMax, candles, orderLines, events } = S;
+  const n = candles.length;
+  const slotW = CW / n;
+  const candleW = Math.max(6, Math.min(slotW * 0.5, 18));
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // ── background
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // ── price grid lines
+  const prange = priceMax - priceMin;
+  const step = niceStep(prange / 8);
+  const pStart = Math.ceil(priceMin / step) * step;
+
+  ctx.setLineDash([]);
+  for (let p = pStart; p <= priceMax; p += step) {
+    const y = yOf(p, priceMin, priceMax);
+    ctx.strokeStyle = '#1e2937';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(ML, y); ctx.lineTo(ML + CW, y); ctx.stroke();
+
+    ctx.fillStyle = '#4b5563';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('$' + p.toLocaleString('pt-BR'), ML - 6, y + 3);
+  }
+
+  // ── chart border
+  ctx.strokeStyle = '#1e293b';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(ML, MT, CW, CH);
+
+  // ── time axis labels
+  ctx.fillStyle = '#4b5563';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  for (let i = 0; i < n; i++) {
+    const x = xOf(i, n);
+    ctx.fillText('D' + i, x, MT + CH + 16);
+    // small tick
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, MT + CH);
+    ctx.lineTo(x, MT + CH + 4);
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#374151';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('Tempo (cada coluna = 1 período)', ML + CW/2, MT + CH + 32);
+
+  // ── order lines
+  // collect labels to avoid overlap
+  const labelRightX = ML + CW + 5;
+  const usedLabelY  = [];
+
+  // draw lines (back to front: thin dashed first, solid after)
+  const sorted = [...orderLines].sort((a, b) => (a.dash?0:1) - (b.dash?0:1));
+
+  for (const ol of sorted) {
+    const { price, from, to, color, label, dash } = ol;
+    const py = yOf(price, priceMin, priceMax);
+    if (py < MT - 2 || py > MT + CH + 2) continue;
+
+    const x0 = ML + (from / n) * CW;
+    const x1 = ML + ((to + 1) / n) * CW;
+
+    ctx.setLineDash(dash ? [5, 3] : []);
+    ctx.strokeStyle = dash ? color + 'aa' : color;
+    ctx.lineWidth   = dash ? 1 : 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x0, py);
+    ctx.lineTo(x1, py);
+    ctx.stroke();
+
+    // vertical end cap
+    if (to < n - 1) {
+      ctx.setLineDash([2, 2]);
+      ctx.strokeStyle = '#374151';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x1, py - 5);
+      ctx.lineTo(x1, py + 5);
+      ctx.stroke();
+    }
+
+    // right-side label (de-overlap)
+    ctx.setLineDash([]);
+    let labelY = py + 3;
+    // nudge until no collision
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const tooClose = usedLabelY.some(y => Math.abs(y - labelY) < 11);
+      if (!tooClose) break;
+      labelY += (Math.random() > 0.5 ? 1 : -1) * 11;
+    }
+    usedLabelY.push(labelY);
+
+    ctx.font = '9.5px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = dash ? color + 'bb' : color + 'ee';
+    ctx.fillText(label, labelRightX, labelY);
+
+    // connector dot
+    ctx.beginPath();
+    ctx.arc(x1, py, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = dash ? color + '77' : color + 'cc';
+    ctx.fill();
+  }
+
+  ctx.setLineDash([]);
+
+  // ── candles
+  for (let i = 0; i < n; i++) {
+    const [o, h, l, c] = candles[i];
+    const x = xOf(i, n);
+    const yo = yOf(o, priceMin, priceMax);
+    const yh = yOf(h, priceMin, priceMax);
+    const yl = yOf(l, priceMin, priceMax);
+    const yc = yOf(c, priceMin, priceMax);
+    const isUp = c >= o;
+    const col = isUp ? '#22c55e' : '#ef4444';
+    const bodyTop    = Math.min(yo, yc);
+    const bodyBottom = Math.max(yo, yc);
+    const bodyH      = Math.max(1.5, bodyBottom - bodyTop);
+
+    // wick
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, yh);
+    ctx.lineTo(x, yl);
+    ctx.stroke();
+
+    // body
+    ctx.fillStyle = col;
+    ctx.fillRect(x - candleW/2, bodyTop, candleW, bodyH);
+
+    // body border
+    ctx.strokeStyle = isUp ? '#16a34a' : '#b91c1c';
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(x - candleW/2, bodyTop, candleW, bodyH);
+  }
+
+  // ── event markers
+  const eventFontSize = 10;
+  for (const ev of events) {
+    const { candle, pos, color, symbol, text } = ev;
+    const [o, h, l, c] = candles[candle];
+    const x = xOf(candle, n);
+    const priceRef = pos === 'above' ? h : l;
+    const baseY = yOf(priceRef, priceMin, priceMax) + (pos === 'above' ? -18 : 18);
+
+    // arrow symbol
+    ctx.font = `bold ${eventFontSize + 2}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = color;
+    ctx.fillText(symbol, x, baseY);
+
+    // text label background
+    ctx.font = `${eventFontSize}px monospace`;
+    const textWidth = ctx.measureText(text).width;
+    const textX = Math.min(x - textWidth/2, ML + CW - textWidth - 4);
+    const textY = baseY + (pos === 'above' ? -14 : 14);
+
+    ctx.fillStyle = 'rgba(15,17,21,0.85)';
+    ctx.fillRect(textX - 3, textY - 11, textWidth + 6, 14);
+
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.fillText(text, textX, textY);
+  }
+
+  // ── scenario title overlay
+  ctx.fillStyle = '#1e2937';
+  ctx.fillRect(ML + 4, MT + 4, 6, 6);
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#94a3b8';
+  ctx.fillText(S.name, ML + 8, MT + 16);
+}
+
+function niceStep(rawStep) {
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const steps = [1, 2, 2.5, 5, 10];
+  for (const s of steps) {
+    if (s * magnitude >= rawStep) return s * magnitude;
+  }
+  return 10 * magnitude;
+}
+
+function selectScenario(idx) {
+  activeScenario = idx;
+  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+  descEl.innerHTML = SCENARIOS[idx].desc;
+  drawChart(idx);
+}
+
+// Init
+selectScenario(0);
+</script>
+</body>
+</html>

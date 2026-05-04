@@ -10,6 +10,14 @@ class site_controller
 {
     private const BINANCE_RECV_WINDOW = 10000;
 
+    private function applyRecvWindowToOrderRequest(NewOrderRequest $req): NewOrderRequest
+    {
+        if (method_exists($req, 'setRecvWindow')) {
+            $req->setRecvWindow(self::BINANCE_RECV_WINDOW);
+        }
+        return $req;
+    }
+
 
     /**
      * Dashboard do Grid Trading
@@ -23,6 +31,8 @@ class site_controller
 
         // Verificar se é uma ação AJAX
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            ini_set('display_errors', 0);
+            ob_start();
             header('Content-Type: application/json; charset=utf-8');
 
             $input = $_POST;
@@ -661,6 +671,218 @@ class site_controller
     public function display($info)
     {
         basic_redir($GLOBALS["home_url"]);
+    }
+
+    /**
+     * Endpoint JSON com métricas avançadas do grid (Sharpe, Sortino, drawdown, etc)
+     */
+    public function gridMetrics($info)
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        if (!auth_controller::check_login()) {
+            echo json_encode(['success' => false, 'message' => 'Não autenticado']);
+            return;
+        }
+
+        $gridId = (int)($_GET['grid_id'] ?? 0);
+        if ($gridId <= 0) {
+            echo json_encode(['success' => false, 'message' => 'grid_id inválido']);
+            return;
+        }
+
+        $cacheKey = "metrics:grid:{$gridId}";
+        $redis = RedisCache::getInstance();
+        $cached = $redis->get($cacheKey);
+        if ($cached !== false) {
+            echo $cached;
+            return;
+        }
+
+        // Buscar snapshots horários dos últimos 30 dias
+        $snapModel = new capital_snapshots_model();
+        $snapModel->set_filter([
+            "grids_id = '{$gridId}'",
+            "created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+        ]);
+        $snapModel->set_order(["created_at ASC"]);
+        $snapModel->load_data();
+        $snapshots = $snapModel->data;
+
+        $returns = [];
+        $maxDrawdown = 0.0;
+        $peak = 0.0;
+        $totalCapitalChange = 0.0;
+        $btcMtm = 0.0;
+        if (count($snapshots) > 1) {
+            $firstBtcVal = (float)($snapshots[0]['btc_holding'] ?? 0) * (float)($snapshots[0]['btc_price'] ?? 0);
+            $lastBtcVal  = (float)($snapshots[count($snapshots) - 1]['btc_holding'] ?? 0)
+                         * (float)($snapshots[count($snapshots) - 1]['btc_price'] ?? 0);
+            $btcMtm = $firstBtcVal > 0 ? ($lastBtcVal - $firstBtcVal) / $firstBtcVal : 0;
+        }
+
+        if (count($snapshots) > 1) {
+            $firstCap = (float)($snapshots[0]['total_capital_usdc'] ?? 0);
+            $lastCap = (float)($snapshots[count($snapshots) - 1]['total_capital_usdc'] ?? 0);
+            $totalCapitalChange = $firstCap > 0 ? ($lastCap - $firstCap) / $firstCap : 0;
+
+            for ($i = 1; $i < count($snapshots); $i++) {
+                $prev = (float)($snapshots[$i - 1]['total_capital_usdc'] ?? 0);
+                $curr = (float)($snapshots[$i]['total_capital_usdc'] ?? 0);
+                if ($prev > 0) {
+                    $ret = ($curr - $prev) / $prev;
+                    $returns[] = $ret;
+                    if ($curr > $peak) $peak = $curr;
+                    $dd = $peak > 0 ? ($peak - $curr) / $peak : 0;
+                    if ($dd > $maxDrawdown) $maxDrawdown = $dd;
+                }
+            }
+        }
+
+        $sharpe = 0.0;
+        $sortino = 0.0;
+        if (count($returns) > 1) {
+            $mean = array_sum($returns) / count($returns);
+            $variance = array_sum(array_map(fn($r) => pow($r - $mean, 2), $returns)) / count($returns);
+            $stdDev = sqrt($variance);
+            $annualFactor = sqrt(24 * 365);
+            $sharpe = $stdDev > 0 ? ($mean * $annualFactor) / ($stdDev * $annualFactor) : 0;
+
+            $downsideReturns = array_filter($returns, fn($r) => $r < 0);
+            $downsideVariance = count($downsideReturns) > 0 ? array_sum(array_map(fn($r) => pow($r, 2), $downsideReturns)) / count($downsideReturns) : 0;
+            $downsideDev = sqrt($downsideVariance);
+            $sortino = $downsideDev > 0 ? ($mean * $annualFactor) / ($downsideDev * $annualFactor) : 0;
+        }
+
+        // Win rate e profit factor — via grids_orders.profit_usdc (trades pareados)
+        $goTradesModel = new grids_orders_model();
+        $goTradesModel->set_filter(["grids_id = '{$gridId}'", "profit_usdc IS NOT NULL"]);
+        $goTradesModel->load_data();
+        $tradesProfit = $goTradesModel->data;
+        $wins = 0;
+        $losses = 0;
+        $totalProfit = 0.0;
+        $totalLoss = 0.0;
+        foreach ($tradesProfit as $trade) {
+            $profit = (float)($trade['profit_usdc'] ?? 0);
+            if ($profit > 0) {
+                $wins++;
+                $totalProfit += $profit;
+            } elseif ($profit < 0) {
+                $losses++;
+                $totalLoss += abs($profit);
+            }
+        }
+        $totalTrades = $wins + $losses;
+        $winRate = $totalTrades > 0 ? ($wins / $totalTrades) * 100 : 0;
+        $profitFactor = $totalLoss > 0 ? $totalProfit / $totalLoss : ($totalProfit > 0 ? INF : 0);
+
+        // Maker ratio e fills/dia — usa grid_orders como ponte para orders
+        $goModel = new grids_orders_model();
+        $goModel->set_filter(["grids_id = '{$gridId}'"]);
+        $goModel->load_data();
+        $gridOrdersIds = array_column($goModel->data, 'orders_id');
+        $gridOrdersIds = array_unique(array_filter($gridOrdersIds, fn($id) => (int)$id > 0));
+
+        $makerRatio  = 0;
+        $fillsPerDay = 0;
+        $makerCount  = 0;
+
+        if (!empty($gridOrdersIds)) {
+            $idsStr = implode(',', array_map('intval', $gridOrdersIds));
+
+            // Maker ratio: ordens FILLED com is_maker
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter([
+                "idx IN ({$idsStr})",
+                "status = 'FILLED'",
+                "is_maker IS NOT NULL"
+            ]);
+            $ordersModel->load_data();
+            $filledOrders = $ordersModel->data;
+            foreach ($filledOrders as $o) {
+                if ((int)($o['is_maker'] ?? 0) === 1) $makerCount++;
+            }
+            $makerRatio = count($filledOrders) > 0 ? ($makerCount / count($filledOrders)) * 100 : 0;
+
+            // Fills por dia (últimos 7 dias)
+            $sevenDaysAgo = date('Y-m-d H:i:s', strtotime('-7 days'));
+            $ordersModel2 = new orders_model();
+            $ordersModel2->set_filter([
+                "idx IN ({$idsStr})",
+                "status = 'FILLED'",
+                "order_created_at >= '{$sevenDaysAgo}'"
+            ]);
+            $ordersModel2->load_data();
+            $fillsPerDay = count($ordersModel2->data) / 7.0;
+        }
+
+        // Spread PnL total (último snapshot)
+        $result = [
+            'success' => true,
+            'grid_id' => $gridId,
+            'spread_pnl_total' => (float)($snapshots[count($snapshots) - 1]['accumulated_spread_pnl'] ?? 0),
+            'btc_mtm' => $btcMtm,
+            'total_capital_change' => $totalCapitalChange,
+            'sharpe_ratio' => $sharpe,
+            'sortino_ratio' => $sortino,
+            'max_drawdown' => $maxDrawdown,
+            'win_rate' => $winRate,
+            'profit_factor' => is_finite($profitFactor) ? $profitFactor : null,
+            'fills_per_day' => round($fillsPerDay, 2),
+            'maker_ratio' => $makerRatio,
+        ];
+
+        $json = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $redis->set($cacheKey, $json, 60);
+        echo $json;
+    }
+
+    /**
+     * Endpoint JSON com histórico de capital do grid (últimos 30 dias, agrupado por hora)
+     */
+    public function gridCapitalHistory($info)
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        if (!auth_controller::check_login()) {
+            echo json_encode(['success' => false, 'message' => 'Não autenticado']);
+            return;
+        }
+
+        $gridId = (int)($_GET['grid_id'] ?? 0);
+        if ($gridId <= 0) {
+            echo json_encode(['success' => false, 'message' => 'grid_id inválido']);
+            return;
+        }
+
+        $snapModel = new capital_snapshots_model();
+        $snapModel->set_filter([
+            "grids_id = '{$gridId}'",
+            "created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+        ]);
+        $snapModel->set_order(["created_at ASC"]);
+        $snapModel->load_data();
+
+        $grouped = [];
+        foreach ($snapModel->data as $row) {
+            $hour = date('Y-m-d H:00:00', strtotime($row['created_at']));
+            if (!isset($grouped[$hour]) || (float)$row['total_capital_usdc'] > $grouped[$hour]['total_capital_usdc']) {
+                $grouped[$hour] = [
+                    'hour' => $hour,
+                    'total_capital_usdc' => (float)$row['total_capital_usdc'],
+                    'usdc_balance' => (float)$row['usdc_balance'],
+                    'btc_holding' => (float)$row['btc_holding'],
+                    'btc_price' => (float)$row['btc_price'],
+                ];
+            }
+        }
+
+        echo json_encode([
+            'success' => true,
+            'grid_id' => $gridId,
+            'data' => array_values($grouped)
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
     /**
@@ -1624,6 +1846,8 @@ class site_controller
      */
     private function executeGridLiquidation(bool $stopBot): void
     {
+        header('Content-Type: application/json; charset=utf-8');
+
         $actionLabel = $stopBot ? 'ajaxEmergencyShutdown' : 'ajaxCloseAllGridPositions';
         $logIcon = $stopBot ? '🔴' : '🟡';
 
@@ -1710,52 +1934,65 @@ class site_controller
                 }
 
                 try {
-                    $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
-                    $accountData = $accountInfo->getData();
-
-                    if (!$accountData || !isset($accountData['balances'])) {
-                        throw new Exception('Não foi possível obter saldos da conta');
-                    }
-
-                    $assetBalance = null;
-                    foreach ($accountData['balances'] as $balance) {
-                        if (($balance['asset'] ?? '') === $asset) {
-                            $assetBalance = $balance;
-                            break;
+                    // Tentar obter saldo via API; fallback: somar qty das SELLs canceladas no DB
+                    $free = 0.0;
+                    try {
+                        $accountInfo = $api->getAccount(null, self::BINANCE_RECV_WINDOW);
+                        $accountData = $accountInfo->getData();
+                        if ($accountData && isset($accountData['balances'])) {
+                            foreach ($accountData['balances'] as $balance) {
+                                if (($balance['asset'] ?? '') === $asset) {
+                                    $free = (float)($balance['free'] ?? 0);
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (Exception $apiEx) {
+                        error_log("⚠️ [{$actionLabel}] getAccount falhou ({$apiEx->getMessage()}); calculando qty via DB");
+                        // Fallback: somar executed_qty das SELLs que foram canceladas agora
+                        $pdo = (new local_pdo())->getPdo();
+                        $stmt = $pdo->prepare("
+                            SELECT COALESCE(SUM(o.quantity), 0) AS total_qty
+                            FROM orders o
+                            JOIN grids_orders go ON go.orders_id = o.idx
+                            WHERE go.grids_id = :gid
+                              AND o.side = 'SELL'
+                              AND o.status IN ('CANCELED','NEW')
+                        ");
+                        $stmt->execute([':gid' => $gridId]);
+                        $free = (float)($stmt->fetchColumn() ?? 0);
+                        if ($free > 0) {
+                            error_log("ℹ️ [{$actionLabel}] Qty BTC via DB fallback: {$free}");
                         }
                     }
 
-                    if ($assetBalance) {
-                        $free = (float)($assetBalance['free'] ?? 0);
+                    if ($free >= 0.00001) {
+                        $exchangeInfo = $this->getExchangeInfo($symbol);
+                        $lotSizeFilter = $this->extractLotSizeFilter($exchangeInfo);
+                        $finalQty = $this->adjustQuantityToStepSize($free, $lotSizeFilter['stepSize']);
+                        $finalQtyFloat = (float)$finalQty;
 
-                        if ($free >= 0.00001) {
-                            $exchangeInfo = $this->getExchangeInfo($symbol);
-                            $lotSizeFilter = $this->extractLotSizeFilter($exchangeInfo);
-                            $finalQty = $this->adjustQuantityToStepSize($free, $lotSizeFilter['stepSize']);
-                            $finalQtyFloat = (float)$finalQty;
+                        if ($finalQtyFloat >= (float)$lotSizeFilter['minQty']) {
+                            $newOrderReq = new NewOrderRequest();
+                            $newOrderReq->setSymbol($symbol);
+                            $newOrderReq->setSide(Side::SELL);
+                            $newOrderReq->setType(OrderType::MARKET);
+                            $newOrderReq->setQuantity($finalQty);
 
-                            if ($finalQtyFloat >= (float)$lotSizeFilter['minQty']) {
-                                $newOrderReq = new NewOrderRequest();
-                                $newOrderReq->setSymbol($symbol);
-                                $newOrderReq->setSide(Side::SELL);
-                                $newOrderReq->setType(OrderType::MARKET);
-                                $newOrderReq->setQuantity($finalQty);
+                            $response = $api->newOrder($this->applyRecvWindowToOrderRequest($newOrderReq));
+                            $orderData = $response->getData();
+                            $sellOrderId = method_exists($orderData, 'getOrderId')
+                                ? $orderData->getOrderId()
+                                : ($orderData['orderId'] ?? null);
 
-                                $response = $api->newOrder($this->applyRecvWindowToOrderRequest($newOrderReq));
-                                $orderData = $response->getData();
-                                $sellOrderId = method_exists($orderData, 'getOrderId')
-                                    ? $orderData->getOrderId()
-                                    : ($orderData['orderId'] ?? null);
-
-                                $soldAssets[] = [
-                                    'grid_id' => $gridId,
-                                    'symbol' => $symbol,
-                                    'asset' => $asset,
-                                    'quantity' => $finalQty,
-                                    'quantity_original' => $free,
-                                    'order_id' => $sellOrderId
-                                ];
-                            }
+                            $soldAssets[] = [
+                                'grid_id' => $gridId,
+                                'symbol' => $symbol,
+                                'asset' => $asset,
+                                'quantity' => $finalQty,
+                                'quantity_original' => $free,
+                                'order_id' => $sellOrderId
+                            ];
                         }
                     }
                 } catch (Exception $e) {
@@ -1832,6 +2069,10 @@ class site_controller
                 $message .= ' | ' . count($errors) . ' erro(s)';
             }
 
+            $spurious = ob_get_clean();
+            if (!empty(trim($spurious))) {
+                error_log("⚠️ [{$actionLabel}] Saída espúria capturada antes do JSON: " . substr($spurious, 0, 500));
+            }
             echo json_encode([
                 'success' => true,
                 'message' => $message,
@@ -1841,8 +2082,14 @@ class site_controller
                 'stop_bot' => $stopBot
             ], JSON_UNESCAPED_UNICODE);
             exit;
-        } catch (Exception $e) {
-            error_log("❌ [ajaxCloseAllGridPositions] Erro: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
+        } catch (\Throwable $e) {
+            error_log("❌ [{$actionLabel}] Erro: " . $e->getMessage() . " | " . get_class($e) . " | Trace: " . $e->getTraceAsString());
+            if (ob_get_level() > 0) {
+                $spurious = ob_get_clean();
+                if (!empty(trim($spurious))) {
+                    error_log("⚠️ [{$actionLabel}] Buffer no erro: " . substr($spurious, 0, 500));
+                }
+            }
             echo json_encode([
                 'success' => false,
                 'message' => 'Erro ao encerrar posições: ' . $e->getMessage()

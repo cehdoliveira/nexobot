@@ -86,6 +86,8 @@ $dispatcher->add_route("POST", "/?", "site_controller:dashboard", $authGuard, $p
 $dispatcher->add_route("GET", "/config(\.json|\.xml|\.html)?", "config_controller:display", $authGuard, $params);
 $dispatcher->add_route("POST", "/config(\.json|\.xml|\.html)?", "config_controller:update", $authGuard, $params);
 $dispatcher->add_route("GET", "/setup", "setup_controller:display", $authGuard, $params);
+$dispatcher->add_route("GET", "/grid-metrics", "site_controller:gridMetrics", $authGuard, $params);
+$dispatcher->add_route("GET", "/grid-capital-history", "site_controller:gridCapitalHistory", $authGuard, $params);
 
 // Executar dispatcher e tratar falhas
 if (!$dispatcher->exec()) {

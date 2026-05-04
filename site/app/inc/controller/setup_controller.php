@@ -208,6 +208,14 @@ class setup_controller
         if (!empty($params)) {
             $message .= " | Parâmetros: " . json_encode($params);
         }
+
+        // Rate limit detection: 429 / 418 / Too many requests
+        if (str_contains($error, '429') || str_contains($error, '418') || str_contains($error, 'Too many requests')) {
+            $retryAfter = 60; // default se header não disponível
+            BinanceRateLimitGuard::recordRateLimit($retryAfter);
+            $this->log("🚫 Rate limit Binance — backoff {$retryAfter}s ativado", 'ERROR', 'SYSTEM');
+        }
+
         $this->log($message, 'ERROR', 'API');
     }
 
@@ -277,14 +285,8 @@ class setup_controller
      */
     private function getAvailableUsdcBalance(bool $forceRefresh = false): float
     {
-        try {
-            $accountInfo = $this->getAccountInfo($forceRefresh);
-
-            return $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
-        } catch (Exception $e) {
-            $this->log("Erro ao obter saldo USDC disponível: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-            return 0.0;
-        }
+        $accountInfo = $this->getAccountInfo($forceRefresh);
+        return $this->getBalanceForAsset($accountInfo['balances'], 'USDC');
     }
 
     /**
@@ -297,24 +299,28 @@ class setup_controller
      * @param array $gridData Dados atuais do grid
      * @return float Capital ajustado com reinvestimento de lucros
      */
+    private const REINVESTMENT_THRESHOLD = 10.0;
+
     private function getCapitalForNewBuyOrder(int $gridId, array $gridData): float
     {
         try {
             $baseCapital = (float)$gridData['capital_per_level'];
             $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
 
-            // Distribui o lucro acumulado entre os 6 níveis do grid
-            $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
-            $capitalWithReinvestment = $baseCapital + $profitReinvestmentPerOrder;
-
-            if ($profitReinvestmentPerOrder > 0) {
+            // Reinvestimento em batch: só reinveste quando acumula >= $10
+            $extraCapital = 0.0;
+            if ($accumulatedProfit >= self::REINVESTMENT_THRESHOLD) {
+                $extraCapital = $accumulatedProfit;
+                $this->resetAccumulatedProfit($gridId);
                 $this->log(
-                    "💰 Capital reinvestido para BUY: \$" . number_format($profitReinvestmentPerOrder, 2) .
-                        " (lucro acumulado: \$" . number_format($accumulatedProfit, 2) . ")",
+                    "💰 Reinvestimento batch: \$" . number_format($extraCapital, 2) .
+                        " adicionado ao capital (threshold: " . self::REINVESTMENT_THRESHOLD . ")",
                     'INFO',
                     'TRADE'
                 );
             }
+
+            $capitalWithReinvestment = $baseCapital + $extraCapital;
 
             // PRIORIDADE 1: Verificar se USDC livre comporta o capital base
             $availableUsdc = $this->getAvailableUsdcBalance(true);
@@ -363,11 +369,32 @@ class setup_controller
                 return $this->exchangeInfoCache[$symbol];
             }
 
-            $url = "https://api.binance.com/api/v3/exchangeInfo?symbol={$symbol}";
-            $response = file_get_contents($url);
+            // Cache Redis por 600s
+            $cacheKey = 'binance:exchangeInfo:' . $symbol;
+            $redis = RedisCache::getInstance();
+            $cached = $redis->get($cacheKey);
+            if ($cached !== false && $cached !== null) {
+                $decoded = json_decode($cached, true);
+                $symbolData = $decoded['symbols'][0] ?? $decoded;
+                $this->exchangeInfoCache[$symbol] = $symbolData;
+                return $symbolData;
+            }
 
-            if ($response === false) {
-                throw new Exception("Erro ao acessar a API da Binance (exchangeInfo).");
+            $creds = BinanceConfig::getActiveCredentials();
+            $baseUrl = $creds['baseUrl'] ?? 'https://api.binance.com';
+            $url = "{$baseUrl}/api/v3/exchangeInfo?symbol={$symbol}";
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 5,
+                CURLOPT_CONNECTTIMEOUT => 3,
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (!$response || $httpCode !== 200) {
+                throw new \Exception("exchangeInfo HTTP $httpCode");
             }
 
             $exchangeData = json_decode($response, true);
@@ -375,6 +402,7 @@ class setup_controller
                 throw new Exception("Símbolo {$symbol} não encontrado na API da Binance.");
             }
 
+            $redis->set($cacheKey, $response, 600);
             $this->exchangeInfoCache[$symbol] = $exchangeData['symbols'][0];
             return $this->exchangeInfoCache[$symbol];
         } catch (Exception $e) {
@@ -396,10 +424,21 @@ class setup_controller
             $minNotional = (float)$filters['NOTIONAL']['minNotional'];
         }
 
+        $pps = null;
+        if (isset($filters['PERCENT_PRICE_BY_SIDE'])) {
+            $pps = [
+                'bidMultiplierUp'   => (float)$filters['PERCENT_PRICE_BY_SIDE']['bidMultiplierUp'],
+                'bidMultiplierDown' => (float)$filters['PERCENT_PRICE_BY_SIDE']['bidMultiplierDown'],
+                'askMultiplierUp'   => (float)$filters['PERCENT_PRICE_BY_SIDE']['askMultiplierUp'],
+                'askMultiplierDown' => (float)$filters['PERCENT_PRICE_BY_SIDE']['askMultiplierDown'],
+            ];
+        }
+
         return [
             $filters['LOT_SIZE']['stepSize'],
             $filters['PRICE_FILTER']['tickSize'],
-            $minNotional
+            $minNotional,
+            $pps
         ];
     }
 
@@ -442,6 +481,15 @@ class setup_controller
     }
 
     /**
+     * Retorna a taxa de fee por operação (default 0.1% = 0.001)
+     */
+    private function getFeeRate(string $type = 'taker'): float
+    {
+        $key = ($type === 'maker') ? 'fee_maker' : 'fee_taker';
+        return (float) AppSettings::get('binance', $key, '0.001');
+    }
+
+    /**
      * Retorna o preço canônico do slot mais próximo na grade geométrica.
      *   slot  = round(log($targetPrice / $centerPrice) / log(1 + $gridSpacing))
      *   preço = $centerPrice × (1 + $gridSpacing)^slot
@@ -472,6 +520,12 @@ class setup_controller
             // Log de início com separador visual
             $this->log("════════════════════════════════════════════════════════════", 'INFO', 'SYSTEM');
             $this->log("=== Grid Trading Bot INICIADO | Exec: {$this->executionId} | Host: " . gethostname() . " ===", 'INFO', 'SYSTEM');
+
+            // Rate limit guard: se Binance está em backoff, pular ciclo inteiro
+            if (BinanceRateLimitGuard::isInBackoff()) {
+                $this->log("⏸️ Backoff Binance ativo — ciclo pulado", 'WARNING', 'SYSTEM');
+                return;
+            }
 
             // Rotação de logs antigos
             $this->rotateOldLogs();
@@ -693,6 +747,11 @@ class setup_controller
                             'INFO',
                             'API'
                         );
+
+                        // Fills reais: quando muda para FILLED ou PARTIALLY_FILLED, buscar myTrades
+                        if ($statusChanged && in_array($newStatus, ['FILLED', 'PARTIALLY_FILLED'])) {
+                            $this->fetchAndStoreFillDetails((int)$order['idx'], (string)$order['binance_order_id'], (string)$order['symbol']);
+                        }
                     }
                 } catch (Exception $e) {
                     // Silencioso para evitar spam de logs (ex: timestamp errors)
@@ -708,6 +767,105 @@ class setup_controller
             $this->fixFilledOrdersWithZeroQty($gridId);
         } catch (Exception $e) {
             $this->log("Erro ao sincronizar ordens: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Busca dados reais de fills (myTrades) na Binance e persiste commission/is_maker.
+     */
+    private function fetchAndStoreFillDetails(int $orderDbId, string $binanceOrderId, string $symbol): void
+    {
+        try {
+            $creds = BinanceConfig::getActiveCredentials();
+            $apiKey = $creds['apiKey'];
+            $secretKey = $creds['secretKey'];
+            $baseUrl = $creds['baseUrl'] ?? 'https://api.binance.com';
+
+            $timestamp = round(microtime(true) * 1000);
+            $query = "symbol={$symbol}&orderId={$binanceOrderId}&timestamp={$timestamp}";
+            $signature = hash_hmac('sha256', $query, $secretKey);
+            $url = "{$baseUrl}/api/v3/myTrades?{$query}&signature={$signature}";
+
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 5,
+                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_HTTPHEADER     => ["X-MBX-APIKEY: {$apiKey}"],
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if (!$response || $httpCode !== 200) {
+                $this->log("myTrades HTTP {$httpCode} para ordem #{$binanceOrderId}", 'WARNING', 'API');
+                return;
+            }
+
+            $trades = json_decode($response, true);
+            if (empty($trades) || !is_array($trades)) {
+                return;
+            }
+
+            $totalCommission = 0.0;
+            $commissionAsset = null;
+            $isMaker = null;
+
+            foreach ($trades as $trade) {
+                $commission = (float)($trade['commission'] ?? 0);
+                $asset = $trade['commissionAsset'] ?? '';
+                if ($commissionAsset === null) {
+                    $commissionAsset = $asset;
+                }
+                $totalCommission += $commission;
+                if ($isMaker === null) {
+                    $isMaker = ($trade['isMaker'] ?? false) ? 1 : 0;
+                }
+            }
+
+            $commissionUsdc = null;
+            if ($commissionAsset === 'USDC') {
+                $commissionUsdc = $totalCommission;
+            } elseif ($commissionAsset && $totalCommission > 0) {
+                $tickerKey = 'ticker:' . $commissionAsset . 'USDC';
+                $redis = RedisCache::getInstance();
+                $rate = $redis->get($tickerKey);
+                if ($rate === false) {
+                    $tickerUrl = "{$baseUrl}/api/v3/ticker/price?symbol=" . $commissionAsset . "USDC";
+                    $tickerCh = curl_init($tickerUrl);
+                    curl_setopt_array($tickerCh, [
+                        CURLOPT_RETURNTRANSFER => true,
+                        CURLOPT_TIMEOUT        => 3,
+                        CURLOPT_CONNECTTIMEOUT => 2,
+                    ]);
+                    $tickerResp = curl_exec($tickerCh);
+                    curl_close($tickerCh);
+                    if ($tickerResp) {
+                        $tickerData = json_decode($tickerResp, true);
+                        $rate = (float)($tickerData['price'] ?? 0);
+                        if ($rate > 0) {
+                            $redis->set($tickerKey, $rate, 60);
+                        }
+                    }
+                }
+                if ($rate && (float)$rate > 0) {
+                    $commissionUsdc = $totalCommission * (float)$rate;
+                }
+            }
+
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter(["idx = '{$orderDbId}'"]);
+            $ordersModel->populate([
+                'commission' => $totalCommission > 0 ? $totalCommission : null,
+                'commission_asset' => $commissionAsset,
+                'commission_usdc_equivalent' => $commissionUsdc !== null ? $commissionUsdc : null,
+                'is_maker' => $isMaker,
+            ]);
+            $ordersModel->save();
+
+            $this->log("Fill details persistido para ordem #{$binanceOrderId} (commission: {$totalCommission} {$commissionAsset})", 'INFO', 'API');
+        } catch (Exception $e) {
+            $this->log("Erro em fetchAndStoreFillDetails: " . $e->getMessage(), 'ERROR', 'API');
         }
     }
 
@@ -796,141 +954,6 @@ class setup_controller
      * @param int $gridId ID do grid
      * @param string $symbol Par de negociação 
      */
-    private function cancelObsoleteOrders(int $gridId, string $symbol): void
-    {
-        try {
-            // Buscar ordens ABERTAS na Binance
-            $response = $this->client->getOpenOrders($symbol);
-
-            if ($response === null) {
-                return;
-            }
-
-            $responseData = $response->getData();
-
-            if ($responseData === null) {
-                $responseData = [];
-            }
-
-            // Converter resposta para array
-            $openOrders = [];
-            if (is_array($responseData)) {
-                $openOrders = $responseData;
-            } elseif (is_object($responseData)) {
-                // Tentar chamar getItems() se existir (padrão do Binance SDK)
-                if (method_exists($responseData, 'getItems')) {
-                    $openOrders = $responseData->getItems();
-                } else {
-                    // Fallback: tentar json_encode
-                    $jsonStr = json_encode($responseData);
-                    $openOrders = json_decode($jsonStr, true) ?? [];
-                }
-            }
-
-            if (empty($openOrders)) {
-                return;
-            }
-
-            $canceledCount = 0;
-            $currentTime = (int)(microtime(true) * 1000); // em millisegundos
-            $maxAgeMs = 15 * 60 * 1000; // 15 minutos em millisegundos
-
-            foreach ($openOrders as $binanceOrder) {
-                try {
-                    if (!is_array($binanceOrder)) {
-                        $binanceOrder = json_decode(json_encode($binanceOrder), true);
-                    }
-
-                    $binanceOrderId = $binanceOrder['orderId'] ?? null;
-                    if ($binanceOrderId === null) {
-                        continue;
-                    }
-
-                    $side = $binanceOrder['side'] ?? 'UNKNOWN';
-                    $status = $binanceOrder['status'] ?? 'UNKNOWN';
-
-                    // Buscar ordem no banco
-                    $ordersModel = new orders_model();
-                    $ordersModel->set_filter(["binance_order_id = '{$binanceOrderId}'"]);
-                    $ordersModel->load_data();
-
-                    // Se não está no banco, cancelar (órfã)
-                    if (count($ordersModel->data) === 0) {
-                        try {
-                            $this->client->deleteOrder($symbol, $binanceOrderId, null, null, null, self::BINANCE_RECV_WINDOW);
-                            $this->log(
-                                "✅ Ordem órfã {$binanceOrderId} cancelada",
-                                'SUCCESS',
-                                'SYSTEM'
-                            );
-                        } catch (Exception $cancelErr) {
-                            $this->log(
-                                "❌ Erro ao cancelar órfã {$binanceOrderId}: " . $cancelErr->getMessage(),
-                                'ERROR',
-                                'SYSTEM'
-                            );
-                        }
-                        $canceledCount++;
-                        continue;
-                    }
-
-                    $dbOrder = $ordersModel->data[0];
-                    $dbStatus = $dbOrder['status'] ?? 'UNKNOWN';
-                    $dbOrderIdx = $dbOrder['idx'] ?? 'N/A';
-                    $createdAt = (int)($dbOrder['order_created_at'] ?? 0);
-                    $ageMinutes = $createdAt > 0 ? round(($currentTime - $createdAt) / 1000 / 60) : 0;
-
-                    // Se status NEW e ficou aberto por > 15 min, cancelar (não vai executar)
-                    if ($status === 'NEW' && $createdAt > 0 && ($currentTime - $createdAt) > $maxAgeMs) {
-                        $this->log(
-                            "⚠️ Ordem ID={$dbOrderIdx} ({$side}) NEW por {$ageMinutes}min. Cancelando...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
-
-                        try {
-                            $this->client->deleteOrder($symbol, $binanceOrderId, null, null, null, self::BINANCE_RECV_WINDOW);
-                            $ordersModel->load_byIdx($dbOrderIdx);
-                            $ordersModel->populate(['status' => 'CANCELED']);
-                            $ordersModel->save();
-                            $this->log(
-                                "✅ Ordem cancelada",
-                                'SUCCESS',
-                                'SYSTEM'
-                            );
-                            $canceledCount++;
-                        } catch (Exception $e) {
-                            $this->log(
-                                "❌ Erro ao cancelar: " . $e->getMessage(),
-                                'ERROR',
-                                'SYSTEM'
-                            );
-                        }
-                    }
-
-                    // NOTA: NÃO cancelar SELLs NEW indiscriminadamente!
-                    // SELLs NEW são ordens válidas esperando execução (BTC bloqueado).
-                    // Apenas o bloco anterior (> 15 min) lida com ordens que ficaram paradas tempo demais.
-                } catch (Exception $e) {
-                    continue;
-                }
-            }
-
-            if ($canceledCount > 0) {
-                $this->log(
-                    "✅ {$canceledCount} ordem(s) cancelada(s)",
-                    'SUCCESS',
-                    'SYSTEM'
-                );
-            }
-        } catch (Exception $e) {
-            $this->log(
-                "Erro ao cancelar ordens: " . $e->getMessage(),
-                'ERROR',
-                'SYSTEM'
-            );
-        }
-    }
 
     /**
      * Prepara o capital inicial: 60% USDC (compras) + 40% BTC (vendas superiores)
@@ -1007,7 +1030,7 @@ class setup_controller
     {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
             $stepSizeFloat  = (float)$stepSize;
             $adjustedQty    = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
@@ -1253,10 +1276,25 @@ class setup_controller
             // ══════ ATUALIZAR TRACKING DE CAPITAL ══════
             if ($currentCapital > 0) {
                 $this->updateCapitalTracking((int)$gridId, $currentCapital);
+                $this->maybeRecordCapitalSnapshot((int)$gridId, $symbol);
             }
 
             // 0. SINCRONIZAR STATUS DAS ORDENS COM A BINANCE
             $this->syncOrdersWithBinance($gridId);
+
+            // 0.5 RECONCILIAÇÃO PERIÓDICA (~a cada 10 min com cron 15s)
+            try {
+                $redis = RedisCache::getInstance();
+                $reconcileKey = "nexobot:reconcile_counter:{$gridId}";
+                $counter = (int)$redis->get($reconcileKey);
+                $counter++;
+                $redis->set($reconcileKey, $counter, 3600);
+                if ($counter % 40 === 0) {
+                    $this->reconcileWithBinance((int)$gridId, (string)$symbol);
+                }
+            } catch (Exception $reconcileEx) {
+                $this->log("Erro no contador de reconciliação: " . $reconcileEx->getMessage(), 'WARNING', 'SYSTEM');
+            }
 
             // 1. BUSCAR ORDENS EXECUTADAS MAS NÃO PROCESSADAS
             $executedOrders = $this->getExecutedUnprocessedOrders($gridId);
@@ -1282,6 +1320,88 @@ class setup_controller
         }
     }
 
+
+    /**
+     * Reconcilia ordens do banco com a Binance periodicamente.
+     * Recupera órfãos da Binance e marca como CANCELED ordens que sumiram.
+     */
+    private function reconcileWithBinance(int $gridId, string $symbol): void
+    {
+        try {
+            // 1. Ordens abertas na Binance (array ou objeto com getItems)
+            $openOrdersResp = $this->client->getOpenOrders($symbol, self::BINANCE_RECV_WINDOW);
+            $openOrdersData = $openOrdersResp->getData();
+            $rawOrders = [];
+            if (is_array($openOrdersData)) {
+                $rawOrders = $openOrdersData;
+            } elseif (is_object($openOrdersData) && method_exists($openOrdersData, 'getItems')) {
+                $rawOrders = $openOrdersData->getItems();
+            }
+            $binanceOrders = [];
+            foreach ($rawOrders as $o) {
+                $o = is_array($o) ? $o : json_decode(json_encode($o), true);
+                $binanceOrders[$o['clientOrderId'] ?? $o['orderId']] = $o;
+            }
+
+            // 2. Ordens pendentes no banco
+            $gridsOrdersModel = new grids_orders_model();
+            $gridsOrdersModel->set_filter([
+                "active = 'yes'",
+                "grids_id = '{$gridId}'",
+                "orders_id IN (SELECT idx FROM orders WHERE status IN ('NEW', 'PARTIALLY_FILLED'))"
+            ]);
+            $gridsOrdersModel->load_data();
+            $gridsOrdersModel->join('orders', 'orders', ['idx' => 'orders_id']);
+
+            $dbOrders = [];
+            foreach ($gridsOrdersModel->data as $go) {
+                $ord = $go['orders_attach'][0] ?? null;
+                if ($ord) {
+                    $dbOrders[$ord['binance_client_order_id'] ?? $ord['binance_order_id']] = $ord;
+                }
+            }
+
+            // 3. Binance-only (órfãos)
+            foreach ($binanceOrders as $clientId => $bo) {
+                if (str_starts_with((string)$clientId, "nx-{$gridId}-") && !isset($dbOrders[$clientId])) {
+                    // Inserir como órfão recuperado
+                    $orderParams = [
+                        'grids_id' => $gridId,
+                        'binance_order_id' => $bo['orderId'],
+                        'binance_client_order_id' => $clientId,
+                        'symbol' => $symbol,
+                        'side' => $bo['side'],
+                        'type' => $bo['type'],
+                        'price' => $bo['price'],
+                        'quantity' => $bo['origQty'],
+                        'executed_qty' => $bo['executedQty'],
+                        'status' => $bo['status'],
+                        'recovered_orphan' => 1,
+                        'order_created_at' => round(microtime(true) * 1000)
+                    ];
+                    $this->saveGridOrder($orderParams);
+                    $this->log("🔄 Órfão recuperado: {$clientId} @ {$symbol} (status: {$bo['status']})", 'WARNING', 'TRADE');
+                }
+            }
+
+            // 4. Banco-only (sumidas da Binance)
+            foreach ($dbOrders as $clientId => $dbOrder) {
+                $isNew = ($dbOrder['status'] ?? '') === 'NEW';
+                $createdAt = (int)($dbOrder['order_created_at'] ?? 0);
+                $minutesOld = (round(microtime(true) * 1000) - $createdAt) / 60000;
+
+                if ($isNew && $minutesOld > 5 && !isset($binanceOrders[$clientId])) {
+                    $ordersModel = new orders_model();
+                    $ordersModel->set_filter(["idx = '{$dbOrder['idx']}'"]);
+                    $ordersModel->populate(['status' => 'CANCELED']);
+                    $ordersModel->save();
+                    $this->log("🗑️ Ordem sumida da Binance marcada CANCELED: {$clientId}", 'WARNING', 'TRADE');
+                }
+            }
+        } catch (Exception $e) {
+            $this->log("Erro na reconciliação: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
 
     /**
      * Processa a execução de uma ordem de compra
@@ -1395,9 +1515,16 @@ class setup_controller
                 );
             }
 
-            // 3. CALCULAR PREÇO DE VENDA (1 grid spacing acima)
+            // 3. CALCULAR PREÇO DE VENDA (1 grid spacing acima do melhor ask)
             $gridSpacing = $this->getGridSpacing($symbol);
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
             $sellPrice = $buyPrice * (1 + $gridSpacing);
+            $bookTicker = $this->fetchBookTicker($symbol);
+            if ($bookTicker && $bookTicker['ask'] > 0) {
+                $sellPrice = max($sellPrice, $bookTicker['ask'] + (float)$tickSize);
+                $sellPrice = (float)$this->adjustPriceToTickSize($sellPrice, $tickSize);
+            }
 
             // 4. CRIAR SELL PAREADA COM A QUANTIDADE EXATA
             $sellOrderId = $this->placeSellOrder(
@@ -1800,18 +1927,32 @@ class setup_controller
                     $this->calculateAndSaveSellProfit($gridId, $sellOrder);
                 }
 
-                // 2. Buscar USDC disponível
-                $availableUsdc = $this->getAvailableUsdcBalance(true);
+                // 2. Buscar USDC disponível (fallback para capital_per_level se API indisponível)
+                $gridData = $this->getGridById($gridId);
+                $baseCapitalPerLevel = (float)($gridData['capital_per_level'] ?? 0.0);
+                try {
+                    $availableUsdc = $this->getAvailableUsdcBalance(true);
+                } catch (Exception $e) {
+                    $this->log(
+                        "⚠️ API indisponível ao buscar USDC no batch: " . $e->getMessage() .
+                            " — usando capital_per_level × $sellCount como fallback",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    $availableUsdc = $baseCapitalPerLevel * $sellCount;
+                }
 
                 // 3. Dividir capital igualmente entre as SELLs
                 $capitalPerBuyRaw = $availableUsdc / $sellCount;
 
                 // 4. Aplicar teto por nível para evitar que uma única BUY consuma caixa em excesso
-                $gridData = $this->getGridById($gridId);
-                $baseCapitalPerLevel = (float)($gridData['capital_per_level'] ?? 0.0);
                 $accumulatedProfit = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
-                $profitReinvestmentPerOrder = $accumulatedProfit / self::GRID_LEVELS;
-                $capitalCapPerBuy = $baseCapitalPerLevel + $profitReinvestmentPerOrder;
+                $extraCapital = 0.0;
+                if ($accumulatedProfit >= self::REINVESTMENT_THRESHOLD) {
+                    $extraCapital = $accumulatedProfit;
+                    $this->resetAccumulatedProfit($gridId);
+                }
+                $capitalCapPerBuy = $baseCapitalPerLevel + $extraCapital;
                 $capitalPerBuy = min($capitalPerBuyRaw, $capitalCapPerBuy);
 
                 $this->log(
@@ -1847,9 +1988,16 @@ class setup_controller
                         try {
                             $sellPrice = (float)$sellOrder['price'];
                             $gridSpacing = $this->getGridSpacing($symbol);
+                            $symbolData = $this->getExchangeInfo($symbol);
+                            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
-                            // Preço da BUY: 1% ABAIXO do preço EXATO onde SELL executou
+                            // Preço da BUY: 1% ABAIXO do melhor bid (ou do preço da SELL como fallback)
                             $buyPrice = $sellPrice * (1 - $gridSpacing);
+                            $bookTicker = $this->fetchBookTicker($symbol);
+                            if ($bookTicker && $bookTicker['bid'] > 0) {
+                                $buyPrice = min($buyPrice, $bookTicker['bid'] - (float)$tickSize);
+                                $buyPrice = (float)$this->adjustPriceToTickSize($buyPrice, $tickSize);
+                            }
 
                             // Proteção anti-duplicação: pular se slot canônico já está ocupado por BUY ativa
                             $_gd_b = $this->getGridById($gridId);
@@ -1929,7 +2077,7 @@ class setup_controller
 
                 // 3. Validar se atinge quantidade mínima
                 $symbolData = $this->getExchangeInfo($symbol);
-                list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
                 $minQty = (float)($symbolData['filters'][array_search('LOT_SIZE', array_column($symbolData['filters'], 'filterType'))]['minQty'] ?? 0.00001);
 
                 if ($btcPerSell < $minQty) {
@@ -1951,8 +2099,13 @@ class setup_controller
                             $buyPrice = (float)$buyOrder['price'];
                             $gridSpacing = $this->getGridSpacing($symbol);
 
-                            // Preço da SELL: 1% ACIMA do preço EXATO onde BUY executou
+                            // Preço da SELL: 1% ACIMA do melhor ask (ou do preço da BUY como fallback)
                             $sellPrice = $buyPrice * (1 + $gridSpacing);
+                            $bookTicker = $this->fetchBookTicker($symbol);
+                            if ($bookTicker && $bookTicker['ask'] > 0) {
+                                $sellPrice = max($sellPrice, $bookTicker['ask'] + (float)$tickSize);
+                                $sellPrice = (float)$this->adjustPriceToTickSize($sellPrice, $tickSize);
+                            }
 
                             // Guard: notional mínimo (qty × price >= minNotional da Binance)
                             $notionalValue = $btcPerSell * $sellPrice;
@@ -2030,12 +2183,14 @@ class setup_controller
      * @param float $sellPrice   Preço de venda
      * @return float             Lucro líquido em USDC
      */
-    private function calculatePairProfit(float $executedQty, float $buyPrice, float $sellPrice): float
+    private function calculatePairProfit(float $executedQty, float $buyPrice, float $sellPrice, ?array $buyOrder = null, ?array $sellOrder = null): float
     {
-        $buyValue  = $executedQty * $buyPrice;
-        $sellValue = $executedQty * $sellPrice;
-        $buyFee    = $buyValue  * self::FEE_PERCENT;
-        $sellFee   = $sellValue * self::FEE_PERCENT;
+        $buyCumQty  = (float)($buyOrder['cumulative_quote_qty'] ?? 0);
+        $sellCumQty = (float)($sellOrder['cumulative_quote_qty'] ?? 0);
+        $buyValue   = $buyCumQty > 0 ? $buyCumQty : ($executedQty * $buyPrice);
+        $sellValue  = $sellCumQty > 0 ? $sellCumQty : ($executedQty * $sellPrice);
+        $buyFee     = (float)($buyOrder['commission_usdc_equivalent'] ?? $buyValue * $this->getFeeRate('taker'));
+        $sellFee    = (float)($sellOrder['commission_usdc_equivalent'] ?? $sellValue * $this->getFeeRate('taker'));
         return $sellValue - $buyValue - $buyFee - $sellFee;
     }
 
@@ -2057,7 +2212,7 @@ class setup_controller
             $slidingCostPrice = (float)($sellOrder['original_cost_price'] ?? 0);
 
             if ($isSlidingLevel && $slidingCostPrice > 0) {
-                $profit = $this->calculatePairProfit($executedQty, $slidingCostPrice, $sellPrice);
+                $profit = $this->calculatePairProfit($executedQty, $slidingCostPrice, $sellPrice, null, $sellOrder);
 
                 $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                 $this->incrementGridProfit($gridId, $profit);
@@ -2094,7 +2249,7 @@ class setup_controller
             if ($buyOrder) {
                 // CASO 1: SELL reativa — TEM ordem de compra pareada
                 $buyPrice = (float)$buyOrder['price'];
-                $profit   = $this->calculatePairProfit($executedQty, $buyPrice, $sellPrice);
+                $profit   = $this->calculatePairProfit($executedQty, $buyPrice, $sellPrice, $buyOrder, $sellOrder);
 
                 $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                 $this->incrementGridProfit($gridId, $profit);
@@ -2113,7 +2268,7 @@ class setup_controller
                 $btcCostPrice = (float)($gridData['current_price'] ?? 0);
 
                 if ($btcCostPrice > 0) {
-                    $profit = $this->calculatePairProfit($executedQty, $btcCostPrice, $sellPrice);
+                    $profit = $this->calculatePairProfit($executedQty, $btcCostPrice, $sellPrice, null, $sellOrder);
 
                     $this->updateOrderProfit($sellOrder['grids_orders_idx'], $profit);
                     $this->incrementGridProfit($gridId, $profit);
@@ -2124,6 +2279,8 @@ class setup_controller
                         'SUCCESS',
                         'TRADE'
                     );
+                } else {
+                    $this->log("SELL HÍBRIDO em $symbol: current_price não disponível para calcular lucro", 'WARNING', 'TRADE');
                 }
             }
         } catch (Exception $e) {
@@ -2241,7 +2398,14 @@ class setup_controller
 
             // Recriar ordem de COMPRA no mesmo nível
             $gridSpacing = $this->getGridSpacing($symbol);
+            $symbolData = $this->getExchangeInfo($symbol);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
             $buyPrice = $sellPrice * (1 - $gridSpacing);
+            $bookTicker = $this->fetchBookTicker($symbol);
+            if ($bookTicker && $bookTicker['bid'] > 0) {
+                $buyPrice = min($buyPrice, $bookTicker['bid'] - (float)$tickSize);
+                $buyPrice = (float)$this->adjustPriceToTickSize($buyPrice, $tickSize);
+            }
 
             // Calcular capital com fallback flexível (já valida USDC disponível internamente)
             $capitalForBuy = $this->getCapitalForNewBuyOrder($gridId, $gridData);
@@ -2433,37 +2597,37 @@ class setup_controller
                 return;
             }
 
-            // ── GATE: só deslizar se o preço saiu do range do grid além do limiar ──
-            // O slide é uma operação extrema — a lógica reativa (BUY→SELL, SELL→BUY)
-            // cuida de oscilações dentro do range. O slide só deve atuar quando o preço
-            // se afastou mais que REBALANCE_THRESHOLD do range estrutural atual do grid
-            // definido por lower_price / upper_price.
-            $gridMin = (float)($gridData['lower_price'] ?? 0);
-            $gridMax = (float)($gridData['upper_price'] ?? 0);
+            // ── GATE reativo: só deslizar quando um lado já esgotou ──
+            // O slide é acionado quando o preço ultrapassou todas as ordens ativas
+            // em uma direção, indicando que o grid precisa se reposicionar.
+            // Evita disparo bilateral em grid balanceado (preço entre BUYs e SELLs).
+            $needSlideDown = false;
+            $needSlideUp   = false;
+            $hasOrdersOnBothSides = !empty($activeSellOrders) && !empty($activeBuyOrders);
 
-            if ($gridMin > 0 && $gridMax > 0) {
-                $belowRange = false;
-                $aboveRange = false;
+            if (!empty($activeSellOrders)) {
+                $lowestSell    = min(array_column($activeSellOrders, 'price'));
+                $needSlideDown = $currentPrice < $lowestSell;
+            }
+            if (!empty($activeBuyOrders)) {
+                $highestBuy  = max(array_column($activeBuyOrders, 'price'));
+                $needSlideUp = $currentPrice > $highestBuy;
+            }
 
-                if ($currentPrice < $gridMin) {
-                    $deviation = ($gridMin - $currentPrice) / $gridMin;
-                    $belowRange = $deviation > self::REBALANCE_THRESHOLD;
-                }
-                if ($currentPrice > $gridMax) {
-                    $deviation = ($currentPrice - $gridMax) / $gridMax;
-                    $aboveRange = $deviation > self::REBALANCE_THRESHOLD;
-                }
+            // Grid balanceado (ordens nos dois lados) → preço está dentro do range.
+            // A lógica reativa (BUY→SELL, SELL→BUY) cuida das oscilações neste caso.
+            if ($needSlideDown && $needSlideUp && $hasOrdersOnBothSides) {
+                return;
+            }
 
-                if (!$belowRange && !$aboveRange) {
-                    // Preço ainda dentro do range ou fora dele abaixo do limiar — não deslizar
-                    return;
-                }
+            if (!$needSlideDown && !$needSlideUp) {
+                return;
             }
 
             // ── Preparar dados comuns para slides ──────────────────────────────
             $gridSpacing = $this->getGridSpacing($symbol);
             $symbolData  = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
             $filters = array_column($symbolData['filters'], null, 'filterType');
             $minQty  = isset($filters['LOT_SIZE']['minQty']) ? (float)$filters['LOT_SIZE']['minQty'] : 0.00001;
 
@@ -2842,10 +3006,21 @@ class setup_controller
 
             // 1. Obter filtros do símbolo
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
             // 2. Ajustar preço ao tickSize
             $adjustedPrice = $this->adjustPriceToTickSize($price, $tickSize);
+
+            // 2.5 Validar PERCENT_PRICE_BY_SIDE
+            if ($pps !== null && $_cp > 0) {
+                $minPrice = $_cp * $pps['bidMultiplierDown'];
+                $maxPrice = $_cp * $pps['bidMultiplierUp'];
+                if ((float)$adjustedPrice < $minPrice || (float)$adjustedPrice > $maxPrice) {
+                    $oldPrice = $adjustedPrice;
+                    $adjustedPrice = number_format(max($minPrice, min((float)$adjustedPrice, $maxPrice)), $this->getDecimalPlaces($tickSize), '.', '');
+                    $this->log("⚠️ BUY preço ajustado por PPS: \${$oldPrice} → \${$adjustedPrice} (range: \${$minPrice}-\${$maxPrice})", 'WARNING', 'TRADE');
+                }
+            }
 
             // 3. Calcular quantidade
             $quantity = $this->calculateAdjustedQuantity($capitalUsdc, (float)$adjustedPrice, $stepSize);
@@ -2866,12 +3041,56 @@ class setup_controller
             $orderReq = new NewOrderRequest();
             $orderReq->setSymbol($symbol);
             $orderReq->setSide(Side::BUY);
-            $orderReq->setType(OrderType::LIMIT);
-            $orderReq->setTimeInForce('GTC');
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$quantity);
+            $clientOrderId = sprintf('nx-%d-%d-buy-%d', $gridId, $gridLevel, intdiv(time(), 60));
+            $orderReq->setNewClientOrderId($clientOrderId);
 
-            $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+            try {
+                // Tentar LIMIT_MAKER primeiro (zero fee de taker)
+                $orderReq->setType(OrderType::LIMIT_MAKER);
+                $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+            } catch (Exception $e) {
+                $msg = $e->getMessage();
+                if (str_contains($msg, 'immediately match')) {
+                    $this->log("⚠️ LIMIT_MAKER rejeitado, fallback para LIMIT", 'WARNING', 'TRADE');
+                    $orderReq->setType(OrderType::LIMIT);
+                    $orderReq->setTimeInForce('GTC');
+                    $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+                } elseif (str_contains($msg, '-2010')) {
+                    $existing = null;
+                    try {
+                        $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
+                    } catch (Exception $ignored) {}
+                    if ($existing) {
+                        $this->log("⚠️ Ordem duplicada recuperada: $clientOrderId", 'WARNING', 'TRADE');
+                        $existingData = $existing->getData();
+                        $orderParams = [
+                            'grids_id' => $gridId,
+                            'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
+                            'binance_client_order_id' => $clientOrderId,
+                            'symbol' => $symbol,
+                            'side' => 'BUY',
+                            'type' => 'LIMIT',
+                            'grid_level' => $gridLevel,
+                            'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
+                            'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $quantity),
+                            'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
+                            'order_created_at' => round(microtime(true) * 1000)
+                        ];
+                        if ($isSlidingLevel) {
+                            $orderParams['is_sliding_level'] = 1;
+                            if ($originalCostPrice > 0) {
+                                $orderParams['original_cost_price'] = $originalCostPrice;
+                            }
+                        }
+                        return $this->saveGridOrder($orderParams);
+                    }
+                    return null;
+                } else {
+                    throw $e;
+                }
+            }
             $orderData = $response->getData();
 
             $binanceOrderId       = $this->extractBinanceValue($orderData, 'getOrderId', 'orderId', null);
@@ -2938,10 +3157,22 @@ class setup_controller
 
             // 1. Obter filtros do símbolo
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+                list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
 
             // 2. Ajustar preço ao tickSize
             $adjustedPrice = $this->adjustPriceToTickSize($price, $tickSize);
+
+            // 2.5 Validar PERCENT_PRICE_BY_SIDE
+            $_cp2 = (float)($_gd['current_price'] ?? 0);
+            if ($pps !== null && $_cp2 > 0) {
+                $minPrice = $_cp2 * $pps['askMultiplierDown'];
+                $maxPrice = $_cp2 * $pps['askMultiplierUp'];
+                if ((float)$adjustedPrice < $minPrice || (float)$adjustedPrice > $maxPrice) {
+                    $oldPrice = $adjustedPrice;
+                    $adjustedPrice = number_format(max($minPrice, min((float)$adjustedPrice, $maxPrice)), $this->getDecimalPlaces($tickSize), '.', '');
+                    $this->log("⚠️ SELL preço ajustado por PPS: \${$oldPrice} → \${$adjustedPrice} (range: \${$minPrice}-\${$maxPrice})", 'WARNING', 'TRADE');
+                }
+            }
 
             // 3. Ajustar quantidade ao stepSize
             $stepSizeFloat = (float)$stepSize;
@@ -2965,12 +3196,57 @@ class setup_controller
             $orderReq = new NewOrderRequest();
             $orderReq->setSymbol($symbol);
             $orderReq->setSide(Side::SELL);
-            $orderReq->setType(OrderType::LIMIT);
-            $orderReq->setTimeInForce('GTC');
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$adjustedQty);
+            $clientOrderId = sprintf('nx-%d-%d-sell-%d', $gridId, $gridLevel, intdiv(time(), 60));
+            $orderReq->setNewClientOrderId($clientOrderId);
 
-            $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+            try {
+                // Tentar LIMIT_MAKER primeiro (zero fee de taker)
+                $orderReq->setType(OrderType::LIMIT_MAKER);
+                $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+            } catch (Exception $e) {
+                $msg = $e->getMessage();
+                if (str_contains($msg, 'immediately match')) {
+                    $this->log("⚠️ LIMIT_MAKER rejeitado, fallback para LIMIT", 'WARNING', 'TRADE');
+                    $orderReq->setType(OrderType::LIMIT);
+                    $orderReq->setTimeInForce('GTC');
+                    $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+                } elseif (str_contains($msg, '-2010')) {
+                    $existing = null;
+                    try {
+                        $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
+                    } catch (Exception $ignored) {}
+                    if ($existing) {
+                        $this->log("⚠️ Ordem duplicada recuperada: $clientOrderId", 'WARNING', 'TRADE');
+                        $existingData = $existing->getData();
+                        $orderParams = [
+                            'grids_id' => $gridId,
+                            'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
+                            'binance_client_order_id' => $clientOrderId,
+                            'symbol' => $symbol,
+                            'side' => 'SELL',
+                            'type' => 'LIMIT',
+                            'grid_level' => $gridLevel,
+                            'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
+                            'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $adjustedQty),
+                            'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
+                            'order_created_at' => round(microtime(true) * 1000),
+                            'paired_order_id' => $pairedBuyOrderId
+                        ];
+                        if ($isSlidingLevel) {
+                            $orderParams['is_sliding_level'] = 1;
+                            if ($originalCostPrice > 0) {
+                                $orderParams['original_cost_price'] = $originalCostPrice;
+                            }
+                        }
+                        return $this->saveGridOrder($orderParams);
+                    }
+                    return null;
+                } else {
+                    throw $e;
+                }
+            }
             $orderData = $response->getData();
 
             $binanceOrderId       = $this->extractBinanceValue($orderData, 'getOrderId', 'orderId', null);
@@ -3020,18 +3296,18 @@ class setup_controller
     {
         try {
             $symbolData = $this->getExchangeInfo($symbol);
-            list($stepSize, $tickSize, $minNotional) = $this->extractFilters($symbolData);
+            list($stepSize, $tickSize, $minNotional, $pps) = $this->extractFilters($symbolData);
             $stepSizeFloat = (float)$stepSize;
             $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+            $decimalPlacesPrice = $this->getDecimalPlaces($tickSize);
 
-            // Obter minQty do LOT_SIZE diretamente dos filtros do símbolo
             $filters = array_column($symbolData['filters'], null, 'filterType');
             $minQty = isset($filters['LOT_SIZE']['minQty']) ? (float)$filters['LOT_SIZE']['minQty'] : 0.00001;
 
-            $safeQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
-            if ($safeQty <= 0 || $safeQty < $minQty) {
+            $remainingQty = floor($quantity / $stepSizeFloat) * $stepSizeFloat;
+            if ($remainingQty <= 0 || $remainingQty < $minQty) {
                 $this->log(
-                    "Quantidade insuficiente para venda a mercado: " . number_format($safeQty, 8) .
+                    "Quantidade insuficiente para venda a mercado: " . number_format($remainingQty, 8) .
                         " (mínimo LOT_SIZE: " . number_format($minQty, 8) . ")",
                     'WARNING',
                     'TRADE'
@@ -3039,31 +3315,81 @@ class setup_controller
                 return;
             }
 
-            $sellReq = new NewOrderRequest();
-            $sellReq->setSymbol($symbol);
-            $sellReq->setSide(Side::SELL);
-            $sellReq->setType(OrderType::MARKET);
-            $sellReq->setQuantity((float)number_format($safeQty, $decimalPlacesQty, '.', ''));
+            $tickSizeFloat = (float)$tickSize;
+            $currentPrice = $this->getCurrentPrice($symbol);
 
-            $resp = $this->client->newOrder($this->applyRecvWindowToOrderRequest($sellReq));
-            $data = $resp->getData();
+            // Tentativa 1: LIMIT IOC agressiva (bid - 1 tick)
+            // Tentativa 2: LIMIT IOC agressiva (bid - 5 ticks)
+            // Tentativa 3: MARKET com quantidade restante
+            $attempts = [
+                ['type' => 'LIMIT_IOC', 'offset' => 1 * $tickSizeFloat, 'label' => 'LIMIT IOC -1 tick'],
+                ['type' => 'LIMIT_IOC', 'offset' => 5 * $tickSizeFloat, 'label' => 'LIMIT IOC -5 ticks'],
+                ['type' => 'MARKET', 'offset' => 0, 'label' => 'MARKET'],
+            ];
 
-            $orderId = $this->extractBinanceValue($data, 'getOrderId', 'orderId', null);
-            $status  = $this->extractBinanceValue($data, 'getStatus', 'status', 'UNKNOWN');
+            foreach ($attempts as $attempt) {
+                if ($remainingQty < $minQty || $remainingQty <= 0) {
+                    break;
+                }
 
-            $this->log("Venda de emergência executada: $symbol (Qty: $safeQty, Status: $status)", 'SUCCESS', 'TRADE');
+                $sellReq = new NewOrderRequest();
+                $sellReq->setSymbol($symbol);
+                $sellReq->setSide(Side::SELL);
+                $sellReq->setQuantity((float)number_format($remainingQty, $decimalPlacesQty, '.', ''));
 
-            $this->saveGridLog(
-                $gridId,
-                'emergency_sell',
-                'success',
-                "Venda a mercado durante rebalanceamento",
-                [
-                    'quantity' => $safeQty,
-                    'order_id' => $orderId,
-                    'status' => $status
-                ]
-            );
+                if ($attempt['type'] === 'LIMIT_IOC') {
+                    $limitPrice = max($tickSizeFloat, $currentPrice - $attempt['offset']);
+                    $sellReq->setType(OrderType::LIMIT);
+                    $sellReq->setPrice((float)number_format($limitPrice, $decimalPlacesPrice, '.', ''));
+                    $sellReq->setTimeInForce('IOC');
+                } else {
+                    $sellReq->setType(OrderType::MARKET);
+                }
+
+                try {
+                    $resp = $this->client->newOrder($this->applyRecvWindowToOrderRequest($sellReq));
+                    $data = $resp->getData();
+
+                    $orderId = $this->extractBinanceValue($data, 'getOrderId', 'orderId', null);
+                    $status  = $this->extractBinanceValue($data, 'getStatus', 'status', 'UNKNOWN');
+                    $executedQty = (float)$this->extractBinanceValue($data, 'getExecutedQty', 'executedQty', 0);
+
+                    $this->log("Venda de emergência [{$attempt['label']}]: $symbol (Qty: {$remainingQty}, Executed: {$executedQty}, Status: $status)", 'SUCCESS', 'TRADE');
+
+                    $remainingQty -= $executedQty;
+
+                    if ($remainingQty < $minQty) {
+                        $this->saveGridLog(
+                            $gridId,
+                            'emergency_sell',
+                            'success',
+                            "Venda escalonada concluída",
+                            [
+                                'quantity_total' => $quantity,
+                                'quantity_sold' => $quantity - $remainingQty,
+                                'quantity_remaining' => $remainingQty,
+                                'order_id' => $orderId,
+                                'status' => $status
+                            ]
+                        );
+                        return;
+                    }
+
+                    // Aguardar 10s antes da próxima tentativa
+                    if ($attempt['type'] !== 'MARKET') {
+                        sleep(10);
+                    }
+                } catch (Exception $attemptEx) {
+                    $this->log("Erro na tentativa {$attempt['label']}: " . $attemptEx->getMessage(), 'WARNING', 'TRADE');
+                    if ($attempt['type'] !== 'MARKET') {
+                        sleep(10);
+                    }
+                }
+            }
+
+            if ($remainingQty > 0) {
+                $this->log("⚠️ Venda escalonada incompleta: " . number_format($remainingQty, 8) . " $symbol não vendido", 'WARNING', 'TRADE');
+            }
         } catch (Exception $e) {
             $this->log("Erro ao executar venda a mercado: " . $e->getMessage(), 'ERROR', 'TRADE');
             $this->saveGridLog(
@@ -3106,6 +3432,36 @@ class setup_controller
             $this->log("Erro ao obter preço de $symbol: " . $e->getMessage(), 'ERROR', 'API');
             return 0.0;
         }
+    }
+
+    /**
+     * Obtém o melhor bid/ask via bookTicker da Binance (cURL, sem SDK)
+     */
+    private function fetchBookTicker(string $symbol): ?array
+    {
+        try {
+            $creds = BinanceConfig::getActiveCredentials();
+            $baseUrl = $creds['baseUrl'] ?? 'https://api.binance.com';
+            $url = "{$baseUrl}/api/v3/ticker/bookTicker?symbol=" . urlencode($symbol);
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 5,
+                CURLOPT_HTTPHEADER => ['Accept: application/json'],
+            ]);
+            $resp = curl_exec($ch);
+            curl_close($ch);
+            $data = json_decode($resp, true);
+            if (!empty($data['bidPrice']) && !empty($data['askPrice'])) {
+                return [
+                    'bid' => (float)$data['bidPrice'],
+                    'ask' => (float)$data['askPrice'],
+                ];
+            }
+        } catch (Exception $e) {
+            // silencioso
+        }
+        return null;
     }
 
     /**
@@ -3184,30 +3540,72 @@ class setup_controller
             );
 
             if ($drawdown >= self::MAX_DRAWDOWN_PERCENT) {
-                $lossPercent = number_format($drawdown * 100, 2);
-                $this->log(
-                    "🚨🚨🚨 STOP-LOSS ACIONADO! Grid #$gridId | Perda: {$lossPercent}% " .
-                        "(>\$" . number_format(self::MAX_DRAWDOWN_PERCENT * 100, 0) . "%) | " .
-                        "Inicial: \$" . number_format($initialCapital, 2) . " → Atual: \$" . number_format($currentCapital, 2),
-                    'ERROR',
-                    'SYSTEM'
-                );
+                if (empty($gridData['pending_shutdown_at'])) {
+                    // Primeiro disparo — armar o timer
+                    $this->setPendingShutdown($gridId, 'stop_loss');
+                    $this->log("⚠️ Drawdown {$drawdown}% — circuit breaker armado (aguardando 10min)", 'WARNING', 'RISK');
+                    return false;
+                }
+                $minutesWaiting = (time() - strtotime($gridData['pending_shutdown_at'])) / 60;
+                if ($minutesWaiting < 10) {
+                    $this->log("⏳ Circuit breaker aguardando ({$minutesWaiting}min/10min)", 'INFO', 'RISK');
+                    return false;
+                }
+                if ($drawdown >= (self::MAX_DRAWDOWN_PERCENT - 0.02)) {
+                    $this->log("🛑 Circuit breaker confirmado — executando shutdown", 'ERROR', 'RISK');
+                    $lossPercent = number_format($drawdown * 100, 2);
+                    $this->log(
+                        "🚨🚨🚨 STOP-LOSS ACIONADO! Grid #$gridId | Perda: {$lossPercent}% " .
+                            "(>\$" . number_format(self::MAX_DRAWDOWN_PERCENT * 100, 0) . "%) | " .
+                            "Inicial: \$" . number_format($initialCapital, 2) . " → Atual: \$" . number_format($currentCapital, 2),
+                        'ERROR',
+                        'SYSTEM'
+                    );
 
-                $this->emergencyShutdown($gridId, $symbol, 'stop_loss', [
-                    'initial_capital' => $initialCapital,
-                    'current_capital' => $currentCapital,
-                    'drawdown_percent' => $drawdown,
-                    'max_drawdown_allowed' => self::MAX_DRAWDOWN_PERCENT
-                ]);
+                    $this->emergencyShutdown($gridId, $symbol, 'stop_loss', [
+                        'initial_capital' => $initialCapital,
+                        'current_capital' => $currentCapital,
+                        'drawdown_percent' => $drawdown,
+                        'max_drawdown_allowed' => self::MAX_DRAWDOWN_PERCENT
+                    ]);
 
-                return true;
+                    return true;
+                }
+                // Recuperou — desarmar
+                $this->clearPendingShutdown($gridId);
+                $this->log("✅ Drawdown recuperou — circuit breaker desarmado", 'INFO', 'RISK');
+                return false;
             }
-
+            if (!empty($gridData['pending_shutdown_at'])) {
+                $this->clearPendingShutdown($gridId);
+            }
             return false;
         } catch (Exception $e) {
             $this->log("Erro no checkStopLoss: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return false; // Em caso de erro, não acionar (conservador)
         }
+    }
+
+    private function setPendingShutdown(int $gridId, string $reason): void
+    {
+        $gridsModel = new grids_model();
+        $gridsModel->set_filter(["idx = '{$gridId}'"]);
+        $gridsModel->populate([
+            'pending_shutdown_at' => date('Y-m-d H:i:s'),
+            'pending_shutdown_reason' => $reason
+        ]);
+        $gridsModel->save();
+    }
+
+    private function clearPendingShutdown(int $gridId): void
+    {
+        $gridsModel = new grids_model();
+        $gridsModel->set_filter(["idx = '{$gridId}'"]);
+        $gridsModel->populate([
+            'pending_shutdown_at' => null,
+            'pending_shutdown_reason' => null
+        ]);
+        $gridsModel->save();
     }
 
     /**
@@ -3551,6 +3949,45 @@ class setup_controller
         }
     }
 
+    private function maybeRecordCapitalSnapshot(int $gridId, string $symbol): void
+    {
+        try {
+            $snapModel = new capital_snapshots_model();
+            $snapModel->set_filter(["grids_id = '{$gridId}'"]);
+            $snapModel->set_order(["created_at DESC"]);
+            $snapModel->set_paginate([1]);
+            $snapModel->load_data();
+
+            $lastSnapshot = $snapModel->data[0] ?? null;
+            $lastTime = $lastSnapshot ? strtotime($lastSnapshot['created_at']) : 0;
+            if (time() - $lastTime < 3600) {
+                return; // Último snapshot < 1h
+            }
+
+            $capitalSnapshot = $this->calculateCurrentCapitalSnapshot($symbol);
+            $totalCapital = (float)($capitalSnapshot['total'] ?? 0.0);
+            $usdcBalance = (float)($capitalSnapshot['usdc'] ?? 0.0);
+            $btcHolding = (float)($capitalSnapshot['btc'] ?? 0.0);
+            $btcPrice = $this->getCurrentPrice($symbol);
+
+            $gridData = $this->getGridById($gridId);
+            $accumulatedPnl = (float)($gridData['accumulated_profit_usdc'] ?? 0.0);
+
+            $newSnap = new capital_snapshots_model();
+            $newSnap->populate([
+                'grids_id' => $gridId,
+                'total_capital_usdc' => $totalCapital,
+                'usdc_balance' => $usdcBalance,
+                'btc_holding' => $btcHolding,
+                'btc_price' => $btcPrice,
+                'accumulated_spread_pnl' => $accumulatedPnl,
+            ]);
+            $newSnap->save();
+        } catch (Exception $e) {
+            $this->log("Erro ao registrar capital snapshot: " . $e->getMessage(), 'WARNING', 'SYSTEM');
+        }
+    }
+
     /**
      * Detecta aportes externos quando o capital sobe abruptamente entre ciclos.
      * Recalibra baseline, capital alocado, pico e capital por nível para que
@@ -3680,65 +4117,25 @@ class setup_controller
     private function acquireGridLock(int $gridId): bool
     {
         try {
-            $gridsModel = new grids_model();
-            $gridsModel->set_filter(["idx = '{$gridId}'"]);
-            $gridsModel->load_data();
+            $pdo = (new local_pdo())->getPdo();
+            $stmt = $pdo->prepare("
+                UPDATE grids
+                SET    is_processing   = 'yes',
+                       last_monitor_at = NOW()
+                WHERE  idx = :id
+                  AND  (is_processing = 'no'
+                        OR last_monitor_at < (NOW() - INTERVAL :timeout MINUTE))
+            ");
+            $stmt->execute([':id' => $gridId, ':timeout' => self::LOCK_TIMEOUT_MINUTES]);
+            $acquired = $stmt->rowCount() === 1;
 
-            if (empty($gridsModel->data)) {
-                return false;
+            if ($acquired) {
+                $this->log("🔒 Lock adquirido para grid #$gridId", 'INFO', 'SYSTEM');
+            } else {
+                $this->log("🔒 Grid #$gridId bloqueado por outra instância (lock atômico).", 'INFO', 'SYSTEM');
             }
 
-            $grid = $gridsModel->data[0];
-            $isProcessing = ($grid['is_processing'] ?? 'no') === 'yes';
-            $lastMonitorAt = $grid['last_monitor_at'] ?? null;
-
-            if ($isProcessing) {
-                // Verificar se lock travou (timeout)
-                if ($lastMonitorAt) {
-                    $lastMonitorTime = strtotime($lastMonitorAt);
-                    $elapsedSeconds = time() - $lastMonitorTime;
-                    $timeoutSeconds = self::LOCK_TIMEOUT_MINUTES * 60;
-
-                    if ($elapsedSeconds > $timeoutSeconds) {
-                        // Lock travado → forçar liberação (recovery)
-                        $this->log(
-                            "🔓 Lock TRAVADO detectado no grid #$gridId " .
-                                "(último monitor há " . round($elapsedSeconds / 60, 1) . " min). " .
-                                "Forçando liberação (recovery)...",
-                            'WARNING',
-                            'SYSTEM'
-                        );
-                    } else {
-                        // Lock legítimo, outra instância está processando
-                        $this->log(
-                            "🔒 Grid #$gridId bloqueado por outra instância " .
-                                "(último monitor há " . round($elapsedSeconds / 60, 1) . " min). Lock legítimo.",
-                            'INFO',
-                            'SYSTEM'
-                        );
-                        return false;
-                    }
-                } else {
-                    // is_processing=yes mas sem timestamp → situação anômala → forçar liberação
-                    $this->log(
-                        "🔓 Lock sem timestamp no grid #$gridId. Forçando liberação...",
-                        'WARNING',
-                        'SYSTEM'
-                    );
-                }
-            }
-
-            // Adquirir lock
-            $gridsModel = new grids_model();
-            $gridsModel->set_filter(["idx = '{$gridId}'"]);
-            $gridsModel->populate([
-                'is_processing' => 'yes',
-                'last_monitor_at' => date('Y-m-d H:i:s')
-            ]);
-            $gridsModel->save();
-
-            $this->log("🔒 Lock adquirido para grid #$gridId", 'INFO', 'SYSTEM');
-            return true;
+            return $acquired;
         } catch (Exception $e) {
             $this->log("Erro ao adquirir lock: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return false;
@@ -3798,13 +4195,12 @@ class setup_controller
 
             $gridSpacing = $this->getGridSpacing($symbol);
             $expectedGrossProfit = $capitalUsdc * $gridSpacing;
-            $totalFees = $capitalUsdc * (self::FEE_PERCENT * 2); // buy fee + sell fee
+            $totalFees = $capitalUsdc * ($this->getFeeRate('taker') * 2); // buy fee + sell fee
             $expectedNetProfit = $expectedGrossProfit - $totalFees;
 
-            // Threshold dinâmico baseado no capital por nível
-            $minProfit = ($capitalUsdc < 50.0)
-                ? self::MIN_PROFIT_USDC_LOW   // 0.0025 USDC
-                : self::MIN_PROFIT_USDC_HIGH; // 0.25 USDC
+            // Threshold proporcional ao capital
+            $worstCaseFee = $capitalUsdc * ($this->getFeeRate('taker') * 2);
+            $minProfit = max($capitalUsdc * 0.001, $worstCaseFee * 1.5);
 
             if ($expectedNetProfit < $minProfit) {
                 $this->log(
@@ -4224,6 +4620,22 @@ class setup_controller
             $gridsModel->save();
         } catch (Exception $e) {
             $this->log("Erro ao incrementar lucro do grid: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    private function resetAccumulatedProfit(int $gridId): void
+    {
+        try {
+            $gridsModel = new grids_model();
+            $gridsModel->set_filter(["idx = '{$gridId}'"]);
+            $gridsModel->populate(['accumulated_profit_usdc' => 0.0]);
+            $gridsModel->save();
+
+            $this->saveGridLog($gridId, 'profit_reinvested', 'success', 'Lucro acumulado reinvestido em batch', [
+                'reinvestment_threshold' => self::REINVESTMENT_THRESHOLD,
+            ]);
+        } catch (Exception $e) {
+            $this->log("Erro ao zerar lucro acumulado: " . $e->getMessage(), 'ERROR', 'SYSTEM');
         }
     }
 
