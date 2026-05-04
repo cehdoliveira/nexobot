@@ -669,7 +669,34 @@ class setup_controller
                 }
 
                 // ✅ Tudo OK, criar novo grid
-                $this->createNewGrid($symbol);
+                // ══════ RACE CONDITION PROTECTION (CRIAÇÃO) ══════
+                // Múltiplos slots CRON podem ver "nenhum grid ativo" simultaneamente
+                // enquanto outro slot está em prepareInitialCapital (antes de saveGridConfig).
+                // flock exclusivo não-bloqueante garante que apenas 1 slot cria o grid.
+                $creationLockFile = sys_get_temp_dir() . "/nexobot_grid_creating_{$symbol}.lock";
+                $lockFp = fopen($creationLockFile, 'c');
+                if (!$lockFp || !flock($lockFp, LOCK_EX | LOCK_NB)) {
+                    $this->log(
+                        "⏳ Criação de grid para $symbol já em andamento em outra instância CRON. Pulando...",
+                        'WARNING',
+                        'SYSTEM'
+                    );
+                    if ($lockFp) fclose($lockFp);
+                    return;
+                }
+                try {
+                    // Recheck após adquirir lock: outro slot pode ter criado o grid
+                    // enquanto esperávamos (não deve acontecer com LOCK_NB, mas por segurança)
+                    unset($this->activeGrids[$symbol]);
+                    if ($this->getActiveGrid($symbol) !== null) {
+                        $this->log("⏭️ Grid para $symbol criado por outra instância enquanto aguardávamos lock. Pulando.", 'INFO', 'SYSTEM');
+                        return;
+                    }
+                    $this->createNewGrid($symbol);
+                } finally {
+                    flock($lockFp, LOCK_UN);
+                    fclose($lockFp);
+                }
             }
         } catch (Exception $e) {
             throw new Exception("Erro ao processar $symbol: " . $e->getMessage());
@@ -3461,8 +3488,28 @@ class setup_controller
             }
             $this->log("Capital USDC disponível: {$this->totalCapital}", 'INFO', 'SYSTEM');
         } catch (Exception $e) {
-            $this->log("Erro ao carregar capital: " . $e->getMessage(), 'ERROR', 'SYSTEM');
-            $this->totalCapital = 0.0;
+            $this->log("Erro ao carregar capital via API: " . $e->getMessage() . ". Tentando fallback via DB.", 'WARNING', 'SYSTEM');
+            // Fallback: usa capital_allocated_usdc do grid mais recente.
+            // Evita bloquear criação de grid quando API está temporariamente indisponível.
+            // prepareInitialCapital() fará a verificação definitiva com a API.
+            try {
+                $fallbackModel = new grids_model();
+                $fallbackModel->set_filter(["active = 'yes'"]);
+                $fallbackModel->set_order(["idx DESC"]);
+                $fallbackModel->set_paginate(["1"]);
+                $fallbackModel->load_data();
+                if (!empty($fallbackModel->data)) {
+                    $this->totalCapital = (float)($fallbackModel->data[0]['capital_allocated_usdc'] ?? 0.0);
+                    $this->log("Capital via DB fallback: {$this->totalCapital} USDC", 'WARNING', 'SYSTEM');
+                } else {
+                    // Sem grid no DB — assume capital mínimo para não bloquear criação
+                    $this->totalCapital = self::MIN_TRADE_USDC;
+                    $this->log("Sem grid no DB. Capital assumido: {$this->totalCapital} USDC", 'WARNING', 'SYSTEM');
+                }
+            } catch (Exception $dbEx) {
+                $this->log("Fallback DB também falhou: " . $dbEx->getMessage(), 'ERROR', 'SYSTEM');
+                $this->totalCapital = self::MIN_TRADE_USDC;
+            }
         }
     }
 
