@@ -375,8 +375,9 @@ class setup_controller
             $cached = $redis->get($cacheKey);
             if ($cached !== false && $cached !== null) {
                 $decoded = json_decode($cached, true);
-                $this->exchangeInfoCache[$symbol] = $decoded;
-                return $decoded;
+                $symbolData = $decoded['symbols'][0] ?? $decoded;
+                $this->exchangeInfoCache[$symbol] = $symbolData;
+                return $symbolData;
             }
 
             $creds = BinanceConfig::getActiveCredentials();
@@ -1327,14 +1328,19 @@ class setup_controller
     private function reconcileWithBinance(int $gridId, string $symbol): void
     {
         try {
-            // 1. Ordens abertas na Binance
+            // 1. Ordens abertas na Binance (array ou objeto com getItems)
             $openOrdersResp = $this->client->getOpenOrders($symbol, self::BINANCE_RECV_WINDOW);
             $openOrdersData = $openOrdersResp->getData();
-            $binanceOrders = [];
+            $rawOrders = [];
             if (is_array($openOrdersData)) {
-                foreach ($openOrdersData as $o) {
-                    $binanceOrders[$o['clientOrderId'] ?? $o['orderId']] = $o;
-                }
+                $rawOrders = $openOrdersData;
+            } elseif (is_object($openOrdersData) && method_exists($openOrdersData, 'getItems')) {
+                $rawOrders = $openOrdersData->getItems();
+            }
+            $binanceOrders = [];
+            foreach ($rawOrders as $o) {
+                $o = is_array($o) ? $o : json_decode(json_encode($o), true);
+                $binanceOrders[$o['clientOrderId'] ?? $o['orderId']] = $o;
             }
 
             // 2. Ordens pendentes no banco
@@ -2589,9 +2595,13 @@ class setup_controller
                 return;
             }
 
-            // ── GATE reativo: só deslizar se o preço saiu do range das ordens ativas ──
+            // ── GATE reativo: só deslizar quando um lado já esgotou ──
+            // O slide é acionado quando o preço ultrapassou todas as ordens ativas
+            // em uma direção, indicando que o grid precisa se reposicionar.
+            // Evita disparo bilateral em grid balanceado (preço entre BUYs e SELLs).
             $needSlideDown = false;
             $needSlideUp   = false;
+            $hasOrdersOnBothSides = !empty($activeSellOrders) && !empty($activeBuyOrders);
 
             if (!empty($activeSellOrders)) {
                 $lowestSell    = min(array_column($activeSellOrders, 'price'));
@@ -2600,6 +2610,12 @@ class setup_controller
             if (!empty($activeBuyOrders)) {
                 $highestBuy  = max(array_column($activeBuyOrders, 'price'));
                 $needSlideUp = $currentPrice > $highestBuy;
+            }
+
+            // Grid balanceado (ordens nos dois lados) → preço está dentro do range.
+            // A lógica reativa (BUY→SELL, SELL→BUY) cuida das oscilações neste caso.
+            if ($needSlideDown && $needSlideUp && $hasOrdersOnBothSides) {
+                return;
             }
 
             if (!$needSlideDown && !$needSlideUp) {

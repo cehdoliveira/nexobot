@@ -63,10 +63,12 @@ $trailingArmed = $trailingTriggered !== 'yes'
     && ($currentCapital - $initialCapital) / $initialCapital >= 0.10;
 
 // CRON health: tempo desde o último monitoramento do bot
+// DB armazena last_monitor_at em UTC (NOW() do MySQL). Converter para timezone local.
 $minutesSinceMonitor = null;
 $cronStatus = 'unknown';
 if ($lastMonitor) {
-    $minutesSinceMonitor = (time() - strtotime($lastMonitor)) / 60;
+    $lastMonitorUtc = new DateTime($lastMonitor, new DateTimeZone('UTC'));
+    $minutesSinceMonitor = (time() - $lastMonitorUtc->getTimestamp()) / 60;
     $cronStatus = $minutesSinceMonitor <= 2 ? 'ok' : ($minutesSinceMonitor <= 5 ? 'warning' : 'critical');
 }
 

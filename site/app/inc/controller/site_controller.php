@@ -714,6 +714,12 @@ class site_controller
         $peak = 0.0;
         $totalCapitalChange = 0.0;
         $btcMtm = 0.0;
+        if (count($snapshots) > 1) {
+            $firstBtcVal = (float)($snapshots[0]['btc_holding'] ?? 0) * (float)($snapshots[0]['btc_price'] ?? 0);
+            $lastBtcVal  = (float)($snapshots[count($snapshots) - 1]['btc_holding'] ?? 0)
+                         * (float)($snapshots[count($snapshots) - 1]['btc_price'] ?? 0);
+            $btcMtm = $firstBtcVal > 0 ? ($lastBtcVal - $firstBtcVal) / $firstBtcVal : 0;
+        }
 
         if (count($snapshots) > 1) {
             $firstCap = (float)($snapshots[0]['total_capital_usdc'] ?? 0);
@@ -748,22 +754,21 @@ class site_controller
             $sortino = $downsideDev > 0 ? ($mean * $annualFactor) / ($downsideDev * $annualFactor) : 0;
         }
 
-        // Win rate e profit factor usando grid_logs
-        $logsModel = new grid_logs_model();
-        $logsModel->set_filter(["grids_id = '{$gridId}'", "event_type = 'pair_closed'"]);
-        $logsModel->load_data();
-        $pairLogs = $logsModel->data;
+        // Win rate e profit factor — via grids_orders.profit_usdc (trades pareados)
+        $goTradesModel = new grids_orders_model();
+        $goTradesModel->set_filter(["grids_id = '{$gridId}'", "profit_usdc IS NOT NULL"]);
+        $goTradesModel->load_data();
+        $tradesProfit = $goTradesModel->data;
         $wins = 0;
         $losses = 0;
         $totalProfit = 0.0;
         $totalLoss = 0.0;
-        foreach ($pairLogs as $log) {
-            $data = json_decode($log['data'] ?? '{}', true);
-            $profit = (float)($data['profit'] ?? 0);
+        foreach ($tradesProfit as $trade) {
+            $profit = (float)($trade['profit_usdc'] ?? 0);
             if ($profit > 0) {
                 $wins++;
                 $totalProfit += $profit;
-            } else {
+            } elseif ($profit < 0) {
                 $losses++;
                 $totalLoss += abs($profit);
             }
@@ -772,34 +777,47 @@ class site_controller
         $winRate = $totalTrades > 0 ? ($wins / $totalTrades) * 100 : 0;
         $profitFactor = $totalLoss > 0 ? $totalProfit / $totalLoss : ($totalProfit > 0 ? INF : 0);
 
-        // Maker ratio
-        $ordersModel = new orders_model();
-        $ordersModel->set_filter([
-            "grids_id = '{$gridId}'",
-            "status = 'FILLED'",
-            "is_maker IS NOT NULL"
-        ]);
-        $ordersModel->load_data();
-        $filledOrders = $ordersModel->data;
-        $makerCount = 0;
-        foreach ($filledOrders as $o) {
-            if ((int)($o['is_maker'] ?? 0) === 1) $makerCount++;
+        // Maker ratio e fills/dia — usa grid_orders como ponte para orders
+        $goModel = new grids_orders_model();
+        $goModel->set_filter(["grids_id = '{$gridId}'"]);
+        $goModel->load_data();
+        $gridOrdersIds = array_column($goModel->data, 'orders_id');
+        $gridOrdersIds = array_unique(array_filter($gridOrdersIds, fn($id) => (int)$id > 0));
+
+        $makerRatio  = 0;
+        $fillsPerDay = 0;
+        $makerCount  = 0;
+
+        if (!empty($gridOrdersIds)) {
+            $idsStr = implode(',', array_map('intval', $gridOrdersIds));
+
+            // Maker ratio: ordens FILLED com is_maker
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter([
+                "idx IN ({$idsStr})",
+                "status = 'FILLED'",
+                "is_maker IS NOT NULL"
+            ]);
+            $ordersModel->load_data();
+            $filledOrders = $ordersModel->data;
+            foreach ($filledOrders as $o) {
+                if ((int)($o['is_maker'] ?? 0) === 1) $makerCount++;
+            }
+            $makerRatio = count($filledOrders) > 0 ? ($makerCount / count($filledOrders)) * 100 : 0;
+
+            // Fills por dia (últimos 7 dias)
+            $sevenDaysAgo = date('Y-m-d H:i:s', strtotime('-7 days'));
+            $ordersModel2 = new orders_model();
+            $ordersModel2->set_filter([
+                "idx IN ({$idsStr})",
+                "status = 'FILLED'",
+                "order_created_at >= '{$sevenDaysAgo}'"
+            ]);
+            $ordersModel2->load_data();
+            $fillsPerDay = count($ordersModel2->data) / 7.0;
         }
-        $makerRatio = count($filledOrders) > 0 ? ($makerCount / count($filledOrders)) * 100 : 0;
 
-        // Fills por dia (últimos 7 dias)
-        $ordersModel2 = new orders_model();
-        $ordersModel2->set_filter([
-            "grids_id = '{$gridId}'",
-            "status = 'FILLED'",
-            "order_created_at >= " . (round(microtime(true) * 1000) - 7 * 86400 * 1000)
-        ]);
-        $ordersModel2->load_data();
-        $fillsPerDay = count($ordersModel2->data) / 7.0;
-
-        // Spread PnL total
-        $spreadPnl = array_sum(array_column($snapshots, 'accumulated_spread_pnl'));
-
+        // Spread PnL total (último snapshot)
         $result = [
             'success' => true,
             'grid_id' => $gridId,
