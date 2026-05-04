@@ -2185,10 +2185,12 @@ class setup_controller
      */
     private function calculatePairProfit(float $executedQty, float $buyPrice, float $sellPrice, ?array $buyOrder = null, ?array $sellOrder = null): float
     {
-        $buyValue  = (float)($buyOrder['cumulative_quote_qty'] ?? ($executedQty * $buyPrice));
-        $sellValue = (float)($sellOrder['cumulative_quote_qty'] ?? ($executedQty * $sellPrice));
-        $buyFee    = (float)($buyOrder['commission_usdc_equivalent'] ?? $buyValue * $this->getFeeRate('taker'));
-        $sellFee   = (float)($sellOrder['commission_usdc_equivalent'] ?? $sellValue * $this->getFeeRate('taker'));
+        $buyCumQty  = (float)($buyOrder['cumulative_quote_qty'] ?? 0);
+        $sellCumQty = (float)($sellOrder['cumulative_quote_qty'] ?? 0);
+        $buyValue   = $buyCumQty > 0 ? $buyCumQty : ($executedQty * $buyPrice);
+        $sellValue  = $sellCumQty > 0 ? $sellCumQty : ($executedQty * $sellPrice);
+        $buyFee     = (float)($buyOrder['commission_usdc_equivalent'] ?? $buyValue * $this->getFeeRate('taker'));
+        $sellFee    = (float)($sellOrder['commission_usdc_equivalent'] ?? $sellValue * $this->getFeeRate('taker'));
         return $sellValue - $buyValue - $buyFee - $sellFee;
     }
 
