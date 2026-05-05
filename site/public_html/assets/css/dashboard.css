@@ -1424,16 +1424,22 @@ main .dashboard-wrapper .dash-header {
     display: grid;
     grid-template-columns: 1fr 380px;
     gap: 1.25rem;
-    align-items: start;
+    align-items: stretch;
   }
 
   .dashboard-overview > section {
-    display: block;
+    display: flex;
+    flex-direction: column;
   }
 
   .metrics-grid-9 {
     grid-template-columns: repeat(3, 1fr) !important;
-    grid-auto-rows: minmax(112px, auto);
+    grid-template-rows: repeat(3, 1fr);
+    flex: 1 1 auto;
+  }
+
+  .metrics-grid-9 .metric-card {
+    min-height: 88px;
   }
 }
 
