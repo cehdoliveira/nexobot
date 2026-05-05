@@ -678,7 +678,6 @@ class site_controller
      */
     public function gridMetrics($info)
     {
-        error_log('DEBUG gridMetrics: called | auth=' . (auth_controller::check_login() ? 'OK' : 'FAIL') . ' | grid_id=' . (int)($_GET['grid_id'] ?? 0));
         header('Content-Type: application/json; charset=utf-8');
 
         if (!auth_controller::check_login()) {
@@ -695,12 +694,10 @@ class site_controller
         $cacheKey = "metrics:grid:{$gridId}";
         $redis = RedisCache::getInstance();
         $cached = $redis->get($cacheKey);
-        if ($cached !== false) {
+        if ($cached !== false && $cached !== null) {
             echo $cached;
             return;
         }
-
-        error_log('DEBUG gridMetrics: redis OK, loading snapshots...');
 
         // Buscar snapshots horários dos últimos 30 dias
         $snapModel = new capital_snapshots_model();
@@ -711,8 +708,6 @@ class site_controller
         $snapModel->set_order(["created_at ASC"]);
         $snapModel->load_data();
         $snapshots = $snapModel->data;
-
-        error_log('DEBUG gridMetrics: snapshots loaded | count=' . count($snapshots));
 
         $returns = [];
         $maxDrawdown = 0.0;
@@ -840,7 +835,6 @@ class site_controller
 
         $json = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $redis->set($cacheKey, $json, 60);
-        error_log('DEBUG gridMetrics: success | json_len=' . strlen($json));
         echo $json;
         exit;
     }
