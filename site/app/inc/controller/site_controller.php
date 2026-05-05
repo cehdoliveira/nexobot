@@ -700,6 +700,8 @@ class site_controller
             return;
         }
 
+        error_log('DEBUG gridMetrics: redis OK, loading snapshots...');
+
         // Buscar snapshots horários dos últimos 30 dias
         $snapModel = new capital_snapshots_model();
         $snapModel->set_filter([
@@ -709,6 +711,8 @@ class site_controller
         $snapModel->set_order(["created_at ASC"]);
         $snapModel->load_data();
         $snapshots = $snapModel->data;
+
+        error_log('DEBUG gridMetrics: snapshots loaded | count=' . count($snapshots));
 
         $returns = [];
         $maxDrawdown = 0.0;
@@ -777,8 +781,6 @@ class site_controller
         $totalTrades = $wins + $losses;
         $winRate = $totalTrades > 0 ? ($wins / $totalTrades) * 100 : 0;
         $profitFactor = $totalLoss > 0 ? $totalProfit / $totalLoss : ($totalProfit > 0 ? INF : 0);
-
-        error_log('DEBUG gridMetrics: snapshots=' . count($snapshots) . ' | trades=' . $totalTrades);
 
         // Maker ratio e fills/dia — usa grid_orders como ponte para orders
         $goModel = new grids_orders_model();
