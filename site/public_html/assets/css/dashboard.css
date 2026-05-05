@@ -1403,3 +1403,85 @@ main .dashboard-wrapper .dash-header {
 #advanced-metrics-section {
   margin-top: 0;
 }
+
+/* === Dashboard Overview: 2-column hero layout === */
+.dashboard-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.dashboard-overview > section {
+  flex: 1 1 auto;
+}
+
+.overview-detail-col {
+  flex: 0 0 auto;
+}
+
+@media (min-width: 1025px) {
+  .dashboard-overview {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 1.25rem;
+    align-items: stretch;
+  }
+
+  .metrics-grid-9 {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+
+  .overview-detail-col .dash-card {
+    height: 100%;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1024px) {
+  .metrics-grid-9 {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+}
+
+/* Métricas Detalhadas table inline style */
+.metrics-detail-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.metrics-detail-table tr {
+  transition: background var(--dash-transition);
+}
+
+.metrics-detail-table tr:hover {
+  background: var(--dash-card-border);
+}
+
+.metrics-detail-table td {
+  padding: 0.6rem 0.875rem;
+  border-bottom: 1px solid var(--dash-border);
+  font-size: 0.8rem;
+  vertical-align: middle;
+}
+
+.metrics-detail-table tr:last-child td {
+  border-bottom: none;
+}
+
+.metrics-detail-table td:first-child {
+  color: var(--dash-text);
+  font-weight: 500;
+  width: 38%;
+}
+
+.metrics-detail-table td:nth-child(2) {
+  font-family: var(--dash-font-mono);
+  font-weight: 700;
+  color: var(--dash-text);
+  width: 22%;
+}
+
+.metrics-detail-table td:nth-child(3) {
+  color: var(--dash-text-secondary);
+  font-size: 0.75rem;
+}

@@ -222,157 +222,166 @@ $dashboardJson = json_encode([
             </div>
         </div>
 
-        <!-- === SECTION B: Grid Status Overview (Metric Cards) === -->
-        <section aria-label="Métricas do Grid">
-            <div class="metrics-grid">
-                <!-- Active Grids -->
-                <div class="metric-card metric-info">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-info"><i class="bi bi-diagram-2"></i></div>
-                        <div>
-                            <div class="metric-label">Grids Ativos</div>
-                            <div class="metric-value"><?php echo $activeGrids; ?></div>
-                            <div class="metric-sub"><?php echo $buyOrders; ?> BUY / <?php echo $sellOrders; ?> SELL</div>
-                        </div>
-                    </div>
-                </div>
+        <!-- === SECTION B: Dashboard Overview (9 cards + Métricas Detalhadas) === -->
+        <div class="dashboard-overview" id="advanced-metrics-section">
 
-                <!-- Open Orders -->
-                <div class="metric-card metric-warning">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-warning"><i class="bi bi-clock-history"></i></div>
-                        <div>
-                            <div class="metric-label">Ordens Abertas</div>
-                            <div class="metric-value"><?php echo $openOrdersCnt; ?></div>
-                            <div class="metric-sub"><?php echo $closedOrders; ?> executadas</div>
-                        </div>
-                    </div>
-                </div>
+            <!-- Left: 9 metric cards in 3×3 grid -->
+            <section aria-label="Métricas do Grid">
+                <div class="metrics-grid metrics-grid-9">
 
-                <!-- Total Profit -->
-                <div class="metric-card metric-success">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-success"><i class="bi bi-cash-coin"></i></div>
-                        <div>
-                            <div class="metric-label">Lucro Total</div>
-                            <div class="metric-value <?php echo $totalProfit >= 0 ? 'text-success' : 'text-danger'; ?>">
-                                <?php echo ($totalProfit >= 0 ? '+' : '') . '$' . number_format($totalProfit, 2, '.', ','); ?>
+                    <!-- Grids Ativos -->
+                    <div class="metric-card metric-info">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-info"><i class="bi bi-diagram-2"></i></div>
+                            <div>
+                                <div class="metric-label">Grids Ativos</div>
+                                <div class="metric-value"><?php echo $activeGrids; ?></div>
+                                <div class="metric-sub"><?php echo $buyOrders; ?> BUY / <?php echo $sellOrders; ?> SELL</div>
                             </div>
-                            <div class="metric-sub">ROI: <?php echo ($roiPercent >= 0 ? '+' : '') . number_format($roiPercent, 2); ?>%</div>
                         </div>
                     </div>
-                </div>
 
-                <!-- USDC Balance -->
-                <div class="metric-card metric-primary">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-primary"><i class="bi bi-wallet2"></i></div>
-                        <div>
-                            <div class="metric-label">Saldo USDC</div>
-                            <div class="metric-value">$<?php echo number_format($usdcBalance, 2, '.', ','); ?></div>
-                            <div class="metric-sub font-mono"><?php echo number_format($btcBalance, 8); ?> BTC</div>
+                    <!-- Ordens Abertas -->
+                    <div class="metric-card metric-warning">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-warning"><i class="bi bi-clock-history"></i></div>
+                            <div>
+                                <div class="metric-label">Ordens Abertas</div>
+                                <div class="metric-value"><?php echo $openOrdersCnt; ?></div>
+                                <div class="metric-sub"><?php echo $closedOrders; ?> executadas</div>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Capital Allocated -->
-                <div class="metric-card metric-warning">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-warning"><i class="bi bi-piggy-bank"></i></div>
-                        <div>
-                            <div class="metric-label">Capital Alocado</div>
-                            <div class="metric-value">$<?php echo number_format($totalAllocated, 2, '.', ','); ?></div>
-                            <div class="metric-sub">
+                    <!-- Lucro Total -->
+                    <div class="metric-card metric-success">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-success"><i class="bi bi-cash-coin"></i></div>
+                            <div>
+                                <div class="metric-label">Lucro Total</div>
+                                <div class="metric-value <?php echo $totalProfit >= 0 ? 'text-success' : 'text-danger'; ?>">
+                                    <?php echo ($totalProfit >= 0 ? '+' : '') . '$' . number_format($totalProfit, 2, '.', ','); ?>
+                                </div>
+                                <div class="metric-sub">ROI: <?php echo ($roiPercent >= 0 ? '+' : '') . number_format($roiPercent, 2); ?>%</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Saldo USDC -->
+                    <div class="metric-card metric-primary">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-primary"><i class="bi bi-wallet2"></i></div>
+                            <div>
+                                <div class="metric-label">Saldo USDC</div>
+                                <div class="metric-value">$<?php echo number_format($usdcBalance, 2, '.', ','); ?></div>
+                                <div class="metric-sub font-mono"><?php echo number_format($btcBalance, 8); ?> BTC</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Capital Alocado -->
+                    <div class="metric-card metric-warning">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-warning"><i class="bi bi-piggy-bank"></i></div>
+                            <div>
+                                <div class="metric-label">Capital Alocado</div>
+                                <div class="metric-value">$<?php echo number_format($totalAllocated, 2, '.', ','); ?></div>
+                                <div class="metric-sub">
+                                    <?php if ($firstGrid): ?>
+                                        <?php echo $firstGrid['grid_levels'] ?? 0; ?> níveis
+                                    <?php else: ?>
+                                        --
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Range Estrutural -->
+                    <div class="metric-card metric-info">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-info"><i class="bi bi-arrows-expand"></i></div>
+                            <div>
+                                <div class="metric-label">Range Estrutural</div>
                                 <?php if ($firstGrid): ?>
-                                    <?php echo $firstGrid['grid_levels'] ?? 0; ?> níveis
+                                <div class="metric-value" style="font-size: 0.85rem;">
+                                    $<?php echo number_format((float)$firstGrid['lower_price'], 0, '.', ','); ?> — $<?php echo number_format((float)$firstGrid['upper_price'], 0, '.', ','); ?>
+                                </div>
+                                <div class="metric-sub">
+                                    Centro atual: $<?php echo number_format((float)$firstGrid['current_price'], 0, '.', ','); ?> · Espaçamento: <?php echo number_format((float)($firstGrid['grid_spacing_percent'] ?? 0) * 100, 1); ?>%
+                                </div>
                                 <?php else: ?>
-                                    --
+                                <div class="metric-value">--</div>
                                 <?php endif; ?>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Price Range -->
-                <div class="metric-card metric-info">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-info"><i class="bi bi-arrows-expand"></i></div>
-                        <div>
-                            <div class="metric-label">Range Estrutural</div>
-                            <?php if ($firstGrid): ?>
-                            <div class="metric-value" style="font-size: 0.85rem;">
-                                $<?php echo number_format((float)$firstGrid['lower_price'], 0, '.', ','); ?> — $<?php echo number_format((float)$firstGrid['upper_price'], 0, '.', ','); ?>
+                    <!-- Spread P&L -->
+                    <div class="metric-card metric-success" id="metric-spread-pnl">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-success"><i class="bi bi-graph-up-arrow"></i></div>
+                            <div>
+                                <div class="metric-label">Spread P&L</div>
+                                <div class="metric-value">--</div>
+                                <div class="metric-sub">Lucro real do grid (após fees)</div>
                             </div>
-                            <div class="metric-sub">
-                                Centro atual: $<?php echo number_format((float)$firstGrid['current_price'], 0, '.', ','); ?> · Espaçamento: <?php echo number_format((float)($firstGrid['grid_spacing_percent'] ?? 0) * 100, 1); ?>%
+                        </div>
+                    </div>
+
+                    <!-- BTC Mark-to-Market -->
+                    <div class="metric-card metric-primary" id="metric-btc-mtm">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-primary"><i class="bi bi-currency-bitcoin"></i></div>
+                            <div>
+                                <div class="metric-label">BTC Mark-to-Market</div>
+                                <div class="metric-value">--</div>
+                                <div class="metric-sub">Variação do BTC acumulado</div>
                             </div>
-                            <?php else: ?>
-                            <div class="metric-value">--</div>
-                            <?php endif; ?>
                         </div>
                     </div>
-                </div>
-            </div>
-        </section>
 
-        <!-- === SECTION B.5: Métricas Avançadas (via grid-metrics endpoint) === -->
-        <section aria-label="Métricas Avançadas" id="advanced-metrics-section">
-            <div class="metrics-grid">
-                <div class="metric-card metric-success" id="metric-spread-pnl">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-success"><i class="bi bi-graph-up-arrow"></i></div>
-                        <div>
-                            <div class="metric-label">Spread P&L</div>
-                            <div class="metric-value">--</div>
-                            <div class="metric-sub">Lucro real do grid (após fees)</div>
+                    <!-- Capital Total -->
+                    <div class="metric-card metric-info" id="metric-capital-change">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="metric-icon icon-info"><i class="bi bi-bank"></i></div>
+                            <div>
+                                <div class="metric-label">Capital Total</div>
+                                <div class="metric-value">--</div>
+                                <div class="metric-sub">Variação vs capital inicial</div>
+                            </div>
                         </div>
                     </div>
+
                 </div>
-                <div class="metric-card metric-primary" id="metric-btc-mtm">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-primary"><i class="bi bi-currency-bitcoin"></i></div>
-                        <div>
-                            <div class="metric-label">BTC Mark-to-Market</div>
-                            <div class="metric-value">--</div>
-                            <div class="metric-sub">Variação do BTC acumulado</div>
-                        </div>
+            </section>
+
+            <!-- Right: Métricas Detalhadas (expanded by default) -->
+            <div class="overview-detail-col">
+                <div class="dash-card">
+                    <div class="card-header-custom" data-bs-toggle="collapse" data-bs-target="#metricsDetailTable" style="cursor:pointer;">
+                        <h6><i class="bi bi-table"></i> Métricas Detalhadas</h6>
+                        <i class="bi bi-chevron-down"></i>
                     </div>
-                </div>
-                <div class="metric-card metric-info" id="metric-capital-change">
-                    <div class="d-flex align-items-start gap-2">
-                        <div class="metric-icon icon-info"><i class="bi bi-bank"></i></div>
-                        <div>
-                            <div class="metric-label">Capital Total</div>
-                            <div class="metric-value">--</div>
-                            <div class="metric-sub">Variação vs capital inicial</div>
+                    <div class="collapse show" id="metricsDetailTable">
+                        <div class="card-body-custom p-0">
+                            <table class="metrics-detail-table">
+                                <tbody>
+                                    <tr><td>Sharpe Ratio</td><td class="font-mono" id="val-sharpe">--</td><td>Retorno ajustado ao risco</td></tr>
+                                    <tr><td>Sortino Ratio</td><td class="font-mono" id="val-sortino">--</td><td>Retorno ajustado ao risco de queda</td></tr>
+                                    <tr><td>Max Drawdown %</td><td class="font-mono" id="val-drawdown">--</td><td>Maior queda do pico</td></tr>
+                                    <tr><td>Win Rate %</td><td class="font-mono" id="val-winrate">--</td><td>% de trades lucrativos</td></tr>
+                                    <tr><td>Profit Factor</td><td class="font-mono" id="val-pf">--</td><td>Lucro total / Prejuízo total</td></tr>
+                                    <tr><td>Fills/dia</td><td class="font-mono" id="val-fills">--</td><td>Execuções médias por dia</td></tr>
+                                    <tr><td>Maker Ratio %</td><td class="font-mono" id="val-maker">--</td><td>% de ordens maker (menor fee)</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Collapsible metrics table -->
-            <div class="dash-card mt-3" style="margin-top: 1rem;">
-                <div class="card-header-custom" data-bs-toggle="collapse" data-bs-target="#metricsDetailTable" style="cursor:pointer;">
-                    <h6><i class="bi bi-table"></i> Métricas Detalhadas</h6>
-                    <i class="bi bi-chevron-down"></i>
-                </div>
-                <div class="collapse" id="metricsDetailTable">
-                    <div class="card-body-custom">
-                        <table class="table table-sm table-dark table-striped mb-0">
-                            <tbody>
-                                <tr><td>Sharpe Ratio</td><td class="font-mono" id="val-sharpe">--</td><td><small class="text-muted">Retorno ajustado ao risco</small></td></tr>
-                                <tr><td>Sortino Ratio</td><td class="font-mono" id="val-sortino">--</td><td><small class="text-muted">Retorno ajustado ao risco de queda</small></td></tr>
-                                <tr><td>Max Drawdown %</td><td class="font-mono" id="val-drawdown">--</td><td><small class="text-muted">Maior queda do pico</small></td></tr>
-                                <tr><td>Win Rate %</td><td class="font-mono" id="val-winrate">--</td><td><small class="text-muted">% de trades lucrativos</small></td></tr>
-                                <tr><td>Profit Factor</td><td class="font-mono" id="val-pf">--</td><td><small class="text-muted">Lucro total / Prejuízo total</small></td></tr>
-                                <tr><td>Fills/dia</td><td class="font-mono" id="val-fills">--</td><td><small class="text-muted">Execuções médias por dia</small></td></tr>
-                                <tr><td>Maker Ratio %</td><td class="font-mono" id="val-maker">--</td><td><small class="text-muted">% de ordens maker (menor fee)</small></td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </section>
+        </div><!-- /dashboard-overview -->
 
         <!-- === SECTION B.6: Capital Growth Chart === -->
         <section aria-label="Crescimento do Capital">
