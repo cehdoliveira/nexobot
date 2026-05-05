@@ -848,13 +848,13 @@ class site_controller
 
         if (!auth_controller::check_login()) {
             echo json_encode(['success' => false, 'message' => 'Não autenticado']);
-            return;
+            exit;
         }
 
         $gridId = (int)($_GET['grid_id'] ?? 0);
         if ($gridId <= 0) {
             echo json_encode(['success' => false, 'message' => 'grid_id inválido']);
-            return;
+            exit;
         }
 
         $snapModel = new capital_snapshots_model();
