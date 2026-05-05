@@ -1419,7 +1419,7 @@ main .dashboard-wrapper .dash-header {
   flex: 0 0 auto;
 }
 
-@media (min-width: 1025px) {
+@media (min-width: 900px) {
   .dashboard-overview {
     display: grid;
     grid-template-columns: 1fr 380px;
@@ -1433,12 +1433,6 @@ main .dashboard-wrapper .dash-header {
 
   .overview-detail-col .dash-card {
     height: 100%;
-  }
-}
-
-@media (min-width: 768px) and (max-width: 1024px) {
-  .metrics-grid-9 {
-    grid-template-columns: repeat(3, 1fr) !important;
   }
 }
 
