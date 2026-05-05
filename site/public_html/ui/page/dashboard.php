@@ -304,7 +304,7 @@ $dashboardJson = json_encode([
                             <div>
                                 <div class="metric-label">Range Estrutural</div>
                                 <?php if ($firstGrid): ?>
-                                <div class="metric-value" style="font-size: 0.85rem;">
+                                <div class="metric-value">
                                     $<?php echo number_format((float)$firstGrid['lower_price'], 0, '.', ','); ?> — $<?php echo number_format((float)$firstGrid['upper_price'], 0, '.', ','); ?>
                                 </div>
                                 <div class="metric-sub">
