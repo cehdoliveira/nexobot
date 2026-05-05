@@ -1429,7 +1429,10 @@ main .dashboard-wrapper .dash-header {
 
   .metrics-grid-9 {
     grid-template-columns: repeat(3, 1fr) !important;
-    grid-auto-rows: minmax(88px, auto);
+  }
+
+  .metrics-grid-9 .metric-card {
+    min-height: 108px;
   }
 }
 
