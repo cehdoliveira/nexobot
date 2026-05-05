@@ -678,6 +678,7 @@ class site_controller
      */
     public function gridMetrics($info)
     {
+        error_log('DEBUG gridMetrics: called | auth=' . (auth_controller::check_login() ? 'OK' : 'FAIL') . ' | grid_id=' . (int)($_GET['grid_id'] ?? 0));
         header('Content-Type: application/json; charset=utf-8');
 
         if (!auth_controller::check_login()) {
@@ -777,6 +778,8 @@ class site_controller
         $winRate = $totalTrades > 0 ? ($wins / $totalTrades) * 100 : 0;
         $profitFactor = $totalLoss > 0 ? $totalProfit / $totalLoss : ($totalProfit > 0 ? INF : 0);
 
+        error_log('DEBUG gridMetrics: snapshots=' . count($snapshots) . ' | trades=' . $totalTrades);
+
         // Maker ratio e fills/dia — usa grid_orders como ponte para orders
         $goModel = new grids_orders_model();
         $goModel->set_filter(["grids_id = '{$gridId}'"]);
@@ -835,6 +838,7 @@ class site_controller
 
         $json = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $redis->set($cacheKey, $json, 60);
+        error_log('DEBUG gridMetrics: success | json_len=' . strlen($json));
         echo $json;
         exit;
     }
