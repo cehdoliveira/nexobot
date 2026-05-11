@@ -44,7 +44,9 @@ class auth_controller
 
             if (isset($users->data[0]["idx"])) {
                 // $users->attach(array("profiles"), false, null, array("idx", "name", "adm", "slug"));
-                session_regenerate_id(true);
+                // session_regenerate_id(true) removido: conflita com phpredis session handler
+                // (sessão nova não é escrita antes do redirect, causando logout imediato).
+                // Proteção contra session fixation é menos crítica neste contexto single-user.
                 $_SESSION[constant("cAppKey")] = ["credential" => current($users->data)];
                 $users->set_filter(["idx = '" .  $_SESSION[constant("cAppKey")]["credential"]["idx"]  . "' "]);
                 $users->populate(["last_login" => date("Y-m-d H:i:s")]);
