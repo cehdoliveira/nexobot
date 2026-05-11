@@ -41,7 +41,8 @@ define("cTitle", "Driftex");
 define("cAppRoot", "/");
 define("cRootServer", sprintf("%s%s", $_SERVER["DOCUMENT_ROOT"], constant("cAppRoot")));
 define("cRootServer_APP", sprintf("%s%s", $_SERVER["DOCUMENT_ROOT"], constant("cAppRoot") . "../app"));
-define("cFrontend", sprintf("http://%s%s", $_SERVER["HTTP_HOST"] ?? "driftex.local", constant("cAppRoot")));
+$_detected_protocol = (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') || (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
+define("cFrontend", sprintf("%s://%s%s", $_detected_protocol, $_SERVER["HTTP_HOST"] ?? "driftex.local", constant("cAppRoot")));
 define("cAssets", sprintf("%s%s", constant("cFrontend"), "assets/"));
 
 // ===== UPLOAD =====

@@ -58,6 +58,7 @@ class auth_controller
             $_SESSION["messages_app"]["danger"] = ["Login e/ou Senha são obrigatórios para realizar o login"];
         }
 
+        session_write_close();
         basic_redir($GLOBALS["home_url"]);
         exit();
     }
