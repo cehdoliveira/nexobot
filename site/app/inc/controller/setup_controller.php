@@ -830,7 +830,7 @@ class setup_controller
                 $tickerKey = 'ticker:' . $commissionAsset . 'USDC';
                 $redis = RedisCache::getInstance();
                 $rate = $redis->get($tickerKey);
-                if ($rate === false) {
+                if ($rate === null || $rate === false) {
                     $tickerUrl = "{$baseUrl}/api/v3/ticker/price?symbol=" . $commissionAsset . "USDC";
                     $tickerCh = curl_init($tickerUrl);
                     curl_setopt_array($tickerCh, [
