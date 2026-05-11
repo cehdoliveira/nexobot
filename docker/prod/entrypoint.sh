@@ -15,6 +15,22 @@ if [ -f "/var/www/driftex/site/app/inc/lib/composer.json" ]; then
     fi
 fi
 
+# Resetar locks de processamento órfãos (container reiniciou sem finalizar o cron)
+if [ -n "${MYSQL_HOST:-}" ] || [ -f "/var/www/driftex/site/app/inc/kernel.php" ]; then
+    php -r "
+        @require '/var/www/driftex/site/app/inc/main.php';
+        if (class_exists('local_pdo')) {
+            try {
+                \$pdo = (new local_pdo())->getPdo();
+                \$affected = \$pdo->exec(\"UPDATE grids SET is_processing='no' WHERE is_processing='yes'\");
+                if (\$affected > 0) echo \"[entrypoint] \$affected lock(s) orfao(s) liberado(s).\n\";
+            } catch (Exception \$e) {
+                echo '[entrypoint] Aviso: nao foi possivel resetar locks: ' . \$e->getMessage() . \"\n\";
+            }
+        }
+    " || true
+fi
+
 # Instalar crontab e iniciar cron apenas no container app
 if [ "$ENABLE_CRON" = "true" ]; then
     if [ -f "/etc/cron.txt" ]; then
