@@ -2597,27 +2597,21 @@ class setup_controller
                 return;
             }
 
-            // ── GATE reativo: só deslizar quando um lado já esgotou ──
-            // O slide é acionado quando o preço ultrapassou todas as ordens ativas
-            // em uma direção, indicando que o grid precisa se reposicionar.
-            // Evita disparo bilateral em grid balanceado (preço entre BUYs e SELLs).
+            // ── GATE reativo: só deslizar quando todas as ordens do lado oposto foram executadas ──
+            // Slide DOWN: só quando NÃO há BUYs abertas E preço caiu abaixo da menor SELL.
+            // Slide UP:   só quando NÃO há SELLs abertas E preço subiu acima da maior BUY.
+            // Enquanto houver ordens abertas no lado oposto, o grid aguarda — o slide
+            // serve para acompanhar o preço apenas após esgotamento total daquele lado.
             $needSlideDown = false;
             $needSlideUp   = false;
-            $hasOrdersOnBothSides = !empty($activeSellOrders) && !empty($activeBuyOrders);
 
             if (!empty($activeSellOrders)) {
                 $lowestSell    = min(array_column($activeSellOrders, 'price'));
-                $needSlideDown = $currentPrice < $lowestSell;
+                $needSlideDown = empty($activeBuyOrders) && $currentPrice < $lowestSell;
             }
             if (!empty($activeBuyOrders)) {
                 $highestBuy  = max(array_column($activeBuyOrders, 'price'));
-                $needSlideUp = $currentPrice > $highestBuy;
-            }
-
-            // Grid balanceado (ordens nos dois lados) → preço está dentro do range.
-            // A lógica reativa (BUY→SELL, SELL→BUY) cuida das oscilações neste caso.
-            if ($needSlideDown && $needSlideUp && $hasOrdersOnBothSides) {
-                return;
+                $needSlideUp = empty($activeSellOrders) && $currentPrice > $highestBuy;
             }
 
             if (!$needSlideDown && !$needSlideUp) {
@@ -2632,10 +2626,9 @@ class setup_controller
             $minQty  = isset($filters['LOT_SIZE']['minQty']) ? (float)$filters['LOT_SIZE']['minQty'] : 0.00001;
 
             // ── 6.2  Slide para BAIXO (SELL → SELL) ──────────────────────────────
-            // Preço caiu: SELLs ficaram distantes demais.
+            // Preço caiu abaixo de todas as SELLs E não há mais BUYs abertas.
             // Cancela a SELL mais distante (maior preço), libera o BTC travado,
-            // e cria nova SELL 1% abaixo da SELL mais próxima (menor preço).
-            // Funciona com ou sem BUYs ativas.
+            // e cria nova SELL 1 nível abaixo da SELL mais próxima (menor preço).
             if (!empty($activeSellOrders)) {
                 $lowestSellPrice = min(array_column($activeSellOrders, 'price'));
 
