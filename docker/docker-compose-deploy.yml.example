@@ -50,7 +50,7 @@ services:
   # Redis Cache
   # ========================================
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     deploy:
       replicas: 1
       restart_policy:
@@ -61,7 +61,7 @@ services:
         reservations:
           memory: 128M
 
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy volatile-lru
 
     volumes:
       - redis-data:/data
