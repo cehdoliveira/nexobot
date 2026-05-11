@@ -45,8 +45,24 @@ class BotAlertService
         array $metadata = []
     ): bool {
         $settingsKey = self::normalizeSettingsKey($alertKey);
+
+        // Verificação primária via banco (persistente entre processos)
         if (AppSettings::get(self::SETTINGS_NAMESPACE, $settingsKey, '0') === '1') {
             return false;
+        }
+
+        // Lock atômico via Redis — previne envio duplicado em requisições concorrentes.
+        // increment() é atômico: apenas o primeiro processo obtém counter=1.
+        $lockKey = 'alert_sending:' . $settingsKey;
+        $redis = class_exists('RedisCache') ? RedisCache::getInstance() : null;
+        if ($redis && $redis->isConnected()) {
+            $lockCount = $redis->increment($lockKey);
+            if ($lockCount === 1) {
+                $redis->expire($lockKey, 300);
+            }
+            if ($lockCount !== 1) {
+                return false;
+            }
         }
 
         $recipients = self::getRecipients();
@@ -83,6 +99,11 @@ class BotAlertService
     public static function clearSystemAlert(string $alertKey): void
     {
         AppSettings::set(self::SETTINGS_NAMESPACE, self::normalizeSettingsKey($alertKey), '0');
+        // Limpa o lock Redis para permitir novo alerta após recuperação
+        $redis = class_exists('RedisCache') ? RedisCache::getInstance() : null;
+        if ($redis && $redis->isConnected()) {
+            $redis->delete('alert_sending:' . self::normalizeSettingsKey($alertKey));
+        }
     }
 
     private static function getRecipients(): array

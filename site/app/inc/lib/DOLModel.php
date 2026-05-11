@@ -92,7 +92,10 @@ class DOLModel extends rootOBJ
 			}
 		} catch (Exception $e) {
 			$this->con->rollback();
-			error_log('DOLModel::save Error: ' . $e->getMessage());
+			// 1062 = duplicate key: race condition esperada, tratada pelo caller
+			if (strpos($e->getMessage(), '1062') === false) {
+				error_log('DOLModel::save Error: ' . $e->getMessage());
+			}
 			return false;
 		}
 	}
