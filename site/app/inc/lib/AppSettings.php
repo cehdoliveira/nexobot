@@ -51,7 +51,25 @@ class AppSettings
                 'value' => $value,
                 'description' => null
             ]);
-            return (bool)$m2->save();
+            if ($m2->save()) {
+                return true;
+            }
+
+            // Race condition ou registro soft-deleted: INSERT falhou por duplicate key.
+            // Busca sem filtro active para reativar e atualizar o registro existente.
+            $m3 = new settings_model();
+            $m3->set_filter([
+                "namespace = '" . self::esc($namespace) . "'",
+                "cfg_key = '" . self::esc($key) . "'"
+            ]);
+            $m3->set_paginate([1]);
+            $m3->load_data();
+            if (!empty($m3->data)) {
+                $m3->set_filter(["idx = '" . (int)$m3->data[0]['idx'] . "'"]);
+                $m3->populate(['value' => $value, 'active' => 'yes']);
+                return (bool)$m3->save();
+            }
+            return false;
         } catch (Exception $e) {
             error_log('AppSettings::set error: ' . $e->getMessage());
             return false;
