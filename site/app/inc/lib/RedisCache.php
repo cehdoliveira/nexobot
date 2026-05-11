@@ -206,21 +206,26 @@ class RedisCache
 
         try {
             $deleted = 0;
-            $cursor = null;
+            $cursor = 0;
+            $fullPattern = $this->prefix . $pattern;
+
+            // Desativa prefix temporariamente para controlar os nomes das chaves
+            // de forma explícita e evitar dupla remoção/adição de prefix pelo phpredis.
+            $this->redis->setOption(Redis::OPT_PREFIX, '');
+
             do {
-                $keys = $this->redis->scan($cursor, $pattern, 100);
-                if ($keys === false || empty($keys)) {
-                    continue;
+                $keys = $this->redis->scan($cursor, $fullPattern, 100);
+                if ($keys !== false && !empty($keys)) {
+                    $deleted += $this->redis->del($keys);
                 }
-                $keysWithoutPrefix = array_map(function($key) {
-                    return substr($key, strlen($this->prefix));
-                }, $keys);
-                $deleted += $this->redis->del($keysWithoutPrefix);
             } while ($cursor !== 0);
+
             return $deleted;
         } catch (Exception $e) {
             error_log('RedisCache::deletePattern Error: ' . $e->getMessage());
             return 0;
+        } finally {
+            $this->redis->setOption(Redis::OPT_PREFIX, $this->prefix);
         }
     }
 
