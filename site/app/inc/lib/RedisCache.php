@@ -205,28 +205,24 @@ class RedisCache
         }
 
         try {
-            // Quando OPT_PREFIX está ativo, precisamos usar o padrão sem prefixo
-            // pois o Redis adiciona automaticamente
-            $keys = $this->redis->keys($pattern);
-            
-            if (empty($keys)) {
+            $deleted = 0;
+            $cursor = null;
+            do {
+                $keys = $this->redis->scan($cursor, $pattern, 100);
+                if ($keys === false || empty($keys)) {
+                    continue;
+                }
+                $keysWithoutPrefix = array_map(function($key) {
+                    return substr($key, strlen($this->prefix));
+                }, $keys);
+                $deleted += $this->redis->del($keysWithoutPrefix);
+            } while ($cursor !== 0);
+            return $deleted;
+        } catch (Exception $e) {
+            error_log('RedisCache::deletePattern Error: ' . $e->getMessage());
             return 0;
         }
-        
-        // Remover o prefixo das chaves retornadas para usar com del()
-        // pois del() também adiciona o prefixo automaticamente
-        $keysWithoutPrefix = array_map(function($key) {
-            return str_replace($this->prefix, '', $key);
-        }, $keys);
-        
-        $deleted = $this->redis->del($keysWithoutPrefix);
-        
-        return $deleted;
-    } catch (Exception $e) {
-        error_log('RedisCache::deletePattern Error: ' . $e->getMessage());
-        return 0;
     }
-}
 
 /**
  * Limpa todo o cache do database atual

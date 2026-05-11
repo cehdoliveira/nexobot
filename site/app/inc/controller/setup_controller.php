@@ -1286,9 +1286,10 @@ class setup_controller
             try {
                 $redis = RedisCache::getInstance();
                 $reconcileKey = "nexobot:reconcile_counter:{$gridId}";
-                $counter = (int)$redis->get($reconcileKey);
-                $counter++;
-                $redis->set($reconcileKey, $counter, 3600);
+                $counter = $redis->increment($reconcileKey);
+                if ($counter === 1) {
+                    $redis->expire($reconcileKey, 3600);
+                }
                 if ($counter % 40 === 0) {
                     $this->reconcileWithBinance((int)$gridId, (string)$symbol);
                 }

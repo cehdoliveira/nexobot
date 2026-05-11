@@ -44,11 +44,8 @@ class auth_controller
 
             if (isset($users->data[0]["idx"])) {
                 // $users->attach(array("profiles"), false, null, array("idx", "name", "adm", "slug"));
+                session_regenerate_id(true);
                 $_SESSION[constant("cAppKey")] = ["credential" => current($users->data)];
-                // session_regenerate_id() foi REMOVIDO: com phpredis como session handler,
-                // o write da nova sessão só ocorre no shutdown. Se houver qualquer falha
-                // nesse write, o browser fica com um cookie apontando para sessão
-                // inexistente no Redis, derrubando o login no próximo request.
                 $users->set_filter(["idx = '" .  $_SESSION[constant("cAppKey")]["credential"]["idx"]  . "' "]);
                 $users->populate(["last_login" => date("Y-m-d H:i:s")]);
                 $users->save();

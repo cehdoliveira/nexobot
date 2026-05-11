@@ -4,8 +4,11 @@ class BinanceRateLimitGuard {
 
     public static function isInBackoff(): bool {
         $redis = RedisCache::getInstance();
+        if (!$redis || !$redis->isConnected()) {
+            return true;
+        }
         $until = $redis->get(self::REDIS_KEY);
-        return $until !== false && time() < (int)$until;
+        return $until !== null && time() < (int)$until;
     }
 
     public static function recordRateLimit(int $retryAfterSeconds = 60): void {
