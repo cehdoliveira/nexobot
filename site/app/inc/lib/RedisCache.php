@@ -207,16 +207,26 @@ class RedisCache
         try {
             $deleted = 0;
             $cursor = 0;
+            // rawCommand bypassa toda lógica de prefix do phpredis — comportamento determinístico
+            // independente de versão. Keys retornadas incluem o prefix completo.
             $fullPattern = $this->prefix . $pattern;
 
-            // Desativa prefix temporariamente para controlar os nomes das chaves
-            // de forma explícita e evitar dupla remoção/adição de prefix pelo phpredis.
-            $this->redis->setOption(Redis::OPT_PREFIX, '');
-
             do {
-                $keys = $this->redis->scan($cursor, $fullPattern, 100);
-                if ($keys !== false && !empty($keys)) {
-                    $deleted += $this->redis->del($keys);
+                $result = $this->redis->rawCommand('SCAN', $cursor, 'MATCH', $fullPattern, 'COUNT', 100);
+                if (!is_array($result) || count($result) < 2) {
+                    break;
+                }
+                $cursor = (int)$result[0];
+                $keys = (array)$result[1];
+
+                if (!empty($keys)) {
+                    // Keys brutas (com prefix) → strip antes de del() pois del() com OPT_PREFIX ativo
+                    // adiciona o prefix de volta automaticamente.
+                    $unprefixedKeys = array_map(
+                        fn($k) => substr($k, strlen($this->prefix)),
+                        $keys
+                    );
+                    $deleted += $this->redis->del($unprefixedKeys);
                 }
             } while ($cursor !== 0);
 
@@ -224,8 +234,6 @@ class RedisCache
         } catch (Exception $e) {
             error_log('RedisCache::deletePattern Error: ' . $e->getMessage());
             return 0;
-        } finally {
-            $this->redis->setOption(Redis::OPT_PREFIX, $this->prefix);
         }
     }
 
