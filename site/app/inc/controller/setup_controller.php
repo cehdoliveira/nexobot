@@ -3890,14 +3890,16 @@ class setup_controller
             return [
                 'total' => $usdcBalance + $totalBtcValue,
                 'usdc' => $usdcBalance,
-                'asset_value' => $totalBtcValue
+                'asset_value' => $totalBtcValue,
+                'btc' => $btcFree + $btcLocked,
             ];
         } catch (Exception $e) {
             $this->log("Erro ao calcular capital atual: " . $e->getMessage(), 'ERROR', 'SYSTEM');
             return [
                 'total' => 0.0,
                 'usdc' => 0.0,
-                'asset_value' => 0.0
+                'asset_value' => 0.0,
+                'btc' => 0.0,
             ];
         }
     }
