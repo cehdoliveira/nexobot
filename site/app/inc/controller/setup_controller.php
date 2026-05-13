@@ -1173,7 +1173,9 @@ class setup_controller
                         $level['level'],
                         $level['price'],
                         $btcPerSellLevel,
-                        null // sem paired_order_id: é venda inicial do grid
+                        null,        // sem paired_order_id: é venda inicial do grid
+                        false,       // isSlidingLevel
+                        $currentPrice // custo real do BTC comprado na montagem
                     );
                     if ($orderDbId) {
                         $successSells++;
@@ -3264,9 +3266,9 @@ class setup_controller
             ];
             if ($isSlidingLevel) {
                 $orderParams['is_sliding_level'] = 1;
-                if ($originalCostPrice > 0) {
-                    $orderParams['original_cost_price'] = $originalCostPrice;
-                }
+            }
+            if ($originalCostPrice > 0) {
+                $orderParams['original_cost_price'] = $originalCostPrice;
             }
             $orderDbId = $this->saveGridOrder($orderParams);
 
