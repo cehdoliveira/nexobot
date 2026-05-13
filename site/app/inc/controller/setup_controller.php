@@ -2608,11 +2608,11 @@ class setup_controller
 
             if (!empty($activeSellOrders)) {
                 $lowestSell    = min(array_column($activeSellOrders, 'price'));
-                $needSlideDown = empty($activeBuyOrders) && $currentPrice < $lowestSell;
+                $needSlideDown = empty($activeBuyOrders) && $currentPrice < ($lowestSell * 0.99);
             }
             if (!empty($activeBuyOrders)) {
                 $highestBuy  = max(array_column($activeBuyOrders, 'price'));
-                $needSlideUp = empty($activeSellOrders) && $currentPrice > $highestBuy;
+                $needSlideUp = empty($activeSellOrders) && $currentPrice > ($highestBuy * 1.01);
             }
 
             if (!$needSlideDown && !$needSlideUp) {
