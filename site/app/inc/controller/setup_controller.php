@@ -2635,9 +2635,9 @@ class setup_controller
             if (!empty($activeSellOrders)) {
                 $lowestSellPrice = min(array_column($activeSellOrders, 'price'));
 
-                if ($currentPrice < $lowestSellPrice) {
+                if ($currentPrice < ($lowestSellPrice * 0.985)) {
                     $iteration = 0;
-                    while ($currentPrice < $lowestSellPrice && $iteration < self::GRID_SLIDE_MAX_ITERATIONS) {
+                    while ($currentPrice < ($lowestSellPrice * 0.985) && $iteration < self::GRID_SLIDE_MAX_ITERATIONS) {
                         $iteration++;
 
                         if (count($activeSellOrders) < 2) {
@@ -2761,9 +2761,9 @@ class setup_controller
             if (!empty($activeBuyOrders)) {
                 $highestBuyPrice = max(array_column($activeBuyOrders, 'price'));
 
-                if ($currentPrice > $highestBuyPrice) {
+                if ($currentPrice > ($highestBuyPrice * 1.015)) {
                     $iteration = 0;
-                    while ($currentPrice > $highestBuyPrice && $iteration < self::GRID_SLIDE_MAX_ITERATIONS) {
+                    while ($currentPrice > ($highestBuyPrice * 1.015) && $iteration < self::GRID_SLIDE_MAX_ITERATIONS) {
                         $iteration++;
 
                         if (count($activeBuyOrders) < 2) {
