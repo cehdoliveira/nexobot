@@ -3596,12 +3596,7 @@ class setup_controller
     private function clearPendingShutdown(int $gridId): void
     {
         $gridsModel = new grids_model();
-        $gridsModel->set_filter(["idx = '{$gridId}'"]);
-        $gridsModel->populate([
-            'pending_shutdown_at' => null,
-            'pending_shutdown_reason' => null
-        ]);
-        $gridsModel->save();
+        $gridsModel->clearPendingShutdown($gridId);
     }
 
     /**
