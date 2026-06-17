@@ -2590,6 +2590,7 @@ class setup_controller
                     'grid_level'          => $gridOrder['grid_level'],
                     'is_sliding_level'    => (int)($gridOrder['is_sliding_level'] ?? 0),
                     'original_cost_price' => (float)($gridOrder['original_cost_price'] ?? 0),
+                    'paired_order_id'     => $gridOrder['paired_order_id'] ?? null,
                 ];
                 if ($order['side'] === 'BUY')  $activeBuyOrders[]  = $entry;
                 if ($order['side'] === 'SELL') $activeSellOrders[] = $entry;
@@ -2628,127 +2629,203 @@ class setup_controller
             $filters = array_column($symbolData['filters'], null, 'filterType');
             $minQty  = isset($filters['LOT_SIZE']['minQty']) ? (float)$filters['LOT_SIZE']['minQty'] : 0.00001;
 
-            // ── 6.2  Slide para BAIXO (SELL → SELL) ──────────────────────────────
+            // ── 6.2  Slide para BAIXO (SELL → SELL) — SLIDE CASCATA ──────────────
             // Preço caiu abaixo de todas as SELLs E não há mais BUYs abertas.
-            // Cancela a SELL mais distante (maior preço), libera o BTC travado,
-            // e cria nova SELL 1 nível abaixo da SELL mais próxima (menor preço).
+            // Cancela SOMENTE a SELL do topo (maior preço) — seu BTC volta ao saldo
+            // livre, NÃO é reciclado. As demais SELLs descem um degrau preservando
+            // CADA UMA o seu próprio original_cost_price, quantity e paired_order_id.
+            // Uma nova SELL 1 é criada no nível mais próximo com BTC comprado ao
+            // preço de mercado atual (original_cost_price = currentPrice). Assim cada
+            // custo permanece no seu degrau e só a ponta nova recebe custo de mercado.
             if (!empty($activeSellOrders)) {
                 $lowestSellPrice = min(array_column($activeSellOrders, 'price'));
 
                 if ($currentPrice < ($lowestSellPrice * 0.985)) {
+                    $stepSizeFloat    = (float)$stepSize;
+                    $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
+
                     $iteration = 0;
                     while ($currentPrice < ($lowestSellPrice * 0.985) && $iteration < self::GRID_SLIDE_MAX_ITERATIONS) {
                         $iteration++;
 
                         if (count($activeSellOrders) < 2) {
-                            $this->log("⚠️ Slide DOWN: precisa de pelo menos 2 SELLs para reciclar (grid #$gridId)", 'WARNING', 'TRADE');
+                            $this->log("⚠️ Slide DOWN cascata: precisa de pelo menos 2 SELLs (grid #$gridId)", 'WARNING', 'TRADE');
                             break;
                         }
 
-                        // Passo 1: SELL mais distante (maior preço) a cancelar
+                        // Passo 1: ordenar por preço DECRESCENTE (topo = SELL mais cara, base = mais barata)
                         usort($activeSellOrders, fn($a, $b) => $b['price'] <=> $a['price']);
-                        $sellToCancel = $activeSellOrders[0];
+                        $sellTop = $activeSellOrders[0];
 
-                        // Passo 2: cancelar na Binance
+                        // Passo 2: cancelar SOMENTE a SELL do topo na Binance. BTC NÃO é reciclado.
                         try {
-                            $this->client->deleteOrder($symbol, $sellToCancel['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
+                            $this->client->deleteOrder($symbol, $sellTop['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
                         } catch (Exception $e) {
-                            $this->log("⚠️ Slide DOWN: erro ao cancelar SELL #{$sellToCancel['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
+                            $this->log("⚠️ Slide DOWN cascata: erro ao cancelar SELL topo #{$sellTop['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
                             $this->syncOrdersWithBinance($gridId);
                             break;
                         }
 
-                        // Passo 3: marcar como cancelada no banco
+                        // Marcar topo como cancelada no banco
                         $ordersModel = new orders_model();
-                        $ordersModel->set_filter(["idx = '{$sellToCancel['orders_idx']}'"]);
+                        $ordersModel->set_filter(["idx = '{$sellTop['orders_idx']}'"]);
                         $ordersModel->populate(['status' => 'CANCELED']);
                         $ordersModel->save();
 
                         $goCancelModel = new grids_orders_model();
-                        $goCancelModel->set_filter(["idx = '{$sellToCancel['grids_orders_idx']}'"]);
+                        $goCancelModel->set_filter(["idx = '{$sellTop['grids_orders_idx']}'"]);
                         $goCancelModel->populate(['active' => 'no']);
                         $goCancelModel->save();
 
-                        // Passo 4: BTC liberado + custo original preservado
-                        $btcQty            = $sellToCancel['quantity'];
-                        $originalCostPrice = $sellToCancel['original_cost_price'] > 0
-                            ? $sellToCancel['original_cost_price']
-                            : $sellToCancel['price'];
+                        $this->log("⬇️ Slide DOWN cascata #$iteration: cancelada SELL topo @ \${$sellTop['price']} (BTC liberado ao saldo, sem reciclar)", 'INFO', 'TRADE');
 
-                        // Ajustar ao stepSize
-                        $stepSizeFloat    = (float)$stepSize;
-                        $decimalPlacesQty = $this->getDecimalPlaces($stepSize);
-                        $btcQty = floor($btcQty / $stepSizeFloat) * $stepSizeFloat;
-                        $btcQty = round($btcQty, $decimalPlacesQty);
+                        // Passo 3: as SELLs restantes descem um degrau, processadas da MENOR
+                        // para a MAIOR preço (SELL 1 primeiro) — evita dois slots vizinhos coexistindo.
+                        $remaining = array_slice($activeSellOrders, 1);
+                        usort($remaining, fn($a, $b) => $a['price'] <=> $b['price']);
 
-                        if ($btcQty < $minQty) {
-                            $this->log("⚠️ Slide DOWN: qty $btcQty < mínimo $minQty (grid #$gridId)", 'WARNING', 'TRADE');
+                        $rebuilt = [];
+                        $abort   = false;
+                        foreach ($remaining as $sell) {
+                            // Cancelar a ordem existente (Binance + banco)
+                            try {
+                                $this->client->deleteOrder($symbol, $sell['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
+                            } catch (Exception $e) {
+                                $this->log("⚠️ Slide DOWN cascata: erro ao cancelar SELL #{$sell['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
+                                $this->syncOrdersWithBinance($gridId);
+                                $abort = true;
+                                break;
+                            }
+                            $om = new orders_model();
+                            $om->set_filter(["idx = '{$sell['orders_idx']}'"]);
+                            $om->populate(['status' => 'CANCELED']);
+                            $om->save();
+
+                            $gom = new grids_orders_model();
+                            $gom->set_filter(["idx = '{$sell['grids_orders_idx']}'"]);
+                            $gom->populate(['active' => 'no']);
+                            $gom->save();
+
+                            // Recriar um degrau abaixo, preservando qty, paired e custo original
+                            $oldPrice = $sell['price'];
+                            $newPrice = (float)$this->adjustPriceToTickSize($oldPrice * (1 - $gridSpacing), $tickSize);
+
+                            $qty = floor($sell['quantity'] / $stepSizeFloat) * $stepSizeFloat;
+                            $qty = round($qty, $decimalPlacesQty);
+
+                            if ($qty < $minQty) {
+                                $this->log("⚠️ Slide DOWN cascata: qty $qty < mínimo $minQty (grid #$gridId)", 'WARNING', 'TRADE');
+                                $abort = true;
+                                break;
+                            }
+                            if ($minNotional && ($newPrice * $qty) < $minNotional) {
+                                $this->log("⚠️ Slide DOWN cascata: valor abaixo do mínimo notional (grid #$gridId)", 'WARNING', 'TRADE');
+                                $abort = true;
+                                break;
+                            }
+
+                            // original_cost_price NUNCA é transferido entre ordens: copia fielmente o da ordem que ocupava o slot
+                            $origCost  = $sell['original_cost_price'] > 0 ? $sell['original_cost_price'] : $sell['price'];
+                            $pairedId  = $sell['paired_order_id'] ? (int)$sell['paired_order_id'] : null;
+
+                            $newId = $this->placeSellOrder(
+                                $gridId,
+                                $symbol,
+                                (int)$sell['grid_level'],          // preserva o nível da ordem original
+                                $newPrice,
+                                $qty,
+                                $pairedId,                         // paired_order_id preservado
+                                (bool)$sell['is_sliding_level'],   // mantém o valor original
+                                $origCost                          // custo original preservado
+                            );
+
+                            if (!$newId) {
+                                $this->log("❌ Slide DOWN cascata: falha ao recriar SELL @ \$$newPrice (grid #$gridId)", 'ERROR', 'TRADE');
+                                $abort = true;
+                                break;
+                            }
+
+                            $this->log("⬇️ Slide DOWN cascata: SELL desceu \${$oldPrice} → \$$newPrice (custo \${$origCost} preservado)", 'INFO', 'TRADE');
+
+                            $rebuilt[] = [
+                                'grids_orders_idx'    => $newId,
+                                'orders_idx'          => null,
+                                'binance_order_id'    => null,
+                                'price'               => $newPrice,
+                                'quantity'            => $qty,
+                                'executed_qty'        => 0.0,
+                                'status'              => 'NEW',
+                                'grid_level'          => (int)$sell['grid_level'],
+                                'is_sliding_level'    => (int)$sell['is_sliding_level'],
+                                'original_cost_price' => $origCost,
+                                'paired_order_id'     => $sell['paired_order_id'],
+                            ];
+                        }
+
+                        if ($abort) {
                             break;
                         }
 
-                        // Remover SELL cancelada do array local
-                        $activeSellOrders = array_values(array_filter(
-                            $activeSellOrders,
-                            fn($o) => $o['grids_orders_idx'] !== $sellToCancel['grids_orders_idx']
-                        ));
+                        // Passo 4: criar a nova SELL 1 no nível mais próximo, com BTC ao preço de mercado.
+                        // Reusa o grid_level liberado pelo topo cancelado (evita colisão de clientOrderId).
+                        $newSell1Price = (float)$this->adjustPriceToTickSize($currentPrice * (1 + $gridSpacing), $tickSize);
+                        $newSell1Qty   = (float)$this->calculateAdjustedQuantity((float)$gridData['capital_per_level'], $currentPrice, $stepSize);
 
-                        if (empty($activeSellOrders)) {
-                            $this->log("⚠️ Slide DOWN: sem SELLs restantes após cancelamento (grid #$gridId)", 'WARNING', 'TRADE');
+                        if ($newSell1Qty < $minQty) {
+                            $this->log("⚠️ Slide DOWN cascata: qty nova SELL 1 $newSell1Qty < mínimo $minQty (grid #$gridId)", 'WARNING', 'TRADE');
+                            break;
+                        }
+                        if ($minNotional && ($newSell1Price * $newSell1Qty) < $minNotional) {
+                            $this->log("⚠️ Slide DOWN cascata: nova SELL 1 abaixo do mínimo notional (grid #$gridId)", 'WARNING', 'TRADE');
                             break;
                         }
 
-                        // Passo 5: novo preço = menor SELL ativa × (1 - spacing)
-                        $lowestSellPrice = min(array_column($activeSellOrders, 'price'));
-                        $newSellPrice    = (float)$this->adjustPriceToTickSize($lowestSellPrice * (1 - $gridSpacing), $tickSize);
-
-                        if ($minNotional && ($newSellPrice * $btcQty) < $minNotional) {
-                            $this->log("⚠️ Slide DOWN: valor abaixo do mínimo notional (grid #$gridId)", 'WARNING', 'TRADE');
-                            break;
-                        }
-
-                        // Passo 6: criar nova SELL abaixo, com BTC reciclado
-                        $this->log(
-                            "⬇️ Slide DOWN #$iteration: reciclando SELL @ \${$sellToCancel['price']} → nova SELL @ \$$newSellPrice",
-                            'INFO',
-                            'TRADE'
-                        );
-                        $newSellId = $this->placeSellOrder(
+                        $newSell1Id = $this->placeSellOrder(
                             $gridId,
                             $symbol,
-                            $sellToCancel['grid_level'],
-                            $newSellPrice,
-                            $btcQty,
-                            null,   // sem paired buy (reciclagem)
-                            true,   // isSlidingLevel
-                            $originalCostPrice
+                            (int)$sellTop['grid_level'],   // nível liberado pelo topo cancelado
+                            $newSell1Price,
+                            $newSell1Qty,
+                            null,                          // nova SELL 1 não tem paired
+                            true,                          // isSlidingLevel
+                            $currentPrice                  // custo real do BTC alocado agora
                         );
 
-                        if (!$newSellId) {
-                            $this->log("❌ Slide DOWN: falha ao criar SELL @ \$$newSellPrice (grid #$gridId)", 'ERROR', 'TRADE');
+                        if (!$newSell1Id) {
+                            $this->log("❌ Slide DOWN cascata: falha ao criar nova SELL 1 @ \$$newSell1Price (grid #$gridId)", 'ERROR', 'TRADE');
                             break;
                         }
 
-                        // Passo 7-8: contadores e log
+                        $this->log("⬇️ Slide DOWN cascata: nova SELL 1 @ \$$newSell1Price com original_cost_price = currentPrice \$$currentPrice", 'INFO', 'TRADE');
+
+                        $rebuilt[] = [
+                            'grids_orders_idx'    => $newSell1Id,
+                            'orders_idx'          => null,
+                            'binance_order_id'    => null,
+                            'price'               => $newSell1Price,
+                            'quantity'            => $newSell1Qty,
+                            'executed_qty'        => 0.0,
+                            'status'              => 'NEW',
+                            'grid_level'          => (int)$sellTop['grid_level'],
+                            'is_sliding_level'    => 1,
+                            'original_cost_price' => $currentPrice,
+                            'paired_order_id'     => null,
+                        ];
+
+                        // Passo 5: contadores e log
                         $this->incrementSlideCount($gridId, 'down');
-                        $this->saveGridLog($gridId, 'grid_slide_down', 'success', 'Grid deslizou para baixo (SELL→SELL)', [
+                        $this->saveGridLog($gridId, 'grid_slide_down', 'success', 'Grid deslizou para baixo (slide cascata SELL→SELL)', [
                             'current_price'        => $currentPrice,
-                            'cancelled_sell_price' => $sellToCancel['price'],
-                            'new_sell_price'       => $newSellPrice,
-                            'recycled_quantity'    => $btcQty,
-                            'original_cost_price'  => $originalCostPrice,
+                            'cancelled_top_price'  => $sellTop['price'],
+                            'new_sell1_price'      => $newSell1Price,
+                            'new_sell1_cost'       => $currentPrice,
+                            'cascaded_count'       => count($rebuilt) - 1,
                             'iteration'            => $iteration,
                         ]);
 
                         // Atualizar estado local para próxima iteração
-                        $lowestSellPrice    = $newSellPrice;
-                        $activeSellOrders[] = [
-                            'price'               => $newSellPrice,
-                            'grids_orders_idx'    => $newSellId,
-                            'is_sliding_level'    => 1,
-                            'original_cost_price' => $originalCostPrice,
-                            'quantity'            => $btcQty,
-                            'binance_order_id'    => null,
-                        ];
+                        $activeSellOrders = $rebuilt;
+                        $lowestSellPrice  = min(array_column($activeSellOrders, 'price'));
                     }
                 }
             }
