@@ -754,7 +754,13 @@ class setup_controller
                         }
                     }
                 } catch (Exception $e) {
-                    // Silencioso para evitar spam de logs (ex: timestamp errors)
+                    // Timestamp/recvWindow (-1021) é ruído transitório → silencioso.
+                    // Demais falhas escondem divergência DB↔Binance (causa de -2011 no
+                    // slide depois) → logar para dar visibilidade à causa raiz.
+                    $msg = $e->getMessage();
+                    if (strpos($msg, '-1021') === false && stripos($msg, 'timestamp') === false) {
+                        $this->log("Falha ao consultar status da ordem #{$order['binance_order_id']} na sync: {$msg}", 'WARNING', 'API');
+                    }
                     continue;
                 }
             }
@@ -767,6 +773,57 @@ class setup_controller
             $this->fixFilledOrdersWithZeroQty($gridId);
         } catch (Exception $e) {
             $this->log("Erro ao sincronizar ordens: " . $e->getMessage(), 'ERROR', 'SYSTEM');
+        }
+    }
+
+    /**
+     * Detecta o erro -2011 ("Unknown order sent") da Binance: a ordem não está
+     * mais no book (já FILLED ou já CANCELED). Cancelá-la não é falha real —
+     * o objetivo (tirá-la do book) já está cumprido.
+     */
+    private function isUnknownOrderError(Exception $e): bool
+    {
+        $msg = $e->getMessage();
+        return strpos($msg, '-2011') !== false
+            || stripos($msg, 'Unknown order sent') !== false;
+    }
+
+    /**
+     * Reconcilia o status real de UMA ordem consultando a Binance e grava no banco.
+     * Usado quando deleteOrder retorna -2011 (ordem já ausente do book): traz o
+     * banco local de volta à verdade da corretora em vez de deixar estado stale.
+     * Retorna o status real (FILLED, CANCELED, ...) ou null se a consulta falhar.
+     */
+    private function reconcileSingleOrder(string $symbol, int $ordersIdx, string $binanceOrderId): ?string
+    {
+        try {
+            $response     = $this->client->getOrder($symbol, $binanceOrderId, null, self::BINANCE_RECV_WINDOW);
+            $binanceOrder = $response->getData();
+
+            $newStatus   = $this->extractBinanceValue($binanceOrder, 'getStatus', 'status', null);
+            $executedQty = (float)$this->extractBinanceValue($binanceOrder, 'getExecutedQty', 'executedQty', 0);
+
+            if (!$newStatus) {
+                return null;
+            }
+
+            $ordersModel = new orders_model();
+            $ordersModel->set_filter(["idx = '{$ordersIdx}'"]);
+            $ordersModel->populate([
+                'status'       => $newStatus,
+                'executed_qty' => $executedQty,
+            ]);
+            $ordersModel->save();
+
+            // Se virou FILLED/PARTIALLY_FILLED, buscar os fills reais (commission/is_maker)
+            if (in_array($newStatus, ['FILLED', 'PARTIALLY_FILLED'])) {
+                $this->fetchAndStoreFillDetails($ordersIdx, $binanceOrderId, $symbol);
+            }
+
+            return $newStatus;
+        } catch (Exception $e) {
+            $this->log("Falha ao reconciliar ordem #{$binanceOrderId}: " . $e->getMessage(), 'WARNING', 'API');
+            return null;
         }
     }
 
@@ -2658,24 +2715,39 @@ class setup_controller
                         $sellTop = $activeSellOrders[0];
 
                         // Passo 2: cancelar SOMENTE a SELL do topo na Binance. BTC NÃO é reciclado.
+                        $topGoneStatus = null;   // !=null quando a ordem já sumiu do book (-2011)
                         try {
                             $this->client->deleteOrder($symbol, $sellTop['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
                         } catch (Exception $e) {
-                            $this->log("⚠️ Slide DOWN cascata: erro ao cancelar SELL topo #{$sellTop['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
-                            $this->syncOrdersWithBinance($gridId);
-                            break;
+                            if ($this->isUnknownOrderError($e)) {
+                                // -2011: topo já ausente do book (FILLED ou CANCELED). Não é falha —
+                                // queríamos removê-la mesmo. Reconcilia o status real e SEGUE a cascata.
+                                $topGoneStatus = $this->reconcileSingleOrder($symbol, (int)$sellTop['orders_idx'], (string)$sellTop['binance_order_id']) ?? 'CANCELED';
+                                $this->log("⚠️ Slide DOWN cascata: SELL topo #{$sellTop['binance_order_id']} já ausente na Binance ({$topGoneStatus}) — reconciliada, seguindo cascata", 'WARNING', 'TRADE');
+                            } else {
+                                $this->log("⚠️ Slide DOWN cascata: erro ao cancelar SELL topo #{$sellTop['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
+                                $this->syncOrdersWithBinance($gridId);
+                                break;
+                            }
                         }
 
-                        // Marcar topo como cancelada no banco
-                        $ordersModel = new orders_model();
-                        $ordersModel->set_filter(["idx = '{$sellTop['orders_idx']}'"]);
-                        $ordersModel->populate(['status' => 'CANCELED']);
-                        $ordersModel->save();
+                        // Marcar topo no banco. Se cancelamos nós (topGoneStatus===null) → CANCELED.
+                        // Se já estava FILLED/PARTIALLY, reconcileSingleOrder já gravou o status real:
+                        // não sobrescreve e deixa o handler de fills cuidar do BTC executado.
+                        if ($topGoneStatus === null) {
+                            $ordersModel = new orders_model();
+                            $ordersModel->set_filter(["idx = '{$sellTop['orders_idx']}'"]);
+                            $ordersModel->populate(['status' => 'CANCELED']);
+                            $ordersModel->save();
+                        }
 
-                        $goCancelModel = new grids_orders_model();
-                        $goCancelModel->set_filter(["idx = '{$sellTop['grids_orders_idx']}'"]);
-                        $goCancelModel->populate(['active' => 'no']);
-                        $goCancelModel->save();
+                        if ($topGoneStatus === null || !in_array($topGoneStatus, ['FILLED', 'PARTIALLY_FILLED'])) {
+                            // Sai do book do grid (cancelada por nós ou já cancelada externamente).
+                            $goCancelModel = new grids_orders_model();
+                            $goCancelModel->set_filter(["idx = '{$sellTop['grids_orders_idx']}'"]);
+                            $goCancelModel->populate(['active' => 'no']);
+                            $goCancelModel->save();
+                        }
 
                         $this->log("⬇️ Slide DOWN cascata #$iteration: cancelada SELL topo @ \${$sellTop['price']} (BTC liberado ao saldo, sem reciclar)", 'INFO', 'TRADE');
 
@@ -2691,6 +2763,21 @@ class setup_controller
                             try {
                                 $this->client->deleteOrder($symbol, $sell['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
                             } catch (Exception $e) {
+                                if ($this->isUnknownOrderError($e)) {
+                                    // -2011: esta SELL já sumiu do book. Reconcilia o status real e
+                                    // NÃO recria o nível (se FILLED o BTC já foi vendido; se CANCELED
+                                    // não há qty para reusar). Segue para a próxima SELL — não aborta
+                                    // o slide inteiro por causa de uma ordem fantasma.
+                                    $goneStatus = $this->reconcileSingleOrder($symbol, (int)$sell['orders_idx'], (string)$sell['binance_order_id']) ?? 'CANCELED';
+                                    if (!in_array($goneStatus, ['FILLED', 'PARTIALLY_FILLED'])) {
+                                        $gomGone = new grids_orders_model();
+                                        $gomGone->set_filter(["idx = '{$sell['grids_orders_idx']}'"]);
+                                        $gomGone->populate(['active' => 'no']);
+                                        $gomGone->save();
+                                    }
+                                    $this->log("⚠️ Slide DOWN cascata: SELL #{$sell['binance_order_id']} já ausente na Binance ({$goneStatus}) — pulando recriação do nível, seguindo", 'WARNING', 'TRADE');
+                                    continue;
+                                }
                                 $this->log("⚠️ Slide DOWN cascata: erro ao cancelar SELL #{$sell['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
                                 $this->syncOrdersWithBinance($gridId);
                                 $abort = true;
@@ -2856,6 +2943,24 @@ class setup_controller
                         try {
                             $this->client->deleteOrder($symbol, $buyToCancel['binance_order_id'], null, null, null, self::BINANCE_RECV_WINDOW);
                         } catch (Exception $e) {
+                            if ($this->isUnknownOrderError($e)) {
+                                // -2011: BUY já ausente do book. Reconcilia o status real e NÃO
+                                // recicla seu capital (se FILLED o USDC já virou BTC — reciclar
+                                // seria gasto em dobro). Remove do array local e reavalia o slide.
+                                $goneStatus = $this->reconcileSingleOrder($symbol, (int)$buyToCancel['orders_idx'], (string)$buyToCancel['binance_order_id']) ?? 'CANCELED';
+                                if (!in_array($goneStatus, ['FILLED', 'PARTIALLY_FILLED'])) {
+                                    $gomGoneBuy = new grids_orders_model();
+                                    $gomGoneBuy->set_filter(["idx = '{$buyToCancel['grids_orders_idx']}'"]);
+                                    $gomGoneBuy->populate(['active' => 'no']);
+                                    $gomGoneBuy->save();
+                                }
+                                $activeBuyOrders = array_values(array_filter(
+                                    $activeBuyOrders,
+                                    fn($o) => $o['grids_orders_idx'] !== $buyToCancel['grids_orders_idx']
+                                ));
+                                $this->log("⚠️ Slide UP: BUY #{$buyToCancel['binance_order_id']} já ausente na Binance ({$goneStatus}) — reconciliada, sem reciclar, seguindo", 'WARNING', 'TRADE');
+                                continue;
+                            }
                             $this->log("⚠️ Slide UP: erro ao cancelar BUY #{$buyToCancel['binance_order_id']}: " . $e->getMessage() . " — sincronizando", 'WARNING', 'TRADE');
                             $this->syncOrdersWithBinance($gridId);
                             break;
@@ -3043,6 +3148,53 @@ class setup_controller
     }
 
     /**
+     * Submete a ordem como LIMIT_MAKER (zero taker fee). Se a Binance rejeitar
+     * por "immediately match", refaz como LIMIT GTC. Demais erros (inclusive
+     * -2010 duplicada) são repropagados para o chamador tratar.
+     */
+    private function submitOrderMakerFallback(NewOrderRequest $orderReq)
+    {
+        try {
+            $orderReq->setType(OrderType::LIMIT_MAKER);
+            return $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+        } catch (Exception $e) {
+            if (str_contains($e->getMessage(), 'immediately match')) {
+                $this->log("⚠️ LIMIT_MAKER rejeitado, fallback para LIMIT", 'WARNING', 'TRADE');
+                $orderReq->setType(OrderType::LIMIT);
+                $orderReq->setTimeInForce('GTC');
+                return $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * clientOrderId determinístico e ÚNICO por ordem lógica:
+     *   nx-{grid}-{level}-{side}-{minuto}-{precoEmTicks}
+     * O preço em ticks diferencia ordens no MESMO nível dentro do mesmo minuto
+     * (caso da cascata de slide) — antes colidiam e geravam linhas DB fantasma
+     * apontando para a mesma ordem Binance (causa de -2011 depois). Mantém
+     * idempotência: mesma ordem lógica (nível+preço+minuto) → mesmo id, ainda
+     * protegendo contra crons concorrentes.
+     */
+    private function buildClientOrderId(int $gridId, int $gridLevel, string $side, $adjustedPrice, $tickSize): string
+    {
+        $ts    = (float)$tickSize;
+        $ticks = ($ts > 0) ? (int)round((float)$adjustedPrice / $ts) : (int)round((float)$adjustedPrice);
+        return sprintf('nx-%d-%d-%s-%d-%d', $gridId, $gridLevel, $side, intdiv(time(), 60), $ticks);
+    }
+
+    /**
+     * clientOrderId garantidamente único (sufixo em ms) — usado só no retry após
+     * -2010 com preço divergente, para recolocar a ordem que o slide realmente quer.
+     */
+    private function uniqueClientOrderId(int $gridId, int $gridLevel, string $side): string
+    {
+        $millis = (string)round(microtime(true) * 1000);
+        return sprintf('nx-%d-%d-%s-%s', $gridId, $gridLevel, $side, substr($millis, -10));
+    }
+
+    /**
      * Coloca uma ordem de compra LIMIT na Binance
      * Inclui validação de lucro mínimo (Fee Threshold)
      */
@@ -3116,53 +3268,58 @@ class setup_controller
             $orderReq->setSide(Side::BUY);
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$quantity);
-            $clientOrderId = sprintf('nx-%d-%d-buy-%d', $gridId, $gridLevel, intdiv(time(), 60));
+            $clientOrderId = $this->buildClientOrderId($gridId, $gridLevel, 'buy', $adjustedPrice, $tickSize);
             $orderReq->setNewClientOrderId($clientOrderId);
 
             try {
-                // Tentar LIMIT_MAKER primeiro (zero fee de taker)
-                $orderReq->setType(OrderType::LIMIT_MAKER);
-                $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+                $response = $this->submitOrderMakerFallback($orderReq);
             } catch (Exception $e) {
-                $msg = $e->getMessage();
-                if (str_contains($msg, 'immediately match')) {
-                    $this->log("⚠️ LIMIT_MAKER rejeitado, fallback para LIMIT", 'WARNING', 'TRADE');
-                    $orderReq->setType(OrderType::LIMIT);
-                    $orderReq->setTimeInForce('GTC');
-                    $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
-                } elseif (str_contains($msg, '-2010')) {
-                    $existing = null;
-                    try {
-                        $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
-                    } catch (Exception $ignored) {}
-                    if ($existing) {
-                        $this->log("⚠️ Ordem duplicada recuperada: $clientOrderId", 'WARNING', 'TRADE');
-                        $existingData = $existing->getData();
-                        $orderParams = [
-                            'grids_id' => $gridId,
-                            'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
-                            'binance_client_order_id' => $clientOrderId,
-                            'symbol' => $symbol,
-                            'side' => 'BUY',
-                            'type' => 'LIMIT',
-                            'grid_level' => $gridLevel,
-                            'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
-                            'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $quantity),
-                            'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
-                            'order_created_at' => round(microtime(true) * 1000)
-                        ];
-                        if ($isSlidingLevel) {
-                            $orderParams['is_sliding_level'] = 1;
-                            if ($originalCostPrice > 0) {
-                                $orderParams['original_cost_price'] = $originalCostPrice;
-                            }
-                        }
-                        return $this->saveGridOrder($orderParams);
-                    }
-                    return null;
-                } else {
+                if (!str_contains($e->getMessage(), '-2010')) {
                     throw $e;
                 }
+                // -2010: já existe ordem com este id. Com o preço embutido no id isso
+                // só acontece para a MESMA ordem lógica (nível+preço+minuto iguais).
+                $existing = null;
+                try {
+                    $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
+                } catch (Exception $ignored) {}
+
+                $existingData  = $existing ? $existing->getData() : null;
+                $existingPrice = $existingData ? (float)$this->extractBinanceValue($existingData, 'getPrice', 'price', 0) : 0.0;
+                $samePrice     = $existingData && abs($existingPrice - (float)$adjustedPrice) < ((float)$tickSize / 2 + 1e-9);
+
+                if ($existingData && $samePrice) {
+                    // Duplicata verdadeira (preço confere): é a ordem que queríamos. Recupera, não dobra.
+                    $this->log("⚠️ Ordem duplicada recuperada (preço confere): $clientOrderId", 'WARNING', 'TRADE');
+                    $orderParams = [
+                        'grids_id' => $gridId,
+                        'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
+                        'binance_client_order_id' => $clientOrderId,
+                        'symbol' => $symbol,
+                        'side' => 'BUY',
+                        'type' => 'LIMIT',
+                        'grid_level' => $gridLevel,
+                        'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
+                        'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $quantity),
+                        'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
+                        'order_created_at' => round(microtime(true) * 1000)
+                    ];
+                    if ($isSlidingLevel) {
+                        $orderParams['is_sliding_level'] = 1;
+                        if ($originalCostPrice > 0) {
+                            $orderParams['original_cost_price'] = $originalCostPrice;
+                        }
+                    }
+                    return $this->saveGridOrder($orderParams);
+                }
+
+                // Colisão com ordem de preço diferente (não esperado com preço no id):
+                // gera id único e recoloca a ordem que o grid realmente quer.
+                $retryId = $this->uniqueClientOrderId($gridId, $gridLevel, 'buy');
+                $orderReq->setNewClientOrderId($retryId);
+                $this->log("⚠️ -2010 com preço divergente em $clientOrderId — recriando com id único $retryId", 'WARNING', 'TRADE');
+                $response = $this->submitOrderMakerFallback($orderReq);
+                $clientOrderId = $retryId;
             }
             $orderData = $response->getData();
 
@@ -3271,54 +3428,59 @@ class setup_controller
             $orderReq->setSide(Side::SELL);
             $orderReq->setPrice((float)$adjustedPrice);
             $orderReq->setQuantity((float)$adjustedQty);
-            $clientOrderId = sprintf('nx-%d-%d-sell-%d', $gridId, $gridLevel, intdiv(time(), 60));
+            $clientOrderId = $this->buildClientOrderId($gridId, $gridLevel, 'sell', $adjustedPrice, $tickSize);
             $orderReq->setNewClientOrderId($clientOrderId);
 
             try {
-                // Tentar LIMIT_MAKER primeiro (zero fee de taker)
-                $orderReq->setType(OrderType::LIMIT_MAKER);
-                $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
+                $response = $this->submitOrderMakerFallback($orderReq);
             } catch (Exception $e) {
-                $msg = $e->getMessage();
-                if (str_contains($msg, 'immediately match')) {
-                    $this->log("⚠️ LIMIT_MAKER rejeitado, fallback para LIMIT", 'WARNING', 'TRADE');
-                    $orderReq->setType(OrderType::LIMIT);
-                    $orderReq->setTimeInForce('GTC');
-                    $response = $this->client->newOrder($this->applyRecvWindowToOrderRequest($orderReq));
-                } elseif (str_contains($msg, '-2010')) {
-                    $existing = null;
-                    try {
-                        $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
-                    } catch (Exception $ignored) {}
-                    if ($existing) {
-                        $this->log("⚠️ Ordem duplicada recuperada: $clientOrderId", 'WARNING', 'TRADE');
-                        $existingData = $existing->getData();
-                        $orderParams = [
-                            'grids_id' => $gridId,
-                            'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
-                            'binance_client_order_id' => $clientOrderId,
-                            'symbol' => $symbol,
-                            'side' => 'SELL',
-                            'type' => 'LIMIT',
-                            'grid_level' => $gridLevel,
-                            'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
-                            'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $adjustedQty),
-                            'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
-                            'order_created_at' => round(microtime(true) * 1000),
-                            'paired_order_id' => $pairedBuyOrderId
-                        ];
-                        if ($isSlidingLevel) {
-                            $orderParams['is_sliding_level'] = 1;
-                            if ($originalCostPrice > 0) {
-                                $orderParams['original_cost_price'] = $originalCostPrice;
-                            }
-                        }
-                        return $this->saveGridOrder($orderParams);
-                    }
-                    return null;
-                } else {
+                if (!str_contains($e->getMessage(), '-2010')) {
                     throw $e;
                 }
+                // -2010: já existe ordem com este id. Com o preço embutido no id isso
+                // só acontece para a MESMA ordem lógica (nível+preço+minuto iguais).
+                $existing = null;
+                try {
+                    $existing = $this->client->getOrder($symbol, null, $clientOrderId, null, null, self::BINANCE_RECV_WINDOW);
+                } catch (Exception $ignored) {}
+
+                $existingData  = $existing ? $existing->getData() : null;
+                $existingPrice = $existingData ? (float)$this->extractBinanceValue($existingData, 'getPrice', 'price', 0) : 0.0;
+                $samePrice     = $existingData && abs($existingPrice - (float)$adjustedPrice) < ((float)$tickSize / 2 + 1e-9);
+
+                if ($existingData && $samePrice) {
+                    // Duplicata verdadeira (preço confere): é a ordem que queríamos. Recupera, não dobra.
+                    $this->log("⚠️ Ordem duplicada recuperada (preço confere): $clientOrderId", 'WARNING', 'TRADE');
+                    $orderParams = [
+                        'grids_id' => $gridId,
+                        'binance_order_id' => $this->extractBinanceValue($existingData, 'getOrderId', 'orderId', null),
+                        'binance_client_order_id' => $clientOrderId,
+                        'symbol' => $symbol,
+                        'side' => 'SELL',
+                        'type' => 'LIMIT',
+                        'grid_level' => $gridLevel,
+                        'price' => $this->extractBinanceValue($existingData, 'getPrice', 'price', $adjustedPrice),
+                        'quantity' => $this->extractBinanceValue($existingData, 'getOrigQty', 'origQty', $adjustedQty),
+                        'status' => $this->extractBinanceValue($existingData, 'getStatus', 'status', 'UNKNOWN'),
+                        'order_created_at' => round(microtime(true) * 1000),
+                        'paired_order_id' => $pairedBuyOrderId
+                    ];
+                    if ($isSlidingLevel) {
+                        $orderParams['is_sliding_level'] = 1;
+                        if ($originalCostPrice > 0) {
+                            $orderParams['original_cost_price'] = $originalCostPrice;
+                        }
+                    }
+                    return $this->saveGridOrder($orderParams);
+                }
+
+                // Colisão com ordem de preço diferente (não esperado com preço no id):
+                // gera id único e recoloca a ordem que o slide realmente quer.
+                $retryId = $this->uniqueClientOrderId($gridId, $gridLevel, 'sell');
+                $orderReq->setNewClientOrderId($retryId);
+                $this->log("⚠️ -2010 com preço divergente em $clientOrderId — recriando com id único $retryId", 'WARNING', 'TRADE');
+                $response = $this->submitOrderMakerFallback($orderReq);
+                $clientOrderId = $retryId;
             }
             $orderData = $response->getData();
 
