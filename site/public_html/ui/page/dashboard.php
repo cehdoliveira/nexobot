@@ -62,6 +62,17 @@ $trailingArmed = $trailingTriggered !== 'yes'
     && $currentCapital > 0
     && ($currentCapital - $initialCapital) / $initialCapital >= 0.10;
 
+// Stop-Loss: 3 estados — monitorando / armado (circuit breaker contando 10min) / ativado
+$pendingShutdownAt     = $firstGrid ? ($firstGrid['pending_shutdown_at'] ?? null) : null;
+$pendingShutdownReason = $firstGrid ? ($firstGrid['pending_shutdown_reason'] ?? null) : null;
+$stopLossArmed = $stopLossTriggered !== 'yes'
+    && !empty($pendingShutdownAt)
+    && $pendingShutdownReason === 'stop_loss';
+// Minutos decorridos rumo à confirmação de 10 min (limitado a 10 para exibição)
+$stopLossArmMinutes = $stopLossArmed
+    ? min(10, max(0, (time() - strtotime($pendingShutdownAt)) / 60))
+    : 0;
+
 // CRON health: tempo desde o último monitoramento do bot
 $minutesSinceMonitor = null;
 $cronStatus = 'unknown';
@@ -481,9 +492,13 @@ $dashboardJson = json_encode([
                         <div class="mb-3">
                             <div class="d-flex justify-content-between align-items-center mb-1">
                                 <span class="metric-label mb-0">Stop-Loss (20%)</span>
-                                <span class="protection-pill <?php echo $stopLossTriggered === 'yes' ? 'pill-triggered' : 'pill-active'; ?>">
-                                    <?php echo $stopLossTriggered === 'yes' ? 'ATIVADO' : 'Monitorando'; ?>
-                                </span>
+                                <?php if ($stopLossTriggered === 'yes'): ?>
+                                <span class="protection-pill pill-triggered">ATIVADO</span>
+                                <?php elseif ($stopLossArmed): ?>
+                                <span class="protection-pill" style="background:rgba(255,165,0,.12);color:#ffaa00;border:1px solid rgba(255,165,0,.3);" title="Circuit breaker armado: drawdown ≥ 20%, aguardando confirmação de 10 min">Armado ⚡ <?php echo number_format($stopLossArmMinutes, 0); ?>/10min</span>
+                                <?php else: ?>
+                                <span class="protection-pill pill-active">Monitorando</span>
+                                <?php endif; ?>
                             </div>
                         </div>
 
