@@ -183,6 +183,24 @@ class site_controller
             $totalCapitalAllocated += (float)($grid['capital_allocated_usdc'] ?? 0);
         }
 
+        // Trades realizados = grids_orders com profit_usdc registrado (SELLs pareadas).
+        // Mesma base de gridMetrics() — evita diluir métricas com BUYs e ordens canceladas.
+        $realizedWins = 0;
+        $realizedLosses = 0;
+        foreach ($allGridOrders as $go) {
+            $p = $go['profit_usdc'] ?? null;
+            if ($p === null || $p === '') {
+                continue; // ordem sem lucro pareado (BUY, NEW, cancelada): não conta
+            }
+            $p = (float)$p;
+            if ($p > 0) {
+                $realizedWins++;
+            } elseif ($p < 0) {
+                $realizedLosses++;
+            }
+        }
+        $realizedTrades = $realizedWins + $realizedLosses;
+
         // Estatísticas por símbolo
         $symbolsStats = [];
         foreach ($allGrids as $grid) {
@@ -204,20 +222,19 @@ class site_controller
             $symbolsStats[$symbol]['orders'] += count($symbolOrders);
         }
 
-        // Taxa de sucesso (ordens fechadas com lucro)
-        $profitableOrders = 0;
-        foreach ($closedOrders as $order) {
-            if ((float)($order['profit_usdc'] ?? 0) > 0) {
-                $profitableOrders++;
-            }
+        // Taxa de sucesso = trades vencedores / trades realizados (mesma base de gridMetrics)
+        $profitableOrders = $realizedWins;
+        $successRate = $realizedTrades > 0 ? ($realizedWins / $realizedTrades) * 100 : 0;
+
+        // Lucro médio por trade realizado
+        $avgProfitPerOrder = $realizedTrades > 0 ? $totalProfit / $realizedTrades : 0;
+
+        // ROI realizado = lucro acumulado / capital inicial, ambos sobre TODOS os grids
+        $totalInitialCapital = 0.0;
+        foreach ($allGrids as $grid) {
+            $totalInitialCapital += (float)($grid['initial_capital_usdc'] ?? 0);
         }
-        $successRate = count($closedOrders) > 0 ? ($profitableOrders / count($closedOrders)) * 100 : 0;
-
-        // Lucro médio por ordem
-        $avgProfitPerOrder = count($closedOrders) > 0 ? $totalProfit / count($closedOrders) : 0;
-
-        // ROI
-        $roiPercent = $totalCapitalAllocated > 0 ? ($totalProfit / $totalCapitalAllocated) * 100 : 0;
+        $roiPercent = $totalInitialCapital > 0 ? ($totalProfit / $totalInitialCapital) * 100 : 0;
 
         // === ESTATÍSTICAS DE SLIDING GRID ===
         $totalSlides = 0;
