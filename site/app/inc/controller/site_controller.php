@@ -171,10 +171,15 @@ class site_controller
             strtotime($b['created_at'] ?? '0') <=> strtotime($a['created_at'] ?? '0')
         );
 
-        // Total de lucro
+        // Total de lucro REALIZADO (consolidado, nunca reseta) = soma de profit_usdc
+        // de todos os pares fechados. NÃO usar accumulated_profit_usdc: esse campo é o
+        // buffer de reinvestimento e zera a cada batch >= REINVESTMENT_THRESHOLD.
         $totalProfit = 0;
-        foreach ($allGrids as $grid) {
-            $totalProfit += (float)($grid['accumulated_profit_usdc'] ?? 0);
+        foreach ($allGridOrders as $go) {
+            $p = $go['profit_usdc'] ?? null;
+            if ($p !== null && $p !== '') {
+                $totalProfit += (float)$p;
+            }
         }
 
         // Capital total alocado
@@ -211,14 +216,23 @@ class site_controller
                     'orders' => 0
                 ];
             }
-            $symbolsStats[$symbol]['profit'] += (float)($grid['accumulated_profit_usdc'] ?? 0);
-
-            // Contar ordens deste símbolo
+            // Ordens deste símbolo
             $symbolOrders = array_filter(
                 $allGridOrders,
                 fn($o) =>
                 isset($o['orders'][0]) && ($o['orders'][0]['symbol'] ?? '') === $symbol
             );
+
+            // Lucro consolidado do símbolo = soma de profit_usdc dos pares fechados
+            // (nunca reseta; não usar accumulated_profit_usdc — buffer de reinvest)
+            $symbolProfit = 0.0;
+            foreach ($symbolOrders as $so) {
+                $sp = $so['profit_usdc'] ?? null;
+                if ($sp !== null && $sp !== '') {
+                    $symbolProfit += (float)$sp;
+                }
+            }
+            $symbolsStats[$symbol]['profit'] = $symbolProfit;
             $symbolsStats[$symbol]['orders'] += count($symbolOrders);
         }
 
@@ -229,7 +243,7 @@ class site_controller
         // Lucro médio por trade realizado
         $avgProfitPerOrder = $realizedTrades > 0 ? $totalProfit / $realizedTrades : 0;
 
-        // ROI realizado = lucro acumulado / capital inicial, ambos sobre TODOS os grids
+        // ROI realizado = lucro realizado consolidado / capital inicial, sobre TODOS os grids
         $totalInitialCapital = 0.0;
         foreach ($allGrids as $grid) {
             $totalInitialCapital += (float)($grid['initial_capital_usdc'] ?? 0);
@@ -1738,10 +1752,18 @@ class site_controller
             $this->checkCronHealthAndNotify($firstGrid);
 
             // Estatísticas rápidas
+            // Lucro realizado consolidado (nunca reseta) = soma de profit_usdc dos pares
+            // fechados. NÃO usar accumulated_profit_usdc (buffer de reinvest que zera).
             $totalProfit = 0;
             $totalAllocated = 0;
-            foreach ($allGrids as $grid) {
-                $totalProfit += (float)($grid['accumulated_profit_usdc'] ?? 0);
+            $goStatsModel = new grids_orders_model();
+            $goStatsModel->set_filter(["profit_usdc IS NOT NULL"]);
+            $goStatsModel->load_data();
+            foreach ($goStatsModel->data as $go) {
+                $p = $go['profit_usdc'] ?? null;
+                if ($p !== null && $p !== '') {
+                    $totalProfit += (float)$p;
+                }
             }
             foreach ($activeGrids as $grid) {
                 $totalAllocated += (float)($grid['capital_allocated_usdc'] ?? 0);
